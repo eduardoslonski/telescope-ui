@@ -1,0 +1,56 @@
+[project]
+name = "telescope-ui"
+version = "0.1.5"
+description = "Real-time visualization dashboard for LLM training runs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Eduardo Slonski" },
+]
+keywords = ["llm", "training", "visualization", "dashboard", "wandb", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "duckdb>=1.4.3",
+    "fastapi>=0.126.0",
+    "httpx>=0.28.1",
+    "pandas>=2.0.0",
+    "pyarrow>=22.0.0",
+    "pydantic-settings>=2.12.0",
+    "tenacity>=9.1.2",
+    "uvicorn[standard]>=0.38.0",
+    "wandb>=0.19.0",
+    "zstandard>=0.25.0",
+]
+
+[project.urls]
+Repository = "https://github.com/eduardoslonski/telescope-ui"
+
+[project.scripts]
+telescope = "telescope.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+artifacts = ["src/telescope/static/"]
+exclude = [
+    "ui/",
+    ".claude/",
+    "uv.lock",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/telescope"]
