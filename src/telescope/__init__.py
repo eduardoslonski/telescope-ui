@@ -1,3 +1,5 @@
 """Telescope — Training visualization for LLMs."""
 
-__version__ = "0.1.5"
+from importlib.metadata import version
+
+__version__ = version("telescope-ui")
