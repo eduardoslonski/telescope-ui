@@ -291,6 +291,7 @@ function categorizeConfigs(
           "max_model_len",
           "vllm_scheduling_policy",
           "enable_thinking",
+          "chat_template",
           "reasoning_parser",
           "enable_tool_call",
           "tool_call_parser",
@@ -298,7 +299,7 @@ function categorizeConfigs(
       order: [
         "inference_host", "inference_devices", "inference_base_port",
         "num_inference_servers", "gpu_memory_utilization", "max_model_len",
-        "vllm_scheduling_policy", "enable_thinking", "reasoning_parser",
+        "vllm_scheduling_policy", "enable_thinking", "chat_template", "reasoning_parser",
         "enable_tool_call", "tool_call_parser",
       ],
     },
