@@ -431,6 +431,7 @@ export interface SyncStatus {
 export interface RunSummary {
   summary: Record<string, unknown>
   config: Record<string, unknown>
+  custom_config: Record<string, unknown> | null
   last_rollout_step: number
   local_rollout_count: number
   local_rollout_steps: number
