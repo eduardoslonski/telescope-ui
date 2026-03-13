@@ -15,10 +15,30 @@ export const wandbConfigDialogOpenAtom = atom<boolean>(false)
 // Shared dialog state so the empty-state component can open the Known Projects dialog
 export const knownProjectsDialogOpenAtom = atom<boolean>(false)
 
-// Currently selected run path (the "active" run for detail views)
-export const selectedRunPathAtom = atomWithStorage<string | null>(
-  "selected-run-path",
-  null
+// Currently selected run path (the "active" run for detail views).
+// Uses localStorage for persistence across reloads but deliberately does NOT
+// subscribe to cross-tab storage events.  Run selection is per-tab — syncing
+// it across tabs causes a race where a stale tab clears a freshly-selected run.
+const _readSelectedRunPathFromStorage = (): string | null => {
+  try {
+    const stored = localStorage.getItem("selected-run-path")
+    if (stored !== null) return JSON.parse(stored) as string | null
+  } catch { /* ignore */ }
+  return null
+}
+const _selectedRunPathBaseAtom = atom<string | null>(_readSelectedRunPathFromStorage())
+export const selectedRunPathAtom = atom(
+  (get) => get(_selectedRunPathBaseAtom),
+  (_get, set, update: string | null) => {
+    set(_selectedRunPathBaseAtom, update)
+    try {
+      if (update === null) {
+        localStorage.removeItem("selected-run-path")
+      } else {
+        localStorage.setItem("selected-run-path", JSON.stringify(update))
+      }
+    } catch { /* ignore */ }
+  }
 )
 
 // Visible runs for plots (checked runs that will show in charts)
