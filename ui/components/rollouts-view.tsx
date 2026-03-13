@@ -52,11 +52,11 @@ import type {
 /** Per-environment reward range from the run config */
 export type EnvRewardRanges = Map<string, { min: number; max: number }>
 
+/** Per-metric range with optional invert flag (when true, lower values are better) */
+export type MetricRange = { min: number; max: number; invert?: boolean }
+
 /** Per-environment, per-metric range from the run config's metrics_ranges */
-export type EnvMetricRanges = Map<
-  string,
-  Map<string, { min: number; max: number }>
->
+export type EnvMetricRanges = Map<string, Map<string, MetricRange>>
 
 /**
  * Normalize an environments config value which may be a JSON string, an array,
@@ -112,13 +112,15 @@ export function extractEnvMetricRanges(envs: unknown): EnvMetricRanges {
     if (typeof e?.name !== "string") continue
     const ranges = e.metrics_ranges
     if (ranges && typeof ranges === "object") {
-      const metricMap = new Map<string, { min: number; max: number }>()
+      const metricMap = new Map<string, MetricRange>()
       for (const [metricName, range] of Object.entries(
         ranges as Record<string, unknown>,
       )) {
         const r = range as Record<string, unknown>
         if (typeof r?.min === "number" && typeof r?.max === "number") {
-          metricMap.set(metricName, { min: r.min, max: r.max })
+          const entry: MetricRange = { min: r.min, max: r.max }
+          if (r.invert === true) entry.invert = true
+          metricMap.set(metricName, entry)
         }
       }
       if (metricMap.size > 0) {
@@ -134,15 +136,22 @@ export function extractEnvMetricRanges(envs: unknown): EnvMetricRanges {
  * into the EnvMetricRanges Map format.
  */
 export function parseDataMetricRanges(
-  raw: Record<string, Record<string, { min: number; max: number }>> | undefined,
+  raw:
+    | Record<
+        string,
+        Record<string, { min: number; max: number; invert?: boolean }>
+      >
+    | undefined,
 ): EnvMetricRanges {
   const map: EnvMetricRanges = new Map()
   if (!raw) return map
   for (const [env, metrics] of Object.entries(raw)) {
-    const metricMap = new Map<string, { min: number; max: number }>()
+    const metricMap = new Map<string, MetricRange>()
     for (const [metricName, range] of Object.entries(metrics)) {
       if (typeof range?.min === "number" && typeof range?.max === "number") {
-        metricMap.set(metricName, { min: range.min, max: range.max })
+        const entry: MetricRange = { min: range.min, max: range.max }
+        if (range.invert === true) entry.invert = true
+        metricMap.set(metricName, entry)
       }
     }
     if (metricMap.size > 0) {
@@ -713,6 +722,7 @@ function SampleView({
       metric.value,
       range?.min ?? null,
       range?.max ?? null,
+      range?.invert,
     )
     secondaryItems.push({
       label: formatMetricName(metric.metric_name),
@@ -1619,7 +1629,7 @@ function lookupMetricRange(
   envMetricRanges: EnvMetricRanges | undefined,
   metricEnv: string | null,
   metricKey: string,
-): { min: number; max: number } | undefined {
+): MetricRange | undefined {
   if (!envMetricRanges) return undefined
   if (metricEnv) {
     const exact = envMetricRanges.get(metricEnv)?.get(metricKey)
@@ -1636,16 +1646,21 @@ function lookupMetricRange(
  * Compute an inline CSS color for a metric value given its [min, max] range.
  * Returns a hue-interpolated color from red (0°) to green (120°) via HSL,
  * or undefined when no range is available.
+ * When invert is true, the color scale is flipped: min=green, max=red
+ * (for metrics where lower is better, e.g. num_errors).
  */
 function metricRangeColor(
   value: number,
   min: number | null | undefined,
   max: number | null | undefined,
+  invert?: boolean,
 ): string | undefined {
   if (min == null || max == null) return undefined
   if (min >= max) return undefined
   // Clamp t to [0, 1]
-  const t = Math.max(0, Math.min(1, (value - min) / (max - min)))
+  let t = Math.max(0, Math.min(1, (value - min) / (max - min)))
+  // When inverted, flip the color scale so that min=green (good) and max=red (bad)
+  if (invert) t = 1 - t
   // Hue: 0 (red) → 120 (green)
   const hue = t * 120
   return `hsl(${hue.toFixed(0)} 80% 38%)`

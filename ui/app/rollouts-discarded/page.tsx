@@ -165,12 +165,16 @@ export default function RolloutsDiscardedPage() {
     return extractEnvRewardRanges(summaryData?.config?.environments)
   }, [summaryData?.config?.environments])
 
-  // Extract per-environment, per-metric ranges from run config + data fallback
+  // Extract per-environment, per-metric ranges from run config + summary + data fallback
   const envMetricRanges = useMemo<EnvMetricRanges>(() => {
     const configRanges = extractEnvMetricRanges(summaryData?.config?.environments)
+    const summaryRanges = extractEnvMetricRanges(summaryData?.summary?.env_details)
     const dataRanges = parseDataMetricRanges(summaryData?.data_metric_ranges)
-    return mergeEnvMetricRanges(configRanges, dataRanges)
-  }, [summaryData?.config?.environments, summaryData?.data_metric_ranges])
+    return mergeEnvMetricRanges(
+      mergeEnvMetricRanges(configRanges, summaryRanges),
+      dataRanges,
+    )
+  }, [summaryData?.config?.environments, summaryData?.summary?.env_details, summaryData?.data_metric_ranges])
 
   // Compute advantage range from group_size config
   const advantageRange = useMemo(() => {

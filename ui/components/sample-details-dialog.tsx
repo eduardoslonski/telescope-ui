@@ -179,15 +179,23 @@ export function SampleDetailsDialog({
     ? (summaryData?.summary?.eval_env_details ?? summaryData?.config?.eval_env_details)
     : summaryData?.config?.environments
 
+  const envSummaryValue = isEval
+    ? undefined
+    : summaryData?.summary?.env_details
+
   const envRewardRanges = useMemo<EnvRewardRanges>(() => {
     return extractEnvRewardRanges(envConfigValue)
   }, [envConfigValue])
 
   const envMetricRanges = useMemo<EnvMetricRanges>(() => {
     const configRanges = extractEnvMetricRanges(envConfigValue)
+    const summaryRanges = extractEnvMetricRanges(envSummaryValue)
     const dataRanges = parseDataMetricRanges(summaryData?.data_metric_ranges)
-    return mergeEnvMetricRanges(configRanges, dataRanges)
-  }, [envConfigValue, summaryData?.data_metric_ranges])
+    return mergeEnvMetricRanges(
+      mergeEnvMetricRanges(configRanges, summaryRanges),
+      dataRanges,
+    )
+  }, [envConfigValue, envSummaryValue, summaryData?.data_metric_ranges])
 
   // Compute advantage range from group_size config
   const advantageRange = useMemo(() => {
