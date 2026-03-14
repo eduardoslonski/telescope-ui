@@ -4223,9 +4223,39 @@ def get_step_metrics(req: StepMetricsRequest):
     tag_filter_sql, tag_filter_params = _build_tag_filter()
     tag_filter_sql_gm, tag_filter_params_gm = _build_tag_filter("gm.")
 
+    # Group-level tag filter for prompts table (group_id instead of sample_idx)
+    def _build_tag_filter_group(prefix: str = "") -> tuple[str, list]:
+        if not req.tag_filters:
+            return "", []
+        step_col = f"{prefix}step" if prefix else "step"
+        gid_col = f"{prefix}group_id" if prefix else "group_id"
+        conditions = []
+        params_out: list = []
+        for tag_name, tag_values in req.tag_filters.items():
+            if tag_values:
+                placeholders = ", ".join(["?"] * len(tag_values))
+                conditions.append(
+                    f"SELECT DISTINCT step, sample_idx FROM sample_tags "
+                    f"WHERE run_id = ? AND tag_name = ? AND tag_value IN ({placeholders})"
+                )
+                params_out.extend([req.run_path, tag_name] + tag_values)
+        if not conditions:
+            return "", []
+        subquery = conditions[0]
+        for cond in conditions[1:]:
+            subquery = f"({subquery}) INTERSECT ({cond})"
+        group_subquery = (
+            f"SELECT DISTINCT sd.step, sd.group_id "
+            f"FROM samples_data sd "
+            f"WHERE sd.run_id = ? AND (sd.step, sd.sample_idx) IN ({subquery})"
+        )
+        return f" AND ({step_col}, {gid_col}) IN ({group_subquery})", [req.run_path] + params_out
+
+    tag_filter_sql_group, tag_filter_params_group = _build_tag_filter_group()
+
     # Compute base metrics from samples_data table (reward_sum, advantage)
     base_query = f"""
-        SELECT 
+        SELECT
             step,
             -- Reward sum (total reward) - from samples_data
             AVG(reward) as reward_sum_mean,
@@ -4238,17 +4268,17 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(advantage) as advantage_min,
             MAX(advantage) as advantage_max
         FROM samples_data
-        WHERE run_id = ? AND reward IS NOT NULL {step_filter}
+        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    base_rows = con.execute(base_query, params).fetchall()
+
+    base_rows = con.execute(base_query, params + tag_filter_params).fetchall()
     
     # Compute completion tokens from rollouts table (only model turns)
     # First sum tokens per sample where turn_type = 'model', then aggregate per step
     completion_query = f"""
-        SELECT 
+        SELECT
             step,
             AVG(completion_tokens) as length_completion_mean,
             STDDEV_SAMP(completion_tokens) as length_completion_std,
@@ -4257,64 +4287,64 @@ def get_step_metrics(req: StepMetricsRequest):
         FROM (
             SELECT step, sample_idx, SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id = ? AND turn_type = 'model' {step_filter}
+            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
             GROUP BY step, sample_idx
         )
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    completion_rows = con.execute(completion_query, params).fetchall()
+
+    completion_rows = con.execute(completion_query, params + tag_filter_params).fetchall()
     completion_by_step = {row[0]: row[1:] for row in completion_rows}
     
     # Compute prompt token metrics from prompts table
     prompt_query = f"""
-        SELECT 
+        SELECT
             step,
             AVG(tokens_prompt) as length_prompt_mean,
             STDDEV_SAMP(tokens_prompt) as length_prompt_std,
             MIN(tokens_prompt) as length_prompt_min,
             MAX(tokens_prompt) as length_prompt_max
         FROM prompts
-        WHERE run_id = ? {step_filter}
+        WHERE run_id = ? {step_filter} {tag_filter_sql_group}
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    prompt_rows = con.execute(prompt_query, params).fetchall()
+
+    prompt_rows = con.execute(prompt_query, params + tag_filter_params_group).fetchall()
     prompt_metrics_by_step = {row[0]: row[1:] for row in prompt_rows}
     
     # Compute total token stats from samples_data (total_tokens includes everything)
     length_sum_query = f"""
-        SELECT 
+        SELECT
             step,
             AVG(total_tokens) as length_sum_mean,
             STDDEV_SAMP(total_tokens) as length_sum_std,
             MIN(total_tokens) as length_sum_min,
             MAX(total_tokens) as length_sum_max
         FROM samples_data
-        WHERE run_id = ? AND reward IS NOT NULL {step_filter}
+        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    length_sum_rows = con.execute(length_sum_query, params).fetchall()
+
+    length_sum_rows = con.execute(length_sum_query, params + tag_filter_params).fetchall()
     length_sum_by_step = {row[0]: row[1:] for row in length_sum_rows}
     
     # Compute stop_reason = 'length' percentage per step
     # Count samples where at least one model rollout has stop_reason = 'length'
     stop_reason_length_query = f"""
-        SELECT 
+        SELECT
             step,
-            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 / 
+            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx), 0) as stop_reason_length_pct
         FROM rollouts
-        WHERE run_id = ? AND turn_type = 'model' {step_filter}
+        WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    stop_reason_length_rows = con.execute(stop_reason_length_query, params).fetchall()
+
+    stop_reason_length_rows = con.execute(stop_reason_length_query, params + tag_filter_params).fetchall()
     stop_reason_length_by_step = {row[0]: row[1] for row in stop_reason_length_rows}
 
     # Compute within-group completion-length heterogeneity metrics, averaged per step.
@@ -4330,7 +4360,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 sample_idx,
                 SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id = ? AND turn_type = 'model' {step_filter}
+            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
             GROUP BY step, group_id, sample_idx
         ),
         group_stats AS (
@@ -4396,7 +4426,7 @@ def get_step_metrics(req: StepMetricsRequest):
         ORDER BY step ASC
     """
 
-    group_homogeneity_rows = con.execute(group_homogeneity_query, params).fetchall()
+    group_homogeneity_rows = con.execute(group_homogeneity_query, params + tag_filter_params).fetchall()
     group_homogeneity_by_step = {
         row[0]: {
             "group_length_cv_mean": row[1],
@@ -4412,13 +4442,13 @@ def get_step_metrics(req: StepMetricsRequest):
     # Only considers non-discarded samples (from samples_data table)
     gini_query = f"""
         WITH ranked AS (
-            SELECT 
+            SELECT
                 step, group_id, reward,
                 ROW_NUMBER() OVER (PARTITION BY step, group_id ORDER BY reward) as rnk,
                 COUNT(*) OVER (PARTITION BY step, group_id) as n,
                 SUM(reward) OVER (PARTITION BY step, group_id) as sum_reward
             FROM samples_data
-            WHERE run_id = ? AND reward IS NOT NULL {step_filter}
+            WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
         ),
         gini_per_group AS (
             SELECT 
@@ -4439,7 +4469,7 @@ def get_step_metrics(req: StepMetricsRequest):
         ORDER BY step ASC
     """
     
-    gini_rows = con.execute(gini_query, params).fetchall()
+    gini_rows = con.execute(gini_query, params + tag_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
     
     # Base column names for samples_data-based metrics
@@ -5784,6 +5814,39 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     multi_tag_sql, multi_tag_params = _build_multi_tag_filter()
     multi_tag_sql_gm, multi_tag_params_gm = _build_multi_tag_filter("gm.")
 
+    # Group-level tag filter for prompts table (which has group_id but not sample_idx).
+    # Joins through samples_data to map sample_idx tags to group_id.
+    def _build_multi_tag_filter_group(prefix: str = "") -> tuple[str, list]:
+        if not req.tag_filters:
+            return "", []
+        rid_col = f"{prefix}run_id" if prefix else "run_id"
+        step_col = f"{prefix}step" if prefix else "step"
+        gid_col = f"{prefix}group_id" if prefix else "group_id"
+        conditions = []
+        params_out: list = []
+        for tag_name, tag_values in req.tag_filters.items():
+            if tag_values:
+                placeholders = ", ".join(["?"] * len(tag_values))
+                conditions.append(
+                    f"SELECT DISTINCT run_id, step, sample_idx FROM sample_tags "
+                    f"WHERE tag_name = ? AND tag_value IN ({placeholders})"
+                )
+                params_out.extend([tag_name] + tag_values)
+        if not conditions:
+            return "", []
+        subquery = conditions[0]
+        for cond in conditions[1:]:
+            subquery = f"({subquery}) INTERSECT ({cond})"
+        # Map sample_idx back to group_id via samples_data
+        group_subquery = (
+            f"SELECT DISTINCT sd.run_id, sd.step, sd.group_id "
+            f"FROM samples_data sd "
+            f"WHERE (sd.run_id, sd.step, sd.sample_idx) IN ({subquery})"
+        )
+        return f" AND ({rid_col}, {step_col}, {gid_col}) IN ({group_subquery})", params_out
+
+    multi_tag_sql_group, multi_tag_params_group = _build_multi_tag_filter_group()
+
     # =====================================================================
     # 2. Available rollout metric names per run
     # =====================================================================
@@ -5803,10 +5866,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(reward), STDDEV_SAMP(reward), MIN(reward), MAX(reward),
             AVG(advantage), STDDEV_SAMP(advantage), MIN(advantage), MAX(advantage)
         FROM samples_data
-        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter}
+        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall()
+    """, a_params + multi_tag_params).fetchall()
 
     # Track (run_id, step) pairs from base rows for joining other tables
     base_keys: set[tuple[str, int]] = set()
@@ -5828,12 +5891,12 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM (
             SELECT run_id, step, sample_idx, SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter}
+            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
             GROUP BY run_id, step, sample_idx
         )
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         completion_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -5846,10 +5909,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(tokens_prompt), STDDEV_SAMP(tokens_prompt),
             MIN(tokens_prompt), MAX(tokens_prompt)
         FROM prompts
-        WHERE run_id IN ({a_in_ph}) {step_filter}
+        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql_group}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params_group).fetchall():
         prompt_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -5862,10 +5925,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(total_tokens), STDDEV_SAMP(total_tokens),
             MIN(total_tokens), MAX(total_tokens)
         FROM samples_data
-        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter}
+        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         length_sum_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -5878,10 +5941,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx), 0)
         FROM rollouts
-        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter}
+        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         stop_reason_map[(row[0], row[1])] = row[2]
 
     # =====================================================================
@@ -5897,7 +5960,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 sample_idx,
                 SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter}
+            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
             GROUP BY run_id, step, group_id, sample_idx
         ),
         group_stats AS (
@@ -5966,7 +6029,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM group_metrics
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         group_homogeneity_map[(row[0], row[1])] = (row[2], row[3], row[4])
 
     # =====================================================================
@@ -5981,7 +6044,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 COUNT(*) OVER (PARTITION BY run_id, step, group_id) as n,
                 SUM(reward) OVER (PARTITION BY run_id, step, group_id) as sum_reward
             FROM samples_data
-            WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter}
+            WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
         ),
         gini_per_group AS (
             SELECT
@@ -5999,7 +6062,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM gini_per_group
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         gini_map[(row[0], row[1])] = row[2]
 
     # Emit joined metrics for each base-row step
