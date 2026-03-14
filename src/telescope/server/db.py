@@ -595,6 +595,17 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # Custom metrics templates
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS custom_metrics_templates (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            layout_json TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT
+        );
+    """)
+
     # Ingested tails table - tracks which tail indices have been ingested for each run
     # Each tail represents a 5-second interval of events uploaded by the trainer
     # Stored as a single JSON array per run to avoid row-group bloat from many small inserts
@@ -1988,6 +1999,72 @@ def set_custom_metrics_layout(con: duckdb.DuckDBPyConnection, layout: dict):
             layout_json = EXCLUDED.layout_json,
             updated_at = EXCLUDED.updated_at
     """, [layout_json, updated_at])
+
+
+def list_custom_metrics_templates(con: duckdb.DuckDBPyConnection) -> list[dict]:
+    """List all custom metrics templates (id, name, updated_at)."""
+    rows = con.execute(
+        "SELECT id, name, updated_at FROM custom_metrics_templates ORDER BY name"
+    ).fetchall()
+    return [{"id": row[0], "name": row[1], "updated_at": row[2]} for row in rows]
+
+
+def get_custom_metrics_template(con: duckdb.DuckDBPyConnection, template_id: str) -> dict | None:
+    """Get a single custom metrics template by ID."""
+    row = con.execute(
+        "SELECT id, name, layout_json, updated_at FROM custom_metrics_templates WHERE id = ?",
+        [template_id],
+    ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "name": row[1], "layout": json.loads(row[2]), "updated_at": row[3]}
+
+
+def create_custom_metrics_template(
+    con: duckdb.DuckDBPyConnection, template_id: str, name: str, layout: dict
+):
+    """Create a new custom metrics template."""
+    from datetime import datetime
+
+    now = datetime.utcnow().isoformat()
+    layout_json = json.dumps(layout, separators=(",", ":"))
+    con.execute(
+        """
+        INSERT INTO custom_metrics_templates (id, name, layout_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [template_id, name, layout_json, now, now],
+    )
+
+
+def update_custom_metrics_template_layout(
+    con: duckdb.DuckDBPyConnection, template_id: str, layout: dict
+):
+    """Update an existing template's layout."""
+    from datetime import datetime
+
+    now = datetime.utcnow().isoformat()
+    layout_json = json.dumps(layout, separators=(",", ":"))
+    con.execute(
+        "UPDATE custom_metrics_templates SET layout_json = ?, updated_at = ? WHERE id = ?",
+        [layout_json, now, template_id],
+    )
+
+
+def rename_custom_metrics_template(con: duckdb.DuckDBPyConnection, template_id: str, name: str):
+    """Rename a custom metrics template."""
+    from datetime import datetime
+
+    now = datetime.utcnow().isoformat()
+    con.execute(
+        "UPDATE custom_metrics_templates SET name = ?, updated_at = ? WHERE id = ?",
+        [name, now, template_id],
+    )
+
+
+def delete_custom_metrics_template(con: duckdb.DuckDBPyConnection, template_id: str):
+    """Delete a custom metrics template."""
+    con.execute("DELETE FROM custom_metrics_templates WHERE id = ?", [template_id])
 
 
 def insert_known_project(con: duckdb.DuckDBPyConnection, project: str) -> bool:

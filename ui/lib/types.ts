@@ -711,3 +711,20 @@ export interface CustomMetricsLayout {
 export interface CustomMetricsLayoutResponse {
   layout: CustomMetricsLayout | null
 }
+
+export interface CustomMetricsTemplateSummary {
+  id: string
+  name: string
+  updated_at: string | null
+}
+
+export interface CustomMetricsTemplatesResponse {
+  templates: CustomMetricsTemplateSummary[]
+}
+
+export interface CustomMetricsTemplateResponse {
+  id: string
+  name: string
+  layout: CustomMetricsLayout
+  updated_at: string | null
+}

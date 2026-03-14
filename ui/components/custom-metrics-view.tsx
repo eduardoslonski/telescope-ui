@@ -51,7 +51,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useCustomMetricsLayout, useStepTimes } from "@/hooks/use-run-data"
+import { useCustomMetricsLayout, useCustomMetricsTemplate, useStepTimes } from "@/hooks/use-run-data"
 import { MetricChart, EvalMetricChart, DistributionOverTimeChart } from "@/components/step-metrics-charts"
 import type {
   CustomMetricsLayout,
@@ -436,6 +436,14 @@ export function buildPlotCatalog(
 
 async function saveLayout(layout: CustomMetricsLayout) {
   await fetch(`${API_BASE}/custom-metrics-layout`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ layout }),
+  })
+}
+
+async function saveTemplateLayout(templateId: string, layout: CustomMetricsLayout) {
+  await fetch(`${API_BASE}/custom-metrics-templates/${templateId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ layout }),
@@ -1333,6 +1341,9 @@ export function CustomMetricsView({
   evalsList,
   newSectionTrigger,
   availableSampleTags,
+  activeTemplateId,
+  layoutSnapshotTrigger,
+  onLayoutSnapshot,
 }: {
   runs: Array<{
     runPath: string
@@ -1356,16 +1367,40 @@ export function CustomMetricsView({
   }>
   newSectionTrigger: number
   availableSampleTags?: Record<string, string[]>
+  activeTemplateId: string | null
+  layoutSnapshotTrigger: number
+  onLayoutSnapshot: (layout: CustomMetricsLayout) => void
 }) {
   const queryClient = useQueryClient()
   const { data: layoutData, isLoading: layoutLoading } = useCustomMetricsLayout()
+  const { data: templateData } = useCustomMetricsTemplate(activeTemplateId)
   const [layout, setLayout] = useState<CustomMetricsLayout>({ sections: [] })
   const [newSectionOpen, setNewSectionOpen] = useState(false)
   const [layoutSynced, setLayoutSynced] = useState(false)
 
-  // Sync from server on first load (render-time state adjustment)
-  if (!layoutSynced && layoutData) {
+  // Track which template was last synced to detect template switches
+  const [syncedTemplateId, setSyncedTemplateId] = useState<string | null | undefined>(undefined)
+
+  // Sync from server on first load or when switching templates (render-time state adjustment)
+  if (activeTemplateId !== syncedTemplateId) {
+    // Template changed — need to resync
+    if (activeTemplateId === null) {
+      // Switching to default
+      if (layoutData) {
+        setSyncedTemplateId(null)
+        setLayout(layoutData.layout ?? { sections: [] })
+      }
+    } else {
+      // Switching to a named template
+      if (templateData && templateData.id === activeTemplateId) {
+        setSyncedTemplateId(activeTemplateId)
+        setLayout(templateData.layout ?? { sections: [] })
+      }
+    }
+  } else if (!layoutSynced && activeTemplateId === null && layoutData) {
+    // Initial sync for default layout
     setLayoutSynced(true)
+    setSyncedTemplateId(null)
     if (layoutData.layout) {
       setLayout(layoutData.layout)
     }
@@ -1378,23 +1413,47 @@ export function CustomMetricsView({
     setNewSectionOpen(true)
   }
 
+  // Provide layout snapshot when requested by parent (for save-as-template)
+  const [prevSnapshotTrigger, setPrevSnapshotTrigger] = useState(layoutSnapshotTrigger)
+  if (layoutSnapshotTrigger !== prevSnapshotTrigger) {
+    setPrevSnapshotTrigger(layoutSnapshotTrigger)
+    onLayoutSnapshot(layout)
+  }
+
   // Debounced auto-save
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingLayoutRef = useRef<CustomMetricsLayout | null>(null)
+  // Keep a ref to activeTemplateId so the debounced callback uses the latest value
+  const activeTemplateIdRef = useRef(activeTemplateId)
+  activeTemplateIdRef.current = activeTemplateId
 
   const persistLayout = useCallback(
     (newLayout: CustomMetricsLayout) => {
       setLayout(newLayout)
-      // Optimistically update the React Query cache so that if the component
-      // unmounts and remounts before the debounced save fires, it will pick up
-      // the latest layout from the cache instead of stale server data.
-      queryClient.setQueryData(["custom-metrics-layout"], { layout: newLayout })
+      const tid = activeTemplateIdRef.current
+      if (tid === null) {
+        // Optimistically update the React Query cache for default layout
+        queryClient.setQueryData(["custom-metrics-layout"], { layout: newLayout })
+      } else {
+        // Optimistically update the React Query cache for the template
+        queryClient.setQueryData(
+          ["custom-metrics-template", tid],
+          (old: { id: string; name: string; layout: CustomMetricsLayout; updated_at: string | null } | undefined) =>
+            old ? { ...old, layout: newLayout } : old,
+        )
+      }
       pendingLayoutRef.current = newLayout
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
       saveTimeoutRef.current = setTimeout(async () => {
         if (pendingLayoutRef.current) {
-          await saveLayout(pendingLayoutRef.current)
+          const layoutToSave = pendingLayoutRef.current
           pendingLayoutRef.current = null
+          const currentTid = activeTemplateIdRef.current
+          if (currentTid === null) {
+            await saveLayout(layoutToSave)
+          } else {
+            await saveTemplateLayout(currentTid, layoutToSave)
+          }
         }
       }, 500)
     },
@@ -1409,8 +1468,14 @@ export function CustomMetricsView({
         clearTimeout(saveTimeoutRef.current)
       }
       if (pendingLayoutRef.current) {
-        saveLayout(pendingLayoutRef.current)
+        const layoutToSave = pendingLayoutRef.current
         pendingLayoutRef.current = null
+        const currentTid = activeTemplateIdRef.current
+        if (currentTid === null) {
+          saveLayout(layoutToSave)
+        } else {
+          saveTemplateLayout(currentTid, layoutToSave)
+        }
       }
     }
   }, [])

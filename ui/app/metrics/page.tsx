@@ -1,13 +1,41 @@
 
-import { useState, useMemo, useEffect, useRef } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback } from "react"
 import { formatDurationHms } from "@/lib/format"
 import { useAtom, useAtomValue } from "jotai"
+import { useQueryClient } from "@tanstack/react-query"
 import { Plus } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { NoRunSelectedState } from "@/components/no-run-selected-state"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { ToggleWithInput } from "@/components/ui/toggle-with-input"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
+import { API_BASE } from "@/lib/constants"
 import { StepMetricsCharts } from "@/components/step-metrics-charts"
 import { CustomMetricsView } from "@/components/custom-metrics-view"
 import {
@@ -21,9 +49,17 @@ import {
   metricsMaxTimeAtom,
   metricsScrollTopAtom,
   metricsViewModeAtom,
+  metricsActiveTemplateIdAtom,
+  metricsActiveTemplateNameAtom,
   hoveredRunIdAtom,
 } from "@/lib/atoms"
-import { useRunSummary, useRuns, useCustomMetricsLayout } from "@/hooks/use-run-data"
+import {
+  useRunSummary,
+  useRuns,
+  useCustomMetricsLayout,
+  useCustomMetricsTemplates,
+} from "@/hooks/use-run-data"
+import type { CustomMetricsTemplateSummary } from "@/lib/types"
 
 const formatDuration = formatDurationHms
 
@@ -68,6 +104,96 @@ export default function MetricsPage() {
 
   // Ref to the CustomMetricsView to trigger "New Section" from header
   const [newSectionTrigger, setNewSectionTrigger] = useState(0)
+
+  // Template state
+  const queryClient = useQueryClient()
+  const [activeTemplateId, setActiveTemplateId] = useAtom(metricsActiveTemplateIdAtom)
+  const [activeTemplateName, setActiveTemplateName] = useAtom(metricsActiveTemplateNameAtom)
+  const { data: templatesData } = useCustomMetricsTemplates()
+  const templates = templatesData?.templates ?? []
+  const [loadTemplateOpen, setLoadTemplateOpen] = useState(false)
+  const [nameDialogOpen, setNameDialogOpen] = useState(false)
+  const [nameDialogMode, setNameDialogMode] = useState<"new" | "duplicate" | "rename">("new")
+  const [nameDialogValue, setNameDialogValue] = useState("")
+  const [deleteTemplateOpen, setDeleteTemplateOpen] = useState(false)
+  const [layoutSnapshotTrigger, setLayoutSnapshotTrigger] = useState(0)
+  const layoutSnapshotCallbackRef = useRef<((layout: unknown) => void) | null>(null)
+  const pendingSaveLayoutRef = useRef<unknown>(null)
+
+  const openNameDialog = useCallback((mode: "new" | "duplicate" | "rename") => {
+    setNameDialogMode(mode)
+    setNameDialogValue(mode === "rename" ? (activeTemplateName ?? "") : "")
+    if (mode === "new") {
+      pendingSaveLayoutRef.current = { sections: [] }
+      setNameDialogOpen(true)
+    } else if (mode === "duplicate") {
+      layoutSnapshotCallbackRef.current = (currentLayout: unknown) => {
+        layoutSnapshotCallbackRef.current = null
+        pendingSaveLayoutRef.current = currentLayout
+        setNameDialogOpen(true)
+      }
+      setLayoutSnapshotTrigger((n) => n + 1)
+    } else {
+      setNameDialogOpen(true)
+    }
+  }, [activeTemplateName])
+
+  const handleNameDialogSubmit = useCallback(async () => {
+    const name = nameDialogValue.trim()
+    if (!name) return
+
+    if (nameDialogMode === "new" || nameDialogMode === "duplicate") {
+      const layout = pendingSaveLayoutRef.current ?? { sections: [] }
+      const res = await fetch(`${API_BASE}/custom-metrics-templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, layout }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setActiveTemplateId(data.id)
+        setActiveTemplateName(data.name)
+        queryClient.invalidateQueries({ queryKey: ["custom-metrics-templates"] })
+      }
+      pendingSaveLayoutRef.current = null
+    } else if (nameDialogMode === "rename" && activeTemplateId) {
+      const res = await fetch(`${API_BASE}/custom-metrics-templates/${activeTemplateId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      })
+      if (res.ok) {
+        setActiveTemplateName(name)
+        queryClient.invalidateQueries({ queryKey: ["custom-metrics-templates"] })
+      }
+    }
+    setNameDialogOpen(false)
+  }, [nameDialogValue, nameDialogMode, activeTemplateId, setActiveTemplateId, setActiveTemplateName, queryClient])
+
+  const handleLoadTemplate = useCallback(
+    (template: CustomMetricsTemplateSummary | null) => {
+      if (template === null) {
+        setActiveTemplateId(null)
+        setActiveTemplateName(null)
+      } else {
+        setActiveTemplateId(template.id)
+        setActiveTemplateName(template.name)
+      }
+      setLoadTemplateOpen(false)
+    },
+    [setActiveTemplateId, setActiveTemplateName],
+  )
+
+  const handleDeleteTemplate = useCallback(async () => {
+    if (!activeTemplateId) return
+    await fetch(`${API_BASE}/custom-metrics-templates/${activeTemplateId}`, {
+      method: "DELETE",
+    })
+    setActiveTemplateId(null)
+    setActiveTemplateName(null)
+    queryClient.invalidateQueries({ queryKey: ["custom-metrics-templates"] })
+    setDeleteTemplateOpen(false)
+  }, [activeTemplateId, setActiveTemplateId, setActiveTemplateName, queryClient])
 
   // EMA settings (persisted in atoms)
   const [showEma, setShowEma] = useAtom(metricsShowEmaAtom)
@@ -185,15 +311,55 @@ export default function MetricsPage() {
               </ToggleGroupItem>
             </ToggleGroup>
             {viewMode === "custom" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs px-2"
-                onClick={() => setNewSectionTrigger((n) => n + 1)}
-              >
-                <Plus className="h-3 w-3 mr-1" />
-                New Section
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs px-2"
+                  onClick={() => setNewSectionTrigger((n) => n + 1)}
+                >
+                  <Plus className="h-3 w-3 mr-1" />
+                  New Section
+                </Button>
+                <div className="w-px h-4 bg-border mx-0.5" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-7 text-xs px-2">
+                      Templates
+                      {activeTemplateName && (
+                        <span className="ml-1 text-muted-foreground">
+                          ({activeTemplateName})
+                        </span>
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem onClick={() => setLoadTemplateOpen(true)}>
+                      Load
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => openNameDialog("new")}>
+                      New
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => openNameDialog("duplicate")}>
+                      Duplicate
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => openNameDialog("rename")}
+                      disabled={!activeTemplateId}
+                    >
+                      Rename
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setDeleteTemplateOpen(true)}
+                      disabled={!activeTemplateId}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
             )}
             <div className="w-px h-4 bg-border mx-0.5" />
             <ToggleGroup
@@ -329,10 +495,117 @@ export default function MetricsPage() {
               evalsList={evalsList}
               availableSampleTags={availableSampleTags}
               newSectionTrigger={newSectionTrigger}
+              activeTemplateId={activeTemplateId}
+              layoutSnapshotTrigger={layoutSnapshotTrigger}
+              onLayoutSnapshot={(layout) => {
+                if (layoutSnapshotCallbackRef.current) {
+                  layoutSnapshotCallbackRef.current(layout)
+                }
+              }}
             />
           )}
         </div>
       </div>
+
+      {/* Load Template Dialog */}
+      <Dialog open={loadTemplateOpen} onOpenChange={setLoadTemplateOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>Load Template</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-1 max-h-[300px] overflow-y-auto">
+            <button
+              className={cn(
+                "text-left px-3 py-2 rounded-md text-sm hover:bg-accent transition-colors",
+                activeTemplateId === null && "bg-accent font-medium",
+              )}
+              onClick={() => handleLoadTemplate(null)}
+            >
+              Default
+            </button>
+            {templates.map((t) => (
+              <button
+                key={t.id}
+                className={cn(
+                  "text-left px-3 py-2 rounded-md text-sm hover:bg-accent transition-colors",
+                  activeTemplateId === t.id && "bg-accent font-medium",
+                )}
+                onClick={() => handleLoadTemplate(t)}
+              >
+                {t.name}
+              </button>
+            ))}
+            {templates.length === 0 && (
+              <p className="text-xs text-muted-foreground px-3 py-2">
+                No saved templates yet.
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Name Dialog (New / Duplicate / Rename) */}
+      <Dialog open={nameDialogOpen} onOpenChange={setNameDialogOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>
+              {nameDialogMode === "new"
+                ? "New Template"
+                : nameDialogMode === "duplicate"
+                  ? "Duplicate Template"
+                  : "Rename Template"}
+            </DialogTitle>
+          </DialogHeader>
+          <Input
+            placeholder="Template name"
+            value={nameDialogValue}
+            onChange={(e) => setNameDialogValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && nameDialogValue.trim()) {
+                handleNameDialogSubmit()
+              }
+            }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setNameDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleNameDialogSubmit}
+              disabled={!nameDialogValue.trim()}
+            >
+              {nameDialogMode === "rename" ? "Rename" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Template Confirmation */}
+      <AlertDialog open={deleteTemplateOpen} onOpenChange={setDeleteTemplateOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Template</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete &ldquo;{activeTemplateName}&rdquo;? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteTemplate}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

@@ -107,6 +107,9 @@ export const metricsMaxStepAtom = atom<number>(100)
 export const metricsMaxTimeAtom = atom<number>(3600) // in seconds
 export const metricsScrollTopAtom = atom<number>(0)
 export const metricsViewModeAtom = atom<"all" | "custom">("all")
+// Active custom metrics template ID (null = default layout)
+export const metricsActiveTemplateIdAtom = atom<string | null>(null)
+export const metricsActiveTemplateNameAtom = atom<string | null>(null)
 export interface MetricsChartFilterState {
   ignoreOutliers: boolean
   ignoreFirstStep: boolean

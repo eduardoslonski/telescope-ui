@@ -31,6 +31,8 @@ import type {
   CpuMetric,
   VllmMetric,
   CustomMetricsLayoutResponse,
+  CustomMetricsTemplatesResponse,
+  CustomMetricsTemplateResponse,
 } from "@/lib/types"
 
 // ============================================================================
@@ -989,6 +991,37 @@ export function useCustomMetricsLayout() {
       }
       return response.json()
     },
+    staleTime: 60000,
+  })
+}
+
+export function useCustomMetricsTemplates() {
+  return useQuery<CustomMetricsTemplatesResponse>({
+    queryKey: ["custom-metrics-templates"],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/custom-metrics-templates`)
+      if (!response.ok) {
+        throw new Error("Failed to fetch custom metrics templates")
+      }
+      return response.json()
+    },
+    staleTime: 60000,
+  })
+}
+
+export function useCustomMetricsTemplate(templateId: string | null) {
+  return useQuery<CustomMetricsTemplateResponse>({
+    queryKey: ["custom-metrics-template", templateId],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/custom-metrics-templates/${templateId}`
+      )
+      if (!response.ok) {
+        throw new Error("Failed to fetch template")
+      }
+      return response.json()
+    },
+    enabled: !!templateId,
     staleTime: 60000,
   })
 }

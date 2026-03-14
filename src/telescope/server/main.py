@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,18 +42,24 @@ from .ingest import (
 from .db import (
     compact_database,
     connect,
+    create_custom_metrics_template,
     decompress_blob,
+    delete_custom_metrics_template,
     get_custom_metrics_layout,
+    get_custom_metrics_template,
     get_database_info,
     get_wandb_api_key,
     get_wandb_key_from_netrc,
     get_wandb_key_source,
+    list_custom_metrics_templates,
     recover_from_failed_compaction,
+    rename_custom_metrics_template,
     set_custom_metrics_layout,
     set_run_removed,
     set_wandb_api_key,
     set_wandb_key_source,
     delete_wandb_api_key,
+    update_custom_metrics_template_layout,
     update_run_color,
 )
 from .run_code import (
@@ -497,6 +504,84 @@ def put_custom_layout(req: CustomMetricsLayoutRequest):
     """Save/update the global custom metrics dashboard layout."""
     con = connect()
     set_custom_metrics_layout(con, req.layout)
+    con.close()
+    return {"ok": True}
+
+
+@app.get("/custom-metrics-templates")
+def list_templates():
+    """List all saved custom metrics templates."""
+    con = connect()
+    templates = list_custom_metrics_templates(con)
+    con.close()
+    return {"templates": templates}
+
+
+class CreateTemplateRequest(BaseModel):
+    name: str
+    layout: dict
+
+
+@app.post("/custom-metrics-templates")
+def create_template(req: CreateTemplateRequest):
+    """Create a new custom metrics template."""
+    con = connect()
+    template_id = uuid.uuid4().hex[:12]
+    create_custom_metrics_template(con, template_id, req.name, req.layout)
+    con.close()
+    return {"id": template_id, "name": req.name}
+
+
+class UpdateTemplateLayoutRequest(BaseModel):
+    layout: dict
+
+
+@app.put("/custom-metrics-templates/{template_id}")
+def update_template(template_id: str, req: UpdateTemplateLayoutRequest):
+    """Update a template's layout."""
+    con = connect()
+    tmpl = get_custom_metrics_template(con, template_id)
+    if not tmpl:
+        con.close()
+        raise HTTPException(status_code=404, detail="Template not found")
+    update_custom_metrics_template_layout(con, template_id, req.layout)
+    con.close()
+    return {"ok": True}
+
+
+@app.get("/custom-metrics-templates/{template_id}")
+def get_template(template_id: str):
+    """Get a single template by ID."""
+    con = connect()
+    tmpl = get_custom_metrics_template(con, template_id)
+    con.close()
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tmpl
+
+
+class RenameTemplateRequest(BaseModel):
+    name: str
+
+
+@app.patch("/custom-metrics-templates/{template_id}")
+def rename_template(template_id: str, req: RenameTemplateRequest):
+    """Rename a custom metrics template."""
+    con = connect()
+    tmpl = get_custom_metrics_template(con, template_id)
+    if not tmpl:
+        con.close()
+        raise HTTPException(status_code=404, detail="Template not found")
+    rename_custom_metrics_template(con, template_id, req.name)
+    con.close()
+    return {"ok": True}
+
+
+@app.delete("/custom-metrics-templates/{template_id}")
+def delete_template(template_id: str):
+    """Delete a custom metrics template."""
+    con = connect()
+    delete_custom_metrics_template(con, template_id)
     con.close()
     return {"ok": True}
 
