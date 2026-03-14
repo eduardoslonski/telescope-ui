@@ -153,6 +153,7 @@ export default function MetricsPage() {
   const availableRewardNames = summaryData?.available_rollout_metric_names ?? []
   const customMetricSections = stepMetricsInfo?.custom_metric_sections ?? {}
   const evalsList = summaryData?.eval_info?.evals ?? []
+  const availableSampleTags = summaryData?.available_sample_tags ?? {}
 
   // No run selected
   if (!selectedRunPath) {
@@ -306,6 +307,7 @@ export default function MetricsPage() {
                 maxLimitEnabled && xAxisMode === "time" ? maxTime : undefined
               }
               evalsList={evalsList}
+              availableSampleTags={availableSampleTags}
             />
           ) : (
             <CustomMetricsView
@@ -325,6 +327,7 @@ export default function MetricsPage() {
                 maxLimitEnabled && xAxisMode === "time" ? maxTime : undefined
               }
               evalsList={evalsList}
+              availableSampleTags={availableSampleTags}
               newSectionTrigger={newSectionTrigger}
             />
           )}

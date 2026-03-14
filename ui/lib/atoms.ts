@@ -92,6 +92,7 @@ export interface MetricsChartFilterState {
   ignoreFirstStep: boolean
   minY: number | null
   maxY: number | null
+  tagFilters: Record<string, string[]>
 }
 export const metricsChartFiltersAtom = atom<
   Record<string, MetricsChartFilterState>

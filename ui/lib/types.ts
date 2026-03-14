@@ -109,6 +109,14 @@ export interface GoldenAnswer {
   value: string | null
 }
 
+export interface SampleTag {
+  step?: number
+  sample_idx: number
+  env: string | null
+  tag_name: string
+  tag_value: string
+}
+
 export interface InfoTurn {
   step?: number
   sample_idx: number
@@ -281,6 +289,7 @@ export interface RolloutsResponse {
   samples_data: SampleData[]
   rollout_metrics: RolloutMetric[]
   golden_answers: GoldenAnswer[]
+  sample_tags: SampleTag[]
   info_turns: InfoTurn[]
   available_steps: number[]
   total_steps: number
@@ -295,6 +304,7 @@ export interface RolloutsDiscardedResponse {
   samples_data: SampleDataDiscarded[]
   rollout_metrics: RolloutMetricDiscarded[]
   golden_answers: GoldenAnswerDiscarded[]
+  sample_tags: SampleTag[]
   info_turns: InfoTurnDiscarded[]
   available_trainer_steps: number[]
   total_trainer_steps: number
@@ -309,6 +319,7 @@ export interface EvalsResponse {
   samples_data: EvalSampleData[]
   rollout_metrics: EvalRolloutMetric[]
   golden_answers: EvalGoldenAnswer[]
+  sample_tags: SampleTag[]
   info_turns: EvalInfoTurn[]
   available_steps: number[]
   available_eval_names: string[]
@@ -479,6 +490,7 @@ export interface RunSummary {
   waiting_buckets: number[]
   /** Per-(env, metric_name) min/max computed from actual rollouts_metrics data */
   data_metric_ranges: Record<string, Record<string, { min: number; max: number }>>
+  available_sample_tags: Record<string, string[]>
   is_tracking: boolean
   is_syncing: boolean
   sync_status: SyncStatus | null
@@ -567,6 +579,7 @@ export interface StepMetricsResponse {
   total_returned: number
   available_metrics: string[]
   available_rollout_metric_names: string[]
+  available_sample_tags: Record<string, string[]>
   available_custom_metrics: string[]
   custom_metric_sections: Record<string, Record<string, string[]>>
   min_step: number | null

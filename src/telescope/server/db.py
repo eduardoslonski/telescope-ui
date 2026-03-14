@@ -246,6 +246,18 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
+    # Sample tags table - normalized tags with dynamic names per environment
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sample_tags (
+            run_id TEXT,
+            step BIGINT,
+            sample_idx BIGINT,
+            env TEXT,
+            tag_name TEXT,
+            tag_value TEXT
+        );
+    """)
+
     # System metrics GPU table - stores GPU metrics from trainer
     con.execute("""
         CREATE TABLE IF NOT EXISTS system_metrics_gpu (
@@ -379,6 +391,18 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
+    # Discarded sample tags table - normalized tags for discarded rollouts
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sample_tags_discarded (
+            run_id TEXT,
+            sample_idx BIGINT,
+            env TEXT,
+            tag_name TEXT,
+            tag_value TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
     # Info turns table - stores per-turn info items (stderr, stdout, summary, etc.)
     # Multiple rows can exist for the same turn (one per info_key)
     con.execute("""
@@ -490,6 +514,21 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
+    # Eval sample tags table - one row per tag per eval completion (inside events zips)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sample_tags_eval (
+            run_id TEXT,
+            step BIGINT,
+            eval_name TEXT,
+            sample_idx BIGINT,
+            completion_idx BIGINT,
+            env TEXT,
+            tag_name TEXT,
+            tag_value TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
     # Eval info turns table - per-turn text info for eval completions (inside events zips)
     con.execute("""
         CREATE TABLE IF NOT EXISTS info_turns_eval (
@@ -1008,6 +1047,48 @@ def insert_golden_answers(con: duckdb.DuckDBPyConnection, run_id: str, answers: 
     log.info(f"[DB] Inserted {len(answers)} golden answers in {elapsed:.2f}s")
 
 
+def insert_sample_tags(con: duckdb.DuckDBPyConnection, run_id: str, tags: list[dict]):
+    """Insert sample tags into the database, ignoring duplicates using fast bulk insert."""
+    if not tags:
+        return
+
+    log.info(f"[DB] Inserting {len(tags)} sample tags...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": t.get("step"),
+            "sample_idx": t.get("sample_idx"),
+            "env": t.get("env"),
+            "tag_name": t.get("tag_name"),
+            "tag_value": t.get("tag_value"),
+        }
+        for t in tags
+    ])
+
+    # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
+    df = df.drop_duplicates(subset=["run_id", "step", "sample_idx", "env", "tag_name"])
+    con.execute("""
+        INSERT INTO sample_tags (run_id, step, sample_idx, env, tag_name, tag_value)
+        SELECT d.run_id, d.step, d.sample_idx, d.env, d.tag_name, d.tag_value
+        FROM df d
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM sample_tags st
+            WHERE st.run_id = d.run_id
+              AND st.step = d.step
+              AND st.sample_idx = d.sample_idx
+              AND st.env = d.env
+              AND st.tag_name = d.tag_name
+        )
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tags)} sample tags in {elapsed:.2f}s")
+
+
 def insert_system_metrics_gpu(con: duckdb.DuckDBPyConnection, run_id: str, metrics: list[dict]):
     """Insert GPU system metrics into the database, ignoring duplicates."""
     if not metrics:
@@ -1337,6 +1418,44 @@ def insert_golden_answers_discarded(
     log.info(f"[DB] Inserted {len(answers)} discarded golden answers in {elapsed:.2f}s")
 
 
+def insert_sample_tags_discarded(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    tags: list[dict],
+):
+    """Insert discarded sample tags into the database."""
+    if not tags:
+        return
+
+    log.info(f"[DB] Inserting {len(tags)} discarded sample tags...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "sample_idx": t.get("sample_idx"),
+            "env": t.get("env"),
+            "tag_name": t.get("tag_name"),
+            "tag_value": t.get("tag_value"),
+            "tail_idx": t.get("tail_idx"),
+        }
+        for t in tags
+    ])
+
+    # Insert tags - duplicates are avoided by filtering on ingested_tails before calling this
+    con.execute("""
+        INSERT INTO sample_tags_discarded (
+            run_id, sample_idx, env, tag_name, tag_value, tail_idx
+        )
+        SELECT run_id, sample_idx, env, tag_name, tag_value, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tags)} discarded sample tags in {elapsed:.2f}s")
+
+
 def insert_info_turns(con: duckdb.DuckDBPyConnection, run_id: str, info_turns: list[dict]):
     """Insert info turns into the database, ignoring duplicates using fast bulk insert."""
     if not info_turns:
@@ -1611,6 +1730,46 @@ def insert_golden_answers_eval(
     
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(answers)} eval golden answers in {elapsed:.2f}s")
+
+
+def insert_sample_tags_eval(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    tags: list[dict],
+):
+    """Insert eval sample tags into the database."""
+    if not tags:
+        return
+
+    log.info(f"[DB] Inserting {len(tags)} eval sample tags...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": t.get("step"),
+            "eval_name": t.get("eval_name"),
+            "sample_idx": t.get("sample_idx"),
+            "completion_idx": t.get("completion_idx"),
+            "env": t.get("env"),
+            "tag_name": t.get("tag_name"),
+            "tag_value": t.get("tag_value"),
+            "tail_idx": t.get("tail_idx"),
+        }
+        for t in tags
+    ])
+
+    con.execute("""
+        INSERT INTO sample_tags_eval (
+            run_id, step, eval_name, sample_idx, completion_idx, env, tag_name, tag_value, tail_idx
+        )
+        SELECT
+            run_id, step, eval_name, sample_idx, completion_idx, env, tag_name, tag_value, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tags)} eval sample tags in {elapsed:.2f}s")
 
 
 def insert_info_turns_eval(
