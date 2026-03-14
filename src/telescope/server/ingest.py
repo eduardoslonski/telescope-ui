@@ -95,7 +95,7 @@ EMPTY_KNOWN_PROJECTS_DISCOVERY_SECONDS = 60
 # Runs must have a schema_version tag that exactly matches this value.
 # Runs without a schema_version tag or with a different value are skipped
 # during initial discovery and polling (similar to telescope-ignore).
-SCHEMA_VERSION = "0.1.7"
+SCHEMA_VERSION = "0.1.8"
 
 # Current schema version for each table.
 TABLE_SCHEMA_VERSIONS: dict[str, str] = {
