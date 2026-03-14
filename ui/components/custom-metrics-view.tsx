@@ -713,6 +713,7 @@ export interface SharedChartProps {
   firstStepTimesByRun?: Map<string, number>
   isStepTimesFetching?: boolean
   isStepTimesRefetching?: boolean
+  availableSampleTags?: Record<string, string[]>
 }
 
 // ============================================================================
@@ -823,6 +824,7 @@ export function SortablePlotCard({
           scrollRoot={chartProps.scrollRoot}
           maxStepLimit={chartProps.maxStep}
           maxTimeLimit={chartProps.maxTime}
+          availableSampleTags={chartProps.availableSampleTags}
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
         />
@@ -1330,6 +1332,7 @@ export function CustomMetricsView({
   maxTime,
   evalsList,
   newSectionTrigger,
+  availableSampleTags,
 }: {
   runs: Array<{
     runPath: string
@@ -1352,6 +1355,7 @@ export function CustomMetricsView({
     available_rollout_metric_names: string[]
   }>
   newSectionTrigger: number
+  availableSampleTags?: Record<string, string[]>
 }) {
   const queryClient = useQueryClient()
   const { data: layoutData, isLoading: layoutLoading } = useCustomMetricsLayout()
@@ -1584,6 +1588,7 @@ export function CustomMetricsView({
       firstStepTimesByRun,
       isStepTimesFetching,
       isStepTimesRefetching,
+      availableSampleTags,
     }),
     [
       runs,
@@ -1599,6 +1604,7 @@ export function CustomMetricsView({
       firstStepTimesByRun,
       isStepTimesFetching,
       isStepTimesRefetching,
+      availableSampleTags,
     ],
   )
 

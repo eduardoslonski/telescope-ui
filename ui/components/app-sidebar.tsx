@@ -153,7 +153,9 @@ export function AppSidebar() {
   const setHoveredRunId = useSetAtom(hoveredRunIdAtom)
   const setOverviewShowCodeView = useSetAtom(overviewShowCodeViewAtom)
   const [addRunDialogOpen, setAddRunDialogOpen] = useState(false)
-  const [projectsDialogOpen, setProjectsDialogOpen] = useAtom(knownProjectsDialogOpenAtom)
+  const [projectsDialogOpen, setProjectsDialogOpen] = useAtom(
+    knownProjectsDialogOpenAtom,
+  )
   const [newProjectInput, setNewProjectInput] = useState("")
   const [isAddingProject, setIsAddingProject] = useState(false)
   const [addProjectError, setAddProjectError] = useState<string | null>(null)
@@ -174,7 +176,9 @@ export function AppSidebar() {
     null,
   )
   const [isResyncingRun, setIsResyncingRun] = useState<string | null>(null)
-  const [isSyncingEvalsRun, setIsSyncingEvalsRun] = useState<string | null>(null)
+  const [isSyncingEvalsRun, setIsSyncingEvalsRun] = useState<string | null>(
+    null,
+  )
   const [showOnlySelected, setShowOnlySelected] = useState(false)
   const [runSearchQuery, setRunSearchQuery] = useState("")
   const [configSearchMatchIds, setConfigSearchMatchIds] = useState<
@@ -707,7 +711,10 @@ export function AppSidebar() {
       <div className="flex flex-col h-screen w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground fixed left-0 top-0">
         {/* Header */}
         <div className="py-2.5 px-4 border-b border-sidebar-border shrink-0">
-          <Link to="/about" className="flex items-center h-7 hover:opacity-80 transition-opacity">
+          <Link
+            to="/about"
+            className="flex items-center h-7 hover:opacity-80 transition-opacity"
+          >
             <img src="/logo-full.svg" alt="Telescope" className="h-5" />
           </Link>
         </div>
@@ -1423,34 +1430,32 @@ export function AppSidebar() {
           <div className="overflow-y-auto -mx-6 px-6">
             <div className="flex flex-col gap-1 mb-3">
               <div className="flex gap-2">
-              <Input
-                className="h-7 text-xs flex-1"
-                placeholder="entity/project"
-                value={newProjectInput}
-                onChange={(e) => {
-                  setNewProjectInput(e.target.value)
-                  if (addProjectError) setAddProjectError(null)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddProject()
-                }}
-              />
-              <Button
-                variant="default"
-                size="sm"
-                className="h-7 px-3 text-xs"
-                onClick={handleAddProject}
-                disabled={isAddingProject || !newProjectInput.trim()}
-              >
-                {isAddingProject ? (
-                  <Spinner className="h-3 w-3" />
-                ) : (
-                  "Ok"
-                )}
-              </Button>
+                <Input
+                  className="h-7 text-xs flex-1"
+                  placeholder="entity/project"
+                  value={newProjectInput}
+                  onChange={(e) => {
+                    setNewProjectInput(e.target.value)
+                    if (addProjectError) setAddProjectError(null)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddProject()
+                  }}
+                />
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-7 px-3 text-xs"
+                  onClick={handleAddProject}
+                  disabled={isAddingProject || !newProjectInput.trim()}
+                >
+                  {isAddingProject ? <Spinner className="h-3 w-3" /> : "Ok"}
+                </Button>
               </div>
               {addProjectError && (
-                <span className="text-[11px] text-red-500">{addProjectError}</span>
+                <span className="text-[11px] text-red-500">
+                  {addProjectError}
+                </span>
               )}
             </div>
             <div className="space-y-1">
@@ -1464,7 +1469,9 @@ export function AppSidebar() {
                       {p.project}
                     </span>
                     <span className="text-[10px] text-muted-foreground">
-                      {p.source === "user" ? "User-added" : "From existing runs"}
+                      {p.source === "user"
+                        ? "User-added"
+                        : "From existing runs"}
                       {p.added_at &&
                         ` · ${new Date(p.added_at).toLocaleDateString()}`}
                     </span>

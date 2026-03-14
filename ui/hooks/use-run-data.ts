@@ -670,7 +670,8 @@ export function useStepMetricsMultiRun(
   runPaths: string[],
   metricNames: string[] | null,
   enabled: boolean,
-  shouldPoll: boolean
+  shouldPoll: boolean,
+  tagFilters?: Record<string, string[]>
 ) {
   const queryClient = useQueryClient()
   const prevRunPathsRef = useRef<string[]>([])
@@ -686,12 +687,12 @@ export function useStepMetricsMultiRun(
       const prevSet = new Set(prevPaths)
       const isRemovalOnly = runPaths.every((p) => prevSet.has(p))
       if (isRemovalOnly) {
-        const oldKey = ["step-metrics-multi", prevPaths, metricNames]
+        const oldKey = ["step-metrics-multi", prevPaths, metricNames, tagFilters]
         const oldData =
           queryClient.getQueryData<StepMetricsMultiRunResponse>(oldKey)
         if (oldData) {
           const currSet = new Set(runPaths)
-          const newKey = ["step-metrics-multi", runPaths, metricNames]
+          const newKey = ["step-metrics-multi", runPaths, metricNames, tagFilters]
           queryClient.setQueryData<StepMetricsMultiRunResponse>(newKey, {
             runs: oldData.runs.filter((r) => currSet.has(r.run_path)),
           })
@@ -702,16 +703,20 @@ export function useStepMetricsMultiRun(
   }
 
   return useQuery<StepMetricsMultiRunResponse>({
-    queryKey: ["step-metrics-multi", runPaths, metricNames],
+    queryKey: ["step-metrics-multi", runPaths, metricNames, tagFilters],
     queryFn: async () => {
+      const body: Record<string, unknown> = {
+        run_paths: runPaths,
+        metric_names: metricNames,
+        limit: 100000,
+      }
+      if (tagFilters && Object.keys(tagFilters).length > 0) {
+        body.tag_filters = tagFilters
+      }
       const response = await fetch(`${API_BASE}/step-metrics/multi`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          run_paths: runPaths,
-          metric_names: metricNames,
-          limit: 100000,
-        }),
+        body: JSON.stringify(body),
       })
       if (!response.ok) {
         throw new Error("Failed to fetch step metrics (multi-run)")

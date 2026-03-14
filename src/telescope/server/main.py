@@ -382,6 +382,7 @@ class StepMetricsRequest(BaseModel):
     metric_names: list[str] | None = None  # Filter by specific metrics (e.g., reward_sum_mean)
     start_step: int | None = None  # Filter steps after this
     end_step: int | None = None  # Filter steps before this
+    tag_filters: dict[str, list[str]] | None = None  # Filter rollout metrics by sample tags (tag_name -> [values])
     limit: int = 10000
 
 
@@ -390,6 +391,7 @@ class StepMetricsMultiRequest(BaseModel):
     metric_names: list[str] | None = None  # Filter by specific metrics (e.g., reward_sum_mean)
     start_step: int | None = None  # Filter steps after this
     end_step: int | None = None  # Filter steps before this
+    tag_filters: dict[str, list[str]] | None = None  # Filter rollout metrics by sample tags (tag_name -> [values])
     limit: int = 10000
 
 
@@ -921,6 +923,7 @@ def get_rollouts(req: RolloutsRequest):
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
+            "sample_tags": [],
             "info_turns": [],
             "available_steps": [],
             "total_steps": 0,
@@ -928,7 +931,7 @@ def get_rollouts(req: RolloutsRequest):
             "available_rollout_metric_names": [],
             "available_envs": [],
         }
-    
+
     # Fetch prompts
     prompt_rows = con.execute(
         """
@@ -1047,6 +1050,28 @@ def get_rollouts(req: RolloutsRequest):
         for row in golden_rows
     ]
 
+    # Fetch sample tags for this step
+    tags_rows = con.execute(
+        """
+        SELECT step, sample_idx, env, tag_name, tag_value
+        FROM sample_tags
+        WHERE run_id = ? AND step = ?
+        ORDER BY sample_idx, tag_name
+        """,
+        [req.run_path, actual_step],
+    ).fetchall()
+
+    sample_tags = [
+        {
+            "step": row[0],
+            "sample_idx": row[1],
+            "env": row[2],
+            "tag_name": row[3],
+            "tag_value": row[4],
+        }
+        for row in tags_rows
+    ]
+
     # Fetch info turns for this step
     info_rows = con.execute(
         """
@@ -1101,16 +1126,17 @@ def get_rollouts(req: RolloutsRequest):
     log.info(
         f"[API] Returning {len(prompts)} prompts, {len(rollouts)} rollout turns, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
-        f"{len(golden_answers)} golden answers, {len(info_turns)} info turns, "
-        f"{len(available_steps)} steps available"
+        f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
+        f"{len(info_turns)} info turns, {len(available_steps)} steps available"
     )
-    
+
     return {
         "prompts": prompts,
         "rollouts": rollouts,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
+        "sample_tags": sample_tags,
         "info_turns": info_turns,
         "available_steps": available_steps,
         "total_steps": len(available_steps),
@@ -1150,6 +1176,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
+            "sample_tags": [],
             "info_turns": [],
             "available_trainer_steps": [],
             "total_trainer_steps": 0,
@@ -1157,7 +1184,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
             "available_discard_reasons": [],
             "available_envs": [],
         }
-    
+
     # Fetch discarded prompts
     prompt_rows = con.execute(
         """
@@ -1292,6 +1319,31 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         for row in golden_rows
     ]
 
+    # Fetch discarded sample tags for this trainer_step using sample_idx
+    tags_rows = con.execute(
+        """
+        SELECT sample_idx, env, tag_name, tag_value, tail_idx
+        FROM sample_tags_discarded
+        WHERE run_id = ? AND sample_idx IN (
+            SELECT DISTINCT sample_idx FROM rollouts_discarded
+            WHERE run_id = ? AND trainer_step = ?
+        )
+        ORDER BY sample_idx, tag_name
+        """,
+        [req.run_path, req.run_path, actual_step],
+    ).fetchall()
+
+    sample_tags = [
+        {
+            "sample_idx": row[0],
+            "env": row[1],
+            "tag_name": row[2],
+            "tag_value": row[3],
+            "tail_idx": row[4],
+        }
+        for row in tags_rows
+    ]
+
     # Fetch discarded info turns for this trainer_step using sample_idx
     info_rows = con.execute(
         """
@@ -1318,7 +1370,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         }
         for row in info_rows
     ]
-    
+
     # Get available trainer_steps
     steps_result = con.execute(
         """
@@ -1349,16 +1401,18 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
     log.info(
         f"[API] Returning {len(prompts)} discarded prompts, {len(rollouts)} discarded rollout turns, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
-        f"{len(golden_answers)} golden answers, {len(info_turns)} info turns, "
+        f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
+        f"{len(info_turns)} info turns, "
         f"{len(available_trainer_steps)} trainer_steps available"
     )
-    
+
     return {
         "prompts": prompts,
         "rollouts": rollouts,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
+        "sample_tags": sample_tags,
         "info_turns": info_turns,
         "available_trainer_steps": available_trainer_steps,
         "total_trainer_steps": len(available_trainer_steps),
@@ -1380,6 +1434,7 @@ def get_evals(req: EvalsRequest):
         "samples_data": [],
         "rollout_metrics": [],
         "golden_answers": [],
+        "sample_tags": [],
         "info_turns": [],
         "available_steps": [],
         "available_eval_names": [],
@@ -1552,6 +1607,30 @@ def get_evals(req: EvalsRequest):
         for row in golden_rows
     ]
 
+    # Fetch eval sample tags
+    tags_rows = con.execute(
+        """
+        SELECT step, eval_name, sample_idx, completion_idx, env, tag_name, tag_value
+        FROM sample_tags_eval
+        WHERE run_id = ? AND step = ? AND eval_name = ?
+        ORDER BY sample_idx, completion_idx, tag_name
+        """,
+        [req.run_path, actual_step, actual_eval_name],
+    ).fetchall()
+
+    sample_tags = [
+        {
+            "step": row[0],
+            "eval_name": row[1],
+            "sample_idx": row[2],
+            "completion_idx": row[3],
+            "env": row[4],
+            "tag_name": row[5],
+            "tag_value": row[6],
+        }
+        for row in tags_rows
+    ]
+
     # Fetch eval info turns
     info_rows = con.execute(
         """
@@ -1600,7 +1679,8 @@ def get_evals(req: EvalsRequest):
     log.info(
         f"[API] Returning eval data: {len(prompts)} prompts, {len(rollouts)} rollout turns, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
-        f"{len(golden_answers)} golden answers, {len(info_turns)} info turns "
+        f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
+        f"{len(info_turns)} info turns "
         f"for eval={actual_eval_name}, step={actual_step}"
     )
 
@@ -1610,6 +1690,7 @@ def get_evals(req: EvalsRequest):
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
+        "sample_tags": sample_tags,
         "info_turns": info_turns,
         "available_steps": available_steps,
         "available_eval_names": available_eval_names,
@@ -2282,6 +2363,7 @@ def get_sample_details(req: SampleDetailsRequest):
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
+            "sample_tags": [],
             "info_turns": [],
         }
 
@@ -2846,6 +2928,24 @@ def get_run_summary(run_path: str):
         "SELECT DISTINCT env FROM prompts WHERE run_id = ? AND env IS NOT NULL ORDER BY env", [run_path]
     ).fetchall()
     available_envs = [r[0] for r in envs_result]
+
+    # Get available sample tag names and their values
+    tag_names_result = con.execute(
+        """
+        SELECT tag_name, tag_value, COUNT(*) as cnt
+        FROM sample_tags
+        WHERE run_id = ?
+        GROUP BY tag_name, tag_value
+        ORDER BY tag_name, cnt DESC
+        """,
+        [run_path],
+    ).fetchall()
+    available_sample_tags: dict[str, list[str]] = {}
+    for row in tag_names_result:
+        tag_name, tag_value = row[0], row[1]
+        if tag_name not in available_sample_tags:
+            available_sample_tags[tag_name] = []
+        available_sample_tags[tag_name].append(tag_value)
     
     trainer_info = {
         "last_training_step": summary.get("steps/last_training_step"),
@@ -3011,6 +3111,7 @@ def get_run_summary(run_path: str):
         "trainer_bucket_info": trainer_bucket_info,
         "waiting_buckets": waiting_buckets,
         "data_metric_ranges": data_metric_ranges,
+        "available_sample_tags": available_sample_tags,
         "is_tracking": tracking,
         "is_syncing": syncing,
         "sync_status": sync_info,
@@ -4075,7 +4176,53 @@ def get_step_metrics(req: StepMetricsRequest):
         [req.run_path],
     ).fetchall()
     available_rollout_metric_names = [r[0] for r in metric_names_result]
-    
+
+    # Get available sample tag names and their values
+    tag_names_result = con.execute(
+        """
+        SELECT tag_name, tag_value, COUNT(*) as cnt
+        FROM sample_tags
+        WHERE run_id = ?
+        GROUP BY tag_name, tag_value
+        ORDER BY tag_name, cnt DESC
+        """,
+        [req.run_path],
+    ).fetchall()
+    available_sample_tags: dict[str, list[str]] = {}
+    for row in tag_names_result:
+        tag_name, tag_value = row[0], row[1]
+        if tag_name not in available_sample_tags:
+            available_sample_tags[tag_name] = []
+        available_sample_tags[tag_name].append(tag_value)
+
+    # Build tag filter SQL for rollout metrics queries.
+    # _build_tag_filter returns (sql_fragment, params) where the sql_fragment
+    # uses the given prefix for step/sample_idx columns.
+    def _build_tag_filter(prefix: str = "") -> tuple[str, list]:
+        if not req.tag_filters:
+            return "", []
+        step_col = f"{prefix}step" if prefix else "step"
+        sidx_col = f"{prefix}sample_idx" if prefix else "sample_idx"
+        conditions = []
+        params_out: list = []
+        for tag_name, tag_values in req.tag_filters.items():
+            if tag_values:
+                placeholders = ", ".join(["?"] * len(tag_values))
+                conditions.append(
+                    f"SELECT DISTINCT step, sample_idx FROM sample_tags "
+                    f"WHERE run_id = ? AND tag_name = ? AND tag_value IN ({placeholders})"
+                )
+                params_out.extend([req.run_path, tag_name] + tag_values)
+        if not conditions:
+            return "", []
+        subquery = conditions[0]
+        for cond in conditions[1:]:
+            subquery = f"({subquery}) INTERSECT ({cond})"
+        return f" AND ({step_col}, {sidx_col}) IN ({subquery})", params_out
+
+    tag_filter_sql, tag_filter_params = _build_tag_filter()
+    tag_filter_sql_gm, tag_filter_params_gm = _build_tag_filter("gm.")
+
     # Compute base metrics from samples_data table (reward_sum, advantage)
     base_query = f"""
         SELECT 
@@ -4421,7 +4568,7 @@ def get_step_metrics(req: StepMetricsRequest):
             metric_params.append(req.end_step)
         
         metrics_query = f"""
-            SELECT 
+            SELECT
                 step,
                 metric_name,
                 AVG(value) as mean,
@@ -4429,12 +4576,14 @@ def get_step_metrics(req: StepMetricsRequest):
                 MIN(value) as min,
                 MAX(value) as max
             FROM rollouts_metrics
-            WHERE run_id = ? {metric_step_filter}
+            WHERE run_id = ? {metric_step_filter} {tag_filter_sql}
             GROUP BY step, metric_name
             ORDER BY step ASC, metric_name ASC
         """
-        
-        metrics_rows = con.execute(metrics_query, metric_params).fetchall()
+
+        metrics_rows = con.execute(
+            metrics_query, metric_params + tag_filter_params
+        ).fetchall()
         
         for row in metrics_rows:
             step = row[0]
@@ -4473,7 +4622,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     SUM(gm.value) OVER (PARTITION BY gm.step, gm.metric_name, sd.group_id) as sum_value
                 FROM rollouts_metrics gm
                 JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
-                WHERE gm.run_id = ? AND gm.value IS NOT NULL {metric_step_filter}
+                WHERE gm.run_id = ? AND gm.value IS NOT NULL {metric_step_filter} {tag_filter_sql_gm}
             ),
             gini_per_group AS (
                 SELECT 
@@ -4493,7 +4642,9 @@ def get_step_metrics(req: StepMetricsRequest):
             ORDER BY step ASC, metric_name ASC
         """
         
-        gen_gini_rows = con.execute(gen_metric_gini_query, metric_params).fetchall()
+        gen_gini_rows = con.execute(
+            gen_metric_gini_query, metric_params + tag_filter_params_gm
+        ).fetchall()
         for row in gen_gini_rows:
             step, base_name, gini_val = row[0], row[1], row[2]
             gini_metric_name = f"reward_{base_name}_gini_mean"
@@ -5482,6 +5633,7 @@ def get_step_metrics(req: StepMetricsRequest):
         "total_returned": len(metrics),
         "available_metrics": available_metrics,
         "available_rollout_metric_names": available_rollout_metric_names,
+        "available_sample_tags": available_sample_tags,
         "available_custom_metrics": available_custom_metrics,
         "custom_metric_sections": custom_metric_sections,
         "min_step": min_step,
@@ -5604,6 +5756,33 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     a_params = active_runs + step_params             # active_runs + step filter
     a_disc_params = active_runs + discarded_step_params
     a_timing_params = active_runs + step_params
+
+    # Build tag filter for multi-run rollout metrics queries
+    def _build_multi_tag_filter(prefix: str = "") -> tuple[str, list]:
+        if not req.tag_filters:
+            return "", []
+        rid_col = f"{prefix}run_id" if prefix else "run_id"
+        step_col = f"{prefix}step" if prefix else "step"
+        sidx_col = f"{prefix}sample_idx" if prefix else "sample_idx"
+        conditions = []
+        params_out: list = []
+        for tag_name, tag_values in req.tag_filters.items():
+            if tag_values:
+                placeholders = ", ".join(["?"] * len(tag_values))
+                conditions.append(
+                    f"SELECT DISTINCT run_id, step, sample_idx FROM sample_tags "
+                    f"WHERE tag_name = ? AND tag_value IN ({placeholders})"
+                )
+                params_out.extend([tag_name] + tag_values)
+        if not conditions:
+            return "", []
+        subquery = conditions[0]
+        for cond in conditions[1:]:
+            subquery = f"({subquery}) INTERSECT ({cond})"
+        return f" AND ({rid_col}, {step_col}, {sidx_col}) IN ({subquery})", params_out
+
+    multi_tag_sql, multi_tag_params = _build_multi_tag_filter()
+    multi_tag_sql_gm, multi_tag_params_gm = _build_multi_tag_filter("gm.")
 
     # =====================================================================
     # 2. Available rollout metric names per run
@@ -5853,10 +6032,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             run_id, step, metric_name,
             AVG(value), STDDEV_SAMP(value), MIN(value), MAX(value)
         FROM rollouts_metrics
-        WHERE run_id IN ({a_in_ph}) {step_filter}
+        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql}
         GROUP BY run_id, step, metric_name
         ORDER BY run_id, step ASC, metric_name ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params).fetchall():
         rid, step, base_name = row[0], row[1], row[2]
         for suffix, val in [("_mean", row[3]), ("_std", row[4]),
                             ("_min", row[5]), ("_max", row[6])]:
@@ -5874,7 +6053,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 SUM(gm.value) OVER (PARTITION BY gm.run_id, gm.step, gm.metric_name, sd.group_id) as sum_value
             FROM rollouts_metrics gm
             JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
-            WHERE gm.run_id IN ({a_in_ph}) AND gm.value IS NOT NULL {step_filter}
+            WHERE gm.run_id IN ({a_in_ph}) AND gm.value IS NOT NULL {step_filter} {multi_tag_sql_gm}
         ),
         gini_per_group AS (
             SELECT
@@ -5892,7 +6071,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM gini_per_group
         GROUP BY run_id, step, metric_name
         ORDER BY run_id, step ASC, metric_name ASC
-    """, a_params).fetchall():
+    """, a_params + multi_tag_params_gm).fetchall():
         _add(row[0], row[1], f"reward_{row[2]}_gini_mean", row[3])
 
     # =====================================================================

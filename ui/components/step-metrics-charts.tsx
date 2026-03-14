@@ -9,7 +9,7 @@ import {
 } from "react"
 import { useAtom } from "jotai"
 import uPlot from "uplot"
-import { metricsChartFiltersAtom, syncedCursorAtom } from "@/lib/atoms"
+import { metricsChartFiltersAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
 import {
   getSidebarRunNameParts,
   SIDEBAR_MAX_RUN_NAME_CHARS,
@@ -23,7 +23,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ChevronDown, X, SlidersHorizontal, Loader2 } from "lucide-react"
@@ -394,6 +398,7 @@ interface StepMetricsChartsProps {
   emaSpan?: number
   hoveredRunId?: string | null
   availableRewardNames?: string[]
+  availableSampleTags?: Record<string, string[]>
   customMetricSections?: Record<string, Record<string, string[]>>
   xAxisMode?: "step" | "time"
   scrollRoot?: Element | null
@@ -412,6 +417,7 @@ export function StepMetricsCharts({
   emaSpan = 10,
   hoveredRunId = null,
   availableRewardNames = [],
+  availableSampleTags,
   customMetricSections = {},
   xAxisMode = "step",
   scrollRoot = null,
@@ -756,6 +762,7 @@ export function StepMetricsCharts({
                             showEma={showEma}
                             emaSpan={emaSpan}
                             hoveredRunId={hoveredRunId}
+                            availableSampleTags={availableSampleTags}
                             {...axisProps}
                           />
                         ))}
@@ -803,6 +810,7 @@ export function StepMetricsCharts({
                 showEma={showEma}
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
+                availableSampleTags={availableSampleTags}
                 {...axisProps}
                 extraCharts={
                   prefixInfo.prefix === "reward_sum" ? (
@@ -814,6 +822,7 @@ export function StepMetricsCharts({
                       showEma={showEma}
                       emaSpan={emaSpan}
                       hoveredRunId={hoveredRunId}
+                      availableSampleTags={availableSampleTags}
                       {...axisProps}
                     />
                   ) : undefined
@@ -860,6 +869,7 @@ export function StepMetricsCharts({
                     showEma={showEma}
                     emaSpan={emaSpan}
                     hoveredRunId={hoveredRunId}
+                    availableSampleTags={availableSampleTags}
                     {...axisProps}
                     extraCharts={
                       <MetricChart
@@ -870,6 +880,7 @@ export function StepMetricsCharts({
                         showEma={showEma}
                         emaSpan={emaSpan}
                         hoveredRunId={hoveredRunId}
+                        availableSampleTags={availableSampleTags}
                         {...axisProps}
                       />
                     }
@@ -914,6 +925,7 @@ export function StepMetricsCharts({
                 showEma={showEma}
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
+                availableSampleTags={availableSampleTags}
                 {...axisProps}
               />
             ))}
@@ -1123,6 +1135,7 @@ export function StepMetricsCharts({
                 showEma={showEma}
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
+                availableSampleTags={availableSampleTags}
                 {...axisProps}
               />
             ))}
@@ -1140,6 +1153,7 @@ export function StepMetricsCharts({
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
+                  availableSampleTags={availableSampleTags}
                   {...axisProps}
                 />
                 <MetricChart
@@ -1150,6 +1164,7 @@ export function StepMetricsCharts({
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
+                  availableSampleTags={availableSampleTags}
                   {...axisProps}
                 />
                 <MetricChart
@@ -1160,6 +1175,7 @@ export function StepMetricsCharts({
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
+                  availableSampleTags={availableSampleTags}
                   {...axisProps}
                 />
               </div>
@@ -2270,27 +2286,20 @@ export function EvalMetricChart({
     metricFilters?.ignoreFirstStep ?? defaultIgnoreFirstStepValue
   const minY = metricFilters?.minY ?? null
   const maxY = metricFilters?.maxY ?? null
+  const tagFilters = metricFilters?.tagFilters ?? {}
+  const hasActiveTagFilters = Object.keys(tagFilters).length > 0
 
   const updateMetricFilters = useCallback(
     (
-      updater: (current: {
-        ignoreOutliers: boolean
-        ignoreFirstStep: boolean
-        minY: number | null
-        maxY: number | null
-      }) => {
-        ignoreOutliers: boolean
-        ignoreFirstStep: boolean
-        minY: number | null
-        maxY: number | null
-      },
+      updater: (current: MetricsChartFilterState) => MetricsChartFilterState,
     ) => {
       setMetricsChartFilters((prev) => {
-        const defaults = {
+        const defaults: MetricsChartFilterState = {
           ignoreOutliers: false,
           ignoreFirstStep: defaultIgnoreFirstStepValue,
-          minY: null as number | null,
-          maxY: null as number | null,
+          minY: null,
+          maxY: null,
+          tagFilters: {},
         }
         const current = prev[filterKey] ?? defaults
         const next = updater(current)
@@ -2299,7 +2308,8 @@ export function EvalMetricChart({
           next.ignoreOutliers === defaults.ignoreOutliers &&
           next.ignoreFirstStep === defaults.ignoreFirstStep &&
           next.minY === defaults.minY &&
-          next.maxY === defaults.maxY
+          next.maxY === defaults.maxY &&
+          Object.keys(next.tagFilters ?? {}).length === 0
 
         if (isAtDefaultValues) {
           if (!Object.prototype.hasOwnProperty.call(prev, filterKey)) {
@@ -2352,6 +2362,27 @@ export function EvalMetricChart({
         ...current,
         maxY: value,
       }))
+    },
+    [updateMetricFilters],
+  )
+
+  const toggleTagFilter = useCallback(
+    (tagName: string, tagValue: string) => {
+      updateMetricFilters((current) => {
+        const currentTags = { ...(current.tagFilters ?? {}) }
+        const currentValues = currentTags[tagName] ?? []
+        if (currentValues.includes(tagValue)) {
+          const newValues = currentValues.filter((v) => v !== tagValue)
+          if (newValues.length === 0) {
+            delete currentTags[tagName]
+          } else {
+            currentTags[tagName] = newValues
+          }
+        } else {
+          currentTags[tagName] = [...currentValues, tagValue]
+        }
+        return { ...current, tagFilters: currentTags }
+      })
     },
     [updateMetricFilters],
   )
@@ -3025,8 +3056,8 @@ export function EvalMetricChart({
             {headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null) && (
-          <div className="flex items-center gap-1 mt-1">
+        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters) && (
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
             {ignoreOutliers && (
               <FilterBadge
                 label="Ignore Outliers"
@@ -3050,6 +3081,15 @@ export function EvalMetricChart({
                 label={`Max Y: ${maxY}`}
                 onRemove={() => setMaxY(null)}
               />
+            )}
+            {Object.entries(tagFilters).map(([tagName, tagValues]) =>
+              tagValues.map((tagValue) => (
+                <FilterBadge
+                  key={`${tagName}:${tagValue}`}
+                  label={`${tagName}: ${tagValue}`}
+                  onRemove={() => toggleTagFilter(tagName, tagValue)}
+                />
+              ))
             )}
           </div>
         )}
@@ -3182,6 +3222,7 @@ interface MetricPrefixSectionProps {
   maxTimeLimit?: number | null
   extraCharts?: React.ReactNode
   hideGroupLabel?: boolean
+  availableSampleTags?: Record<string, string[]>
 }
 
 function MetricPrefixSection({
@@ -3205,6 +3246,7 @@ function MetricPrefixSection({
   maxTimeLimit,
   extraCharts,
   hideGroupLabel,
+  availableSampleTags,
 }: MetricPrefixSectionProps) {
   // Use the first selected run for distribution over time (single-run chart)
   const selectedRun = runs.find((r) => r.isSelected) ?? runs[0]
@@ -3239,6 +3281,7 @@ function MetricPrefixSection({
             scrollRoot={scrollRoot}
             maxStepLimit={maxStepLimit}
             maxTimeLimit={maxTimeLimit}
+            availableSampleTags={availableSampleTags}
           />
         ))}
         {extraCharts}
@@ -3264,6 +3307,7 @@ function useMetricsByRunPath(
   metricName: string,
   shouldPoll: boolean,
   enabled: boolean,
+  tagFilters?: Record<string, string[]>,
 ) {
   const runPaths = useMemo(
     () =>
@@ -3283,6 +3327,7 @@ function useMetricsByRunPath(
     metricNames,
     enabled && runPaths.length > 0 && metricNames.length > 0,
     shouldPoll,
+    tagFilters,
   )
 
   const metricsByRunPath = useMemo(() => {
@@ -3329,6 +3374,7 @@ interface MetricChartProps {
   maxTimeLimit?: number | null
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
+  availableSampleTags?: Record<string, string[]>
 }
 
 export function MetricChart({
@@ -3354,6 +3400,7 @@ export function MetricChart({
   maxTimeLimit,
   headerPrefix,
   headerSuffix,
+  availableSampleTags,
 }: MetricChartProps) {
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -3403,26 +3450,19 @@ export function MetricChart({
   const minY = metricFilters?.minY ?? null
   const maxY = metricFilters?.maxY ?? null
 
+  const tagFilters = metricFilters?.tagFilters ?? {}
+
   const updateMetricFilters = useCallback(
     (
-      updater: (current: {
-        ignoreOutliers: boolean
-        ignoreFirstStep: boolean
-        minY: number | null
-        maxY: number | null
-      }) => {
-        ignoreOutliers: boolean
-        ignoreFirstStep: boolean
-        minY: number | null
-        maxY: number | null
-      },
+      updater: (current: MetricsChartFilterState) => MetricsChartFilterState,
     ) => {
       setMetricsChartFilters((prev) => {
-        const defaults = {
+        const defaults: MetricsChartFilterState = {
           ignoreOutliers: defaultIgnoreOutliersValue,
           ignoreFirstStep: defaultIgnoreFirstStepValue,
-          minY: null as number | null,
-          maxY: null as number | null,
+          minY: null,
+          maxY: null,
+          tagFilters: {},
         }
         const current = prev[metricName] ?? defaults
         const next = updater(current)
@@ -3431,7 +3471,8 @@ export function MetricChart({
           next.ignoreOutliers === defaults.ignoreOutliers &&
           next.ignoreFirstStep === defaults.ignoreFirstStep &&
           next.minY === defaults.minY &&
-          next.maxY === defaults.maxY
+          next.maxY === defaults.maxY &&
+          Object.keys(next.tagFilters ?? {}).length === 0
 
         if (isAtDefaultValues) {
           if (!Object.prototype.hasOwnProperty.call(prev, metricName)) {
@@ -3493,6 +3534,29 @@ export function MetricChart({
     [updateMetricFilters],
   )
 
+  const toggleTagFilter = useCallback(
+    (tagName: string, tagValue: string) => {
+      updateMetricFilters((current) => {
+        const currentTags = { ...(current.tagFilters ?? {}) }
+        const currentValues = currentTags[tagName] ?? []
+        if (currentValues.includes(tagValue)) {
+          const newValues = currentValues.filter((v) => v !== tagValue)
+          if (newValues.length === 0) {
+            delete currentTags[tagName]
+          } else {
+            currentTags[tagName] = newValues
+          }
+        } else {
+          currentTags[tagName] = [...currentValues, tagValue]
+        }
+        return { ...current, tagFilters: currentTags }
+      })
+    },
+    [updateMetricFilters],
+  )
+
+  const hasActiveTagFilters = Object.keys(tagFilters).length > 0
+
   const isVisible = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
@@ -3517,7 +3581,7 @@ export function MetricChart({
     metricsByRunPath,
     isFetching: isMetricsFetching,
     isRefetching: isMetricsRefetching,
-  } = useMetricsByRunPath(runs, metricName, shouldPoll, isVisible)
+  } = useMetricsByRunPath(runs, metricName, shouldPoll, isVisible, tagFilters)
 
   // Combine data from all runs into uPlot format
   const {
@@ -4344,13 +4408,44 @@ export function MetricChart({
                     onKeyDown={(e) => e.stopPropagation()}
                   />
                 </div>
+                {availableSampleTags && Object.keys(availableSampleTags).length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-[10px] text-muted-foreground">
+                      Filter by Tag
+                    </DropdownMenuLabel>
+                    {Object.entries(availableSampleTags).map(([tagName, tagValues]) => (
+                      <DropdownMenuSub key={tagName}>
+                        <DropdownMenuSubTrigger className="text-xs">
+                          {tagName}
+                          {tagFilters[tagName]?.length ? (
+                            <span className="ml-1 text-[10px] text-muted-foreground">
+                              ({tagFilters[tagName].length})
+                            </span>
+                          ) : null}
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="max-h-[300px] overflow-y-auto">
+                          {tagValues.map((tagValue) => (
+                            <DropdownMenuCheckboxItem
+                              key={tagValue}
+                              checked={(tagFilters[tagName] ?? []).includes(tagValue)}
+                              onCheckedChange={() => toggleTagFilter(tagName, tagValue)}
+                            >
+                              {tagValue}
+                            </DropdownMenuCheckboxItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    ))}
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
             {headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null) && (
-          <div className="flex items-center gap-1 mt-1">
+        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters) && (
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
             {ignoreOutliers && (
               <FilterBadge
                 label="Ignore Outliers"
@@ -4374,6 +4469,15 @@ export function MetricChart({
                 label={`Max Y: ${maxY}`}
                 onRemove={() => setMaxY(null)}
               />
+            )}
+            {Object.entries(tagFilters).map(([tagName, tagValues]) =>
+              tagValues.map((tagValue) => (
+                <FilterBadge
+                  key={`${tagName}:${tagValue}`}
+                  label={`${tagName}: ${tagValue}`}
+                  onRemove={() => toggleTagFilter(tagName, tagValue)}
+                />
+              ))
             )}
           </div>
         )}

@@ -468,6 +468,7 @@ export default function HomePage() {
     [setOverviewPlots],
   )
 
+  const availableSampleTags = summaryData?.available_sample_tags ?? {}
   const chartProps = useMemo(
     () => ({
       runs: plotRuns,
@@ -477,8 +478,9 @@ export default function HomePage() {
       hoveredRunId,
       xAxisMode: "step" as const,
       scrollRoot: null,
+      availableSampleTags,
     }),
-    [plotRuns, showEma, emaSpan, hoveredRunId],
+    [plotRuns, showEma, emaSpan, hoveredRunId, availableSampleTags],
   )
 
   // Find current run info for created_at and state

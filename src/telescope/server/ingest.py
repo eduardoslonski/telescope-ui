@@ -31,6 +31,7 @@ from .db import (
     insert_samples_data,
     insert_rollouts_metrics,
     insert_golden_answers,
+    insert_sample_tags,
     insert_step_metrics,
     insert_events_orchestrator,
     insert_events_trainer,
@@ -43,6 +44,7 @@ from .db import (
     insert_samples_data_discarded,
     insert_rollouts_metrics_discarded,
     insert_golden_answers_discarded,
+    insert_sample_tags_discarded,
     insert_info_turns,
     insert_info_turns_discarded,
     insert_prompts_eval,
@@ -50,6 +52,7 @@ from .db import (
     insert_samples_data_eval,
     insert_rollouts_metrics_eval,
     insert_golden_answers_eval,
+    insert_sample_tags_eval,
     insert_info_turns_eval,
     upsert_run,
     get_ingested_tails,
@@ -104,6 +107,7 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "samples_data": "0.2",
     "rollouts_metrics": "0.1",
     "golden_answers": "0.1",
+    "sample_tags": "0.1",
     "system_metrics_gpu": "0.1",
     "system_metrics_cpu": "0.1",
     "vllm_metrics": "0.1",
@@ -113,6 +117,7 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "samples_data_discarded": "0.2",
     "rollouts_metrics_discarded": "0.1",
     "golden_answers_discarded": "0.1",
+    "sample_tags_discarded": "0.1",
     "info_turns": "0.1",
     "info_turns_discarded": "0.1",
     "prompts_eval": "0.1",
@@ -120,6 +125,7 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "samples_data_eval": "0.1",
     "rollouts_metrics_eval": "0.1",
     "golden_answers_eval": "0.1",
+    "sample_tags_eval": "0.1",
     "info_turns_eval": "0.1",
     "ingest_state": "0.1",
     "runs": "0.1",
@@ -654,6 +660,7 @@ class EventZipData:
         self.samples_data_discarded: list[dict] | None = None
         self.rollouts_metrics_discarded: list[dict] | None = None
         self.golden_answers_discarded: list[dict] | None = None
+        self.sample_tags_discarded: list[dict] | None = None
         self.info_turns_discarded: list[dict] | None = None
         # Eval data (from event zips, same tail_idx lifecycle as discarded)
         self.prompts_eval: list[dict] | None = None
@@ -661,6 +668,7 @@ class EventZipData:
         self.samples_data_eval: list[dict] | None = None
         self.rollouts_metrics_eval: list[dict] | None = None
         self.golden_answers_eval: list[dict] | None = None
+        self.sample_tags_eval: list[dict] | None = None
         self.info_turns_eval: list[dict] | None = None
         # Metadata from metadata.json inside the zip
         self.metadata: dict | None = None
@@ -692,12 +700,14 @@ class EventZipData:
             self.samples_data_discarded,
             self.rollouts_metrics_discarded,
             self.golden_answers_discarded,
+            self.sample_tags_discarded,
             self.info_turns_discarded,
             self.prompts_eval,
             self.rollouts_eval,
             self.samples_data_eval,
             self.rollouts_metrics_eval,
             self.golden_answers_eval,
+            self.sample_tags_eval,
             self.info_turns_eval,
         ])
 
@@ -847,6 +857,20 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                             f"[WANDB] No golden_answers_discarded.parquet in {file_path}: {e}"
                         )
 
+                    # Read sample_tags_discarded.parquet if it exists
+                    sample_tags_discarded_path = f"{tmpdir}/sample_tags_discarded.parquet"
+                    try:
+                        table = pq.read_table(sample_tags_discarded_path)
+                        data.sample_tags_discarded = table.to_pylist()
+                        log.info(
+                            "[WANDB] Extracted sample_tags_discarded: "
+                            f"{len(data.sample_tags_discarded)} rows"
+                        )
+                    except Exception as e:
+                        log.debug(
+                            f"[WANDB] No sample_tags_discarded.parquet in {file_path}: {e}"
+                        )
+
                     # Read info_turns_discarded.parquet if it exists
                     info_turns_discarded_path = f"{tmpdir}/info_turns_discarded.parquet"
                     try:
@@ -860,7 +884,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.debug(
                             f"[WANDB] No info_turns_discarded.parquet in {file_path}: {e}"
                         )
-                    
+
                     # Read eval parquet files
                     for eval_name, attr in [
                         ("prompts_eval", "prompts_eval"),
@@ -868,6 +892,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         ("samples_data_eval", "samples_data_eval"),
                         ("rollouts_metrics_eval", "rollouts_metrics_eval"),
                         ("golden_answers_eval", "golden_answers_eval"),
+                        ("sample_tags_eval", "sample_tags_eval"),
                         ("info_turns_eval", "info_turns_eval"),
                     ]:
                         eval_path = f"{tmpdir}/{eval_name}.parquet"
@@ -936,6 +961,7 @@ class RolloutZipData:
         self.rollouts_metrics: list[dict] | None = None
         self.golden_answers: list[dict] | None = None
         self.info_turns: list[dict] | None = None
+        self.sample_tags: list[dict] | None = None
         self.metrics: list[dict] | None = None
         # Metadata from metadata.json inside the zip
         self.metadata: dict | None = None
@@ -976,6 +1002,7 @@ class RolloutZipData:
             or self.rollouts_metrics is not None
             or self.golden_answers is not None
             or self.info_turns is not None
+            or self.sample_tags is not None
             or self.metrics is not None
         )
 
@@ -1058,6 +1085,20 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                             f"[WANDB] No golden_answers.parquet in {file_path}: {e}"
                         )
 
+                    # Read sample_tags.parquet if it exists
+                    sample_tags_path = f"{tmpdir}/sample_tags.parquet"
+                    try:
+                        table = pq.read_table(sample_tags_path)
+                        data.sample_tags = table.to_pylist()
+                        log.info(
+                            "[WANDB] Extracted sample_tags: "
+                            f"{len(data.sample_tags)} rows"
+                        )
+                    except Exception as e:
+                        log.debug(
+                            f"[WANDB] No sample_tags.parquet in {file_path}: {e}"
+                        )
+
                     # Read info_turns.parquet if it exists
                     info_turns_path = f"{tmpdir}/info_turns.parquet"
                     try:
@@ -1071,7 +1112,7 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                         log.debug(
                             f"[WANDB] No info_turns.parquet in {file_path}: {e}"
                         )
-                    
+
                     # Read metrics.parquet if it exists
                     metrics_path = f"{tmpdir}/metrics.parquet"
                     try:
@@ -1175,6 +1216,16 @@ def _filter_golden_answers_by_steps(
     return [a for a in answers if a.get("step") in missing_steps]
 
 
+def _filter_sample_tags_by_steps(
+    tags: list[dict] | None,
+    missing_steps: set[int],
+) -> list[dict]:
+    """Filter sample tags to only include those with step in missing_steps."""
+    if not tags or not missing_steps:
+        return []
+    return [t for t in tags if t.get("step") in missing_steps]
+
+
 def _filter_info_turns_by_steps(
     info_turns: list[dict] | None,
     missing_steps: set[int],
@@ -1259,12 +1310,14 @@ def _insert_event_zip_data(
         "samples_data_discarded": 0,
         "rollouts_metrics_discarded": 0,
         "golden_answers_discarded": 0,
+        "sample_tags_discarded": 0,
         "info_turns_discarded": 0,
         "prompts_eval": 0,
         "rollouts_eval": 0,
         "samples_data_eval": 0,
         "rollouts_metrics_eval": 0,
         "golden_answers_eval": 0,
+        "sample_tags_eval": 0,
         "info_turns_eval": 0,
     }
     inserted_tails: set[int] = set()
@@ -1286,6 +1339,9 @@ def _insert_event_zip_data(
         golden_answers_discarded = _filter_events_by_tails(
             data.golden_answers_discarded, missing_tails
         )
+        sample_tags_discarded = _filter_events_by_tails(
+            data.sample_tags_discarded, missing_tails
+        )
         info_turns_discarded = _filter_events_by_tails(
             data.info_turns_discarded, missing_tails
         )
@@ -1294,6 +1350,7 @@ def _insert_event_zip_data(
         samples_data_eval = _filter_events_by_tails(data.samples_data_eval, missing_tails)
         rollouts_metrics_eval = _filter_events_by_tails(data.rollouts_metrics_eval, missing_tails)
         golden_answers_eval = _filter_events_by_tails(data.golden_answers_eval, missing_tails)
+        sample_tags_eval = _filter_events_by_tails(data.sample_tags_eval, missing_tails)
         info_turns_eval = _filter_events_by_tails(data.info_turns_eval, missing_tails)
     else:
         orchestrator = data.orchestrator
@@ -1307,12 +1364,14 @@ def _insert_event_zip_data(
         samples_data_discarded = data.samples_data_discarded
         rollouts_metrics_discarded = data.rollouts_metrics_discarded
         golden_answers_discarded = data.golden_answers_discarded
+        sample_tags_discarded = data.sample_tags_discarded
         info_turns_discarded = data.info_turns_discarded
         prompts_eval = data.prompts_eval
         rollouts_eval = data.rollouts_eval
         samples_data_eval = data.samples_data_eval
         rollouts_metrics_eval = data.rollouts_metrics_eval
         golden_answers_eval = data.golden_answers_eval
+        sample_tags_eval = data.sample_tags_eval
         info_turns_eval = data.info_turns_eval
     
     if orchestrator:
@@ -1387,6 +1446,15 @@ def _insert_event_zip_data(
             f"{counts['golden_answers_discarded']} answers"
         )
 
+    if sample_tags_discarded:
+        insert_sample_tags_discarded(con, run_path, sample_tags_discarded)
+        counts["sample_tags_discarded"] = len(sample_tags_discarded)
+        inserted_tails.update(_get_tail_indices_from_events(sample_tags_discarded))
+        log.info(
+            f"[EVENTS] Synced {source_name} sample_tags_discarded: "
+            f"{counts['sample_tags_discarded']} tags"
+        )
+
     if info_turns_discarded:
         insert_info_turns_discarded(con, run_path, info_turns_discarded)
         counts["info_turns_discarded"] = len(info_turns_discarded)
@@ -1430,6 +1498,15 @@ def _insert_event_zip_data(
         log.info(
             f"[EVENTS] Synced {source_name} golden_answers_eval: "
             f"{counts['golden_answers_eval']} answers"
+        )
+
+    if sample_tags_eval:
+        insert_sample_tags_eval(con, run_path, sample_tags_eval)
+        counts["sample_tags_eval"] = len(sample_tags_eval)
+        inserted_tails.update(_get_tail_indices_from_events(sample_tags_eval))
+        log.info(
+            f"[EVENTS] Synced {source_name} sample_tags_eval: "
+            f"{counts['sample_tags_eval']} tags"
         )
 
     if info_turns_eval:
@@ -1838,6 +1915,7 @@ def _insert_rollout_zip_data(
             data.rollouts_metrics, missing_steps
         )
         golden_answers = _filter_golden_answers_by_steps(data.golden_answers, missing_steps)
+        sample_tags = _filter_sample_tags_by_steps(data.sample_tags, missing_steps)
         info_turns = _filter_info_turns_by_steps(data.info_turns, missing_steps)
         if missing_metric_steps is None:
             metrics = _filter_metrics_by_steps(data.metrics, missing_steps)
@@ -1849,6 +1927,7 @@ def _insert_rollout_zip_data(
         samples_data_list = data.samples_data
         rollouts_metrics = data.rollouts_metrics
         golden_answers = data.golden_answers
+        sample_tags = data.sample_tags
         info_turns = data.info_turns
         metrics = data.metrics
     
@@ -1883,6 +1962,12 @@ def _insert_rollout_zip_data(
         inserted_steps.update(_get_steps_from_golden_answers(golden_answers))
         log.info(
             f"[ROLLOUTS] Synced {source_name}: {golden_answers_count} golden answers"
+        )
+
+    if sample_tags:
+        insert_sample_tags(con, run_path, sample_tags)
+        log.info(
+            f"[ROLLOUTS] Synced {source_name}: {len(sample_tags)} sample tags"
         )
 
     if info_turns:
@@ -2285,6 +2370,7 @@ def _download_evals_after_training_zip_sync(
         "samples_data_eval": None,
         "rollouts_metrics_eval": None,
         "golden_answers_eval": None,
+        "sample_tags_eval": None,
         "info_turns_eval": None,
     }
     try:
@@ -2446,6 +2532,11 @@ async def sync_evals_after_training_background(run_path: str, api_key: str):
                                     con, run_path, data["golden_answers_eval"]
                                 )
                                 zip_rows += len(data["golden_answers_eval"])
+                            if data.get("sample_tags_eval"):
+                                insert_sample_tags_eval(
+                                    con, run_path, data["sample_tags_eval"]
+                                )
+                                zip_rows += len(data["sample_tags_eval"])
                             if data.get("info_turns_eval"):
                                 insert_info_turns_eval(
                                     con, run_path, data["info_turns_eval"]
