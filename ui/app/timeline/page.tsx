@@ -577,6 +577,9 @@ export default function TimelinePage() {
               summaryData?.config?.max_concurrent_prompts as number | undefined
             }
             groupSize={summaryData?.config?.group_size as number | undefined}
+            freeLaneAfterGeneration={
+              summaryData?.config?.free_lane_after_generation as boolean | undefined
+            }
           />
         </div>
       </div>

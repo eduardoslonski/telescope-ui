@@ -62,6 +62,18 @@ const DEFAULT_IGNORE_FIRST_STEP_METRICS = new Set([
   "timing_waiting_for_data",
   "timing_weight_sync_trainer_total",
   "timing_weight_sync_inference_total",
+  // Timeline Inference
+  "timing_avg_inference_time",
+  "timing_avg_compute_reward_time",
+  "timing_generation_normal_pct",
+  "timing_generation_discarded_pct",
+  "timing_generation_canceled_pct",
+  "timing_generation_all_pct",
+  "timing_compute_reward_normal_pct",
+  "timing_compute_reward_discarded_pct",
+  "timing_compute_reward_canceled_pct",
+  "timing_compute_reward_all_pct",
+  "timing_idle_pct",
   // Microbatch (Mean Time per Microbatch)
   "timing_forward_microbatch_mean",
   "timing_backward_microbatch_mean",
@@ -433,7 +445,8 @@ export function StepMetricsCharts({
   )
   const [rolloutsOpen, setRolloutsOpen] = useState(true)
   const [discardedOpen, setDiscardedOpen] = useState(true)
-  const [timelineOpen, setTimelineOpen] = useState(true)
+  const [timelineTrainerOpen, setTimelineTrainerOpen] = useState(true)
+  const [timelineInferenceOpen, setTimelineInferenceOpen] = useState(true)
 
   // Build metric groups with dynamic reward names
   const METRIC_GROUPS = useMemo(
@@ -1373,18 +1386,18 @@ export function StepMetricsCharts({
 
       <div className="border-t border-gray-200 my-3" />
 
-      {/* Timeline Metrics Section */}
-      <Collapsible open={timelineOpen} onOpenChange={setTimelineOpen}>
+      {/* Timeline Trainer Section */}
+      <Collapsible open={timelineTrainerOpen} onOpenChange={setTimelineTrainerOpen}>
         <CollapsibleTrigger asChild>
           <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
                   "h-4 w-4 text-muted-foreground transition-transform",
-                  !timelineOpen && "-rotate-90",
+                  !timelineTrainerOpen && "-rotate-90",
                 )}
               />
-              <h3 className="text-sm font-semibold">Timeline</h3>
+              <h3 className="text-sm font-semibold">Timeline Trainer</h3>
             </div>
           </div>
         </CollapsibleTrigger>
@@ -1411,16 +1424,6 @@ export function StepMetricsCharts({
                   shouldPoll={shouldPoll}
                   metricName="timing_step_active"
                   label="Time per Step Active (Excl. Wait)"
-                  showEma={showEma}
-                  emaSpan={emaSpan}
-                  hoveredRunId={hoveredRunId}
-                  {...axisProps}
-                />
-                <MetricChart
-                  runs={runs}
-                  shouldPoll={shouldPoll}
-                  metricName="timing_save_batch_total"
-                  label="Batch Completion (Save Batch)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1610,6 +1613,166 @@ export function StepMetricsCharts({
                   shouldPoll={shouldPoll}
                   metricName="timing_prepare_tensors_microbatch_mean"
                   label="Prepare Tensors"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+              </div>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      <div className="border-t border-gray-200 my-3" />
+
+      {/* Timeline Inference Section */}
+      <Collapsible open={timelineInferenceOpen} onOpenChange={setTimelineInferenceOpen}>
+        <CollapsibleTrigger asChild>
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+            <div className="flex items-center gap-1.5">
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 text-muted-foreground transition-transform",
+                  !timelineInferenceOpen && "-rotate-90",
+                )}
+              />
+              <h3 className="text-sm font-semibold">Timeline Inference</h3>
+            </div>
+          </div>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="space-y-6 mt-3 mb-4">
+            {/* Batch & Averages */}
+            <div>
+              <h4 className="text-sm font-semibold text-muted-foreground mb-3">
+                Batch & Averages
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_save_batch_total"
+                  label="Batch Completion (Save Batch)"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_avg_inference_time"
+                  label="Avg Generation Time"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_avg_compute_reward_time"
+                  label="Avg Compute Reward Time"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+              </div>
+            </div>
+
+            {/* Time Breakdown (% of Step Time) */}
+            <div>
+              <h4 className="text-sm font-semibold text-muted-foreground mb-3">
+                Time Breakdown (% of Step Time)
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_generation_normal_pct"
+                  label="Generation Normal"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_generation_discarded_pct"
+                  label="Generation Discarded"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_generation_canceled_pct"
+                  label="Generation Canceled"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_generation_all_pct"
+                  label="Generation All"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_compute_reward_normal_pct"
+                  label="Compute Reward Normal"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_compute_reward_discarded_pct"
+                  label="Compute Reward Discarded"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_compute_reward_canceled_pct"
+                  label="Compute Reward Canceled"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_compute_reward_all_pct"
+                  label="Compute Reward All"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="timing_idle_pct"
+                  label="Idle Time"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -3866,7 +4029,9 @@ export function MetricChart({
   const displayStatType = statType || metricName.split("_").pop() || ""
   const isTimeAxis = xAxisMode === "time"
   const isTimingMetric =
-    metricName.startsWith("timing_") && metricName !== "timing_microbatch_count"
+    metricName.startsWith("timing_") &&
+    metricName !== "timing_microbatch_count" &&
+    !metricName.endsWith("_pct")
 
   const formatValue = useCallback(
     (v: number | null | undefined): string => {

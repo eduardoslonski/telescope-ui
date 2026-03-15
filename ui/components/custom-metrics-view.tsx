@@ -356,10 +356,10 @@ export function buildPlotCatalog(
     })
   }
 
+  // Timeline Trainer
   for (const m of [
     { key: "timing_step_total", label: "Time per Step" },
     { key: "timing_step_active", label: "Time per Step Active" },
-    { key: "timing_save_batch_total", label: "Batch Completion (Save Batch)" },
     { key: "timing_microbatch_count", label: "Microbatches per Step" },
     { key: "timing_forward_total", label: "Timing Forward" },
     { key: "timing_backward_total", label: "Timing Backward" },
@@ -379,7 +379,7 @@ export function buildPlotCatalog(
     },
   ]) {
     catalog.push({
-      section: "Timeline",
+      section: "Timeline Trainer",
       group: "Full Step (Total Time)",
       metricKey: m.key,
       label: m.label,
@@ -418,8 +418,44 @@ export function buildPlotCatalog(
     },
   ]) {
     catalog.push({
-      section: "Timeline",
+      section: "Timeline Trainer",
       group: "Microbatch (Mean Time)",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "step_metric",
+      simple: true,
+    })
+  }
+
+  // Timeline Inference
+  for (const m of [
+    { key: "timing_save_batch_total", label: "Batch Completion (Save Batch)" },
+    { key: "timing_avg_inference_time", label: "Avg Generation Time" },
+    { key: "timing_avg_compute_reward_time", label: "Avg Compute Reward Time" },
+  ]) {
+    catalog.push({
+      section: "Timeline Inference",
+      group: "Batch & Averages",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "step_metric",
+      simple: true,
+    })
+  }
+  for (const m of [
+    { key: "timing_generation_normal_pct", label: "Generation Normal" },
+    { key: "timing_generation_discarded_pct", label: "Generation Discarded" },
+    { key: "timing_generation_canceled_pct", label: "Generation Canceled" },
+    { key: "timing_generation_all_pct", label: "Generation All" },
+    { key: "timing_compute_reward_normal_pct", label: "Compute Reward Normal" },
+    { key: "timing_compute_reward_discarded_pct", label: "Compute Reward Discarded" },
+    { key: "timing_compute_reward_canceled_pct", label: "Compute Reward Canceled" },
+    { key: "timing_compute_reward_all_pct", label: "Compute Reward All" },
+    { key: "timing_idle_pct", label: "Idle Time" },
+  ]) {
+    catalog.push({
+      section: "Timeline Inference",
+      group: "Time Breakdown (% of Step Time)",
       metricKey: m.key,
       label: m.label,
       plotType: "step_metric",
