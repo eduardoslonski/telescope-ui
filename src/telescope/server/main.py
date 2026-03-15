@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -5590,11 +5591,24 @@ def get_step_metrics(req: StepMetricsRequest):
     
     # Compute batch completion time from orchestrator save_batch events
     # Measure wall-clock interval between successive save_batch events
-    if metrics_to_include is None or "timing_save_batch_total" in metrics_to_include:
+    # Always compute save_batch_step_map (needed for inference timing percentages)
+    save_batch_step_map: dict[int, float] = {}
+    inference_timing_metrics = [
+        "timing_avg_inference_time", "timing_avg_compute_reward_time",
+        "timing_generation_normal_pct", "timing_generation_discarded_pct",
+        "timing_generation_canceled_pct", "timing_generation_all_pct",
+        "timing_compute_reward_normal_pct", "timing_compute_reward_discarded_pct",
+        "timing_compute_reward_canceled_pct", "timing_compute_reward_all_pct",
+        "timing_idle_pct",
+    ]
+    need_save_batch = metrics_to_include is None or "timing_save_batch_total" in metrics_to_include or any(
+        m in metrics_to_include for m in inference_timing_metrics
+    )
+    if need_save_batch:
         try:
             save_batch_query = f"""
                 WITH batch_events AS (
-                    SELECT 
+                    SELECT
                         step,
                         MIN(timestamp) as batch_time
                     FROM events_orchestrator
@@ -5602,7 +5616,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     GROUP BY step
                 ),
                 ordered AS (
-                    SELECT 
+                    SELECT
                         step,
                         batch_time,
                         LAG(batch_time) OVER (ORDER BY step) as prev_batch_time
@@ -5613,42 +5627,43 @@ def get_step_metrics(req: StepMetricsRequest):
                     FROM events_orchestrator
                     WHERE run_id = ? AND event_type = 'training_loop_start'
                 )
-                SELECT 
+                SELECT
                     o.step,
-                    CASE 
-                        WHEN o.prev_batch_time IS NULL THEN 
+                    CASE
+                        WHEN o.prev_batch_time IS NULL THEN
                             o.batch_time - COALESCE(t.first_event_time, o.batch_time)
-                        ELSE 
+                        ELSE
                             o.batch_time - o.prev_batch_time
                     END as batch_duration
                 FROM ordered o
                 CROSS JOIN training_start t
                 ORDER BY o.step ASC
             """
-            
+
             save_batch_rows = con.execute(
                 save_batch_query,
                 [req.run_path, req.run_path],
             ).fetchall()
-            
+
             for row in save_batch_rows:
                 step = row[0]
                 batch_duration = row[1]
-                
+
                 if step is None:
                     continue
                 if req.start_step is not None and step < req.start_step:
                     continue
                 if req.end_step is not None and step > req.end_step:
                     continue
-                
-                metric_name = "timing_save_batch_total"
+
                 if batch_duration is not None and batch_duration >= 0:
-                    metrics.append({
-                        "step": step,
-                        "metric_name": metric_name,
-                        "value": float(batch_duration),
-                    })
+                    save_batch_step_map[step] = float(batch_duration)
+                    if metrics_to_include is None or "timing_save_batch_total" in metrics_to_include:
+                        metrics.append({
+                            "step": step,
+                            "metric_name": "timing_save_batch_total",
+                            "value": float(batch_duration),
+                        })
         except Exception as e:
             log.warning(f"[API] Could not compute save_batch timing metric: {e}")
     
@@ -5720,7 +5735,200 @@ def get_step_metrics(req: StepMetricsRequest):
                     })
     except Exception as e:
         log.warning(f"[API] Could not compute inference weight_broadcast metric: {e}")
-    
+
+    # =========================================================================
+    # Compute inference timing metrics (generation/reward/idle breakdown)
+    # Uses save_batch timestamps as step windows. Events are attributed to
+    # the step whose window contains the event's end_time. Generation time
+    # is the actual lane occupation (end_time - start_time), clipped to the
+    # step window. Compute reward time is attributed to the step where the
+    # last turn of the sample ends.
+    # =========================================================================
+    any_inference_timing_needed = metrics_to_include is None or any(
+        m in metrics_to_include for m in inference_timing_metrics
+    )
+    if any_inference_timing_needed:
+        try:
+            # Fetch config for total_lanes computation
+            config_row = con.execute(
+                "SELECT last_config_json FROM ingest_state WHERE run_id = ?",
+                [req.run_path],
+            ).fetchone()
+            run_config = json.loads(config_row[0]) if config_row and config_row[0] else {}
+
+            num_servers = run_config.get("num_inference_servers") or max(
+                1, run_config.get("inference_num_workers", 1) // max(1, run_config.get("inference_tensor_parallel_size", 1))
+            )
+            max_concurrent = run_config.get("max_concurrent_prompts") or (
+                run_config.get("max_concurrent_prompts_per_server", 12) * num_servers
+            )
+            cfg_group_size = run_config.get("group_size", 1)
+            lanes_per_server = max(1, int((max_concurrent / num_servers) * cfg_group_size))
+            total_lanes = lanes_per_server * num_servers
+
+            # --- Single query: generation + compute_reward sums per step ---
+            # Step windows from save_batch; events attributed by end_time;
+            # generation = clipped (end_time - start_time);
+            # compute_reward attributed to step of last turn per sample.
+            timing_rows = con.execute(f"""
+                WITH batch_events AS (
+                    SELECT step, MIN(timestamp) as batch_time
+                    FROM events_orchestrator
+                    WHERE run_id = ? AND event_type = 'save_batch' AND step IS NOT NULL
+                    GROUP BY step
+                ),
+                training_start AS (
+                    SELECT MIN(timestamp) as ts FROM events_orchestrator
+                    WHERE run_id = ? AND event_type = 'training_loop_start'
+                ),
+                step_windows AS (
+                    SELECT step,
+                           COALESCE(LAG(batch_time) OVER (ORDER BY step), t.ts) as step_start,
+                           batch_time as step_end
+                    FROM batch_events CROSS JOIN training_start t
+                ),
+                request_events AS (
+                    SELECT sample_id, group_id, start_time, end_time,
+                           inference_time, is_canceled
+                    FROM events_inference
+                    WHERE run_id = ? AND event_type = 'request'
+                      AND (is_eval = false OR is_eval IS NULL)
+                ),
+                -- last event per sample (for compute_reward attribution)
+                last_event_per_sample AS (
+                    SELECT group_id, sample_id, MAX(end_time) as last_end
+                    FROM request_events
+                    GROUP BY group_id, sample_id
+                ),
+                -- sample classification + compute_reward_time
+                sample_info AS (
+                    SELECT group_id, sample_idx, compute_reward_time, 'normal' as status
+                    FROM samples_data WHERE run_id = ?
+                    UNION ALL
+                    SELECT group_id, sample_idx, compute_reward_time, 'discarded' as status
+                    FROM samples_data_discarded WHERE run_id = ?
+                ),
+                -- Generation: attribute each event to a step, clip duration
+                gen_attributed AS (
+                    SELECT
+                        sw.step,
+                        GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
+                        re.inference_time,
+                        CASE
+                            WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
+                            WHEN si.status IS NOT NULL THEN si.status
+                            ELSE 'normal'
+                        END as status
+                    FROM request_events re
+                    JOIN step_windows sw
+                        ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
+                    LEFT JOIN sample_info si
+                        ON si.group_id = re.group_id AND si.sample_idx = re.sample_id
+                ),
+                -- Compute reward: attribute to step of last event per sample
+                cr_attributed AS (
+                    SELECT
+                        sw.step,
+                        COALESCE(si.compute_reward_time, 0) as cr_time,
+                        COALESCE(si.status, 'normal') as status
+                    FROM last_event_per_sample le
+                    JOIN step_windows sw
+                        ON le.last_end > sw.step_start AND le.last_end <= sw.step_end
+                    LEFT JOIN sample_info si
+                        ON si.group_id = le.group_id AND si.sample_idx = le.sample_id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM request_events re2
+                        WHERE re2.group_id = le.group_id AND re2.sample_id = le.sample_id
+                          AND COALESCE(re2.is_canceled, false) = true
+                    )
+                ),
+                gen_agg AS (
+                    SELECT
+                        step,
+                        SUM(clipped_gen) as gen_all,
+                        SUM(CASE WHEN status = 'normal' THEN clipped_gen ELSE 0 END) as gen_normal,
+                        SUM(CASE WHEN status = 'discarded' THEN clipped_gen ELSE 0 END) as gen_discarded,
+                        SUM(CASE WHEN status = 'canceled' THEN clipped_gen ELSE 0 END) as gen_canceled,
+                        AVG(inference_time) as avg_inference_time
+                    FROM gen_attributed
+                    GROUP BY step
+                ),
+                cr_agg AS (
+                    SELECT
+                        step,
+                        SUM(cr_time) as cr_all,
+                        SUM(CASE WHEN status = 'normal' THEN cr_time ELSE 0 END) as cr_normal,
+                        SUM(CASE WHEN status = 'discarded' THEN cr_time ELSE 0 END) as cr_discarded,
+                        AVG(CASE WHEN cr_time > 0 THEN cr_time ELSE NULL END) as avg_cr_time
+                    FROM cr_attributed
+                    GROUP BY step
+                )
+                SELECT
+                    sw.step,
+                    sw.step_end - sw.step_start as step_duration,
+                    g.gen_all, g.gen_normal, g.gen_discarded, g.gen_canceled,
+                    g.avg_inference_time,
+                    c.cr_all, c.cr_normal, c.cr_discarded,
+                    c.avg_cr_time
+                FROM step_windows sw
+                LEFT JOIN gen_agg g ON g.step = sw.step
+                LEFT JOIN cr_agg c ON c.step = sw.step
+                WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
+                ORDER BY sw.step ASC
+            """, [req.run_path, req.run_path, req.run_path, req.run_path, req.run_path]).fetchall()
+
+            for row in timing_rows:
+                step = row[0]
+                step_duration = row[1]
+
+                if req.start_step is not None and step < req.start_step:
+                    continue
+                if req.end_step is not None and step > req.end_step:
+                    continue
+                if step_duration is None or step_duration <= 0:
+                    continue
+
+                available_lane_seconds = step_duration * total_lanes
+
+                g_all = float(row[2] or 0)
+                g_normal = float(row[3] or 0)
+                g_discarded = float(row[4] or 0)
+                g_canceled = float(row[5] or 0)
+                avg_inf = row[6]
+
+                cr_all = float(row[7] or 0)
+                cr_normal = float(row[8] or 0)
+                cr_discarded = float(row[9] or 0)
+                avg_cr = row[10]
+
+                # Avg metrics
+                if metrics_to_include is None or "timing_avg_inference_time" in metrics_to_include:
+                    if avg_inf is not None:
+                        metrics.append({"step": step, "metric_name": "timing_avg_inference_time", "value": float(avg_inf)})
+                if metrics_to_include is None or "timing_avg_compute_reward_time" in metrics_to_include:
+                    if avg_cr is not None:
+                        metrics.append({"step": step, "metric_name": "timing_avg_compute_reward_time", "value": float(avg_cr)})
+
+                # Percentage metrics
+                pct = {
+                    "timing_generation_normal_pct": g_normal / available_lane_seconds * 100,
+                    "timing_generation_discarded_pct": g_discarded / available_lane_seconds * 100,
+                    "timing_generation_canceled_pct": g_canceled / available_lane_seconds * 100,
+                    "timing_generation_all_pct": g_all / available_lane_seconds * 100,
+                    "timing_compute_reward_normal_pct": cr_normal / available_lane_seconds * 100,
+                    "timing_compute_reward_discarded_pct": cr_discarded / available_lane_seconds * 100,
+                    "timing_compute_reward_canceled_pct": 0.0,
+                    "timing_compute_reward_all_pct": cr_all / available_lane_seconds * 100,
+                }
+                pct["timing_idle_pct"] = max(0.0, 100.0 - pct["timing_generation_all_pct"] - pct["timing_compute_reward_all_pct"])
+
+                for metric_name, value in pct.items():
+                    if metrics_to_include is None or metric_name in metrics_to_include:
+                        metrics.append({"step": step, "metric_name": metric_name, "value": float(value)})
+
+        except Exception as e:
+            log.warning(f"[API] Could not compute inference timing metrics: {e}")
+
     # Add timing metrics to available metrics list
     timing_metrics_list = ["timing_step_total", "timing_step_active", "timing_microbatch_count"]
     for operation in timing_operations:
@@ -5735,6 +5943,14 @@ def get_step_metrics(req: StepMetricsRequest):
     timing_metrics_list.append("timing_save_batch_total")
     timing_metrics_list.append("timing_weight_sync_trainer_total")
     timing_metrics_list.append("timing_weight_sync_inference_total")
+    timing_metrics_list.extend([
+        "timing_avg_inference_time", "timing_avg_compute_reward_time",
+        "timing_generation_normal_pct", "timing_generation_discarded_pct",
+        "timing_generation_canceled_pct", "timing_generation_all_pct",
+        "timing_compute_reward_normal_pct", "timing_compute_reward_discarded_pct",
+        "timing_compute_reward_canceled_pct", "timing_compute_reward_all_pct",
+        "timing_idle_pct",
+    ])
     available_metrics.extend(timing_metrics_list)
     
     log.info(
@@ -6661,7 +6877,21 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     # =====================================================================
     # 21. Save-batch timing
     # =====================================================================
-    if metrics_to_include is None or "timing_save_batch_total" in metrics_to_include:
+    # save_batch_multi_map: {run_id: {step: batch_duration}} for percentage calculations
+    # Always compute the map (needed by inference timing percentages)
+    save_batch_multi_map: dict[str, dict[int, float]] = defaultdict(dict)
+    multi_inference_timing_metrics = [
+        "timing_avg_inference_time", "timing_avg_compute_reward_time",
+        "timing_generation_normal_pct", "timing_generation_discarded_pct",
+        "timing_generation_canceled_pct", "timing_generation_all_pct",
+        "timing_compute_reward_normal_pct", "timing_compute_reward_discarded_pct",
+        "timing_compute_reward_canceled_pct", "timing_compute_reward_all_pct",
+        "timing_idle_pct",
+    ]
+    need_save_batch_multi = metrics_to_include is None or "timing_save_batch_total" in metrics_to_include or any(
+        m in metrics_to_include for m in multi_inference_timing_metrics
+    )
+    if need_save_batch_multi:
         try:
             for row in con.execute(f"""
                 WITH batch_events AS (
@@ -6701,7 +6931,9 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 if req.end_step is not None and step > req.end_step:
                     continue
                 if batch_duration is not None and batch_duration >= 0:
-                    _add(rid, step, "timing_save_batch_total", batch_duration)
+                    save_batch_multi_map[rid][step] = float(batch_duration)
+                    if metrics_to_include is None or "timing_save_batch_total" in metrics_to_include:
+                        _add(rid, step, "timing_save_batch_total", batch_duration)
         except Exception as e:
             log.warning(f"[API] Could not compute save_batch timing metric: {e}")
 
@@ -6740,6 +6972,199 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             _add(rid, step, "timing_weight_sync_inference_total", wc_time)
     except Exception as e:
         log.warning(f"[API] Could not compute inference weight_broadcast metric: {e}")
+
+    # =====================================================================
+    # 24. Inference timing metrics (generation/reward/idle breakdown)
+    # Uses save_batch timestamps as step windows. Events are attributed to
+    # the step whose window contains the event's end_time. Generation time
+    # is the actual lane occupation (end_time - start_time), clipped to the
+    # step window. Compute reward time is attributed to the step where the
+    # last turn of the sample ends.
+    # =====================================================================
+    any_inference_timing_needed = metrics_to_include is None or any(
+        m in metrics_to_include for m in multi_inference_timing_metrics
+    )
+    if any_inference_timing_needed:
+        try:
+            # Fetch configs for all runs to compute total_lanes per run
+            run_total_lanes: dict[str, int] = {}
+            config_rows = con.execute(f"""
+                SELECT run_id, last_config_json FROM ingest_state
+                WHERE run_id IN ({a_in_ph})
+            """, active_runs).fetchall()
+            for crow in config_rows:
+                rid = crow[0]
+                rcfg = json.loads(crow[1]) if crow[1] else {}
+                ns = rcfg.get("num_inference_servers") or max(
+                    1, rcfg.get("inference_num_workers", 1) // max(1, rcfg.get("inference_tensor_parallel_size", 1))
+                )
+                mc = rcfg.get("max_concurrent_prompts") or (
+                    rcfg.get("max_concurrent_prompts_per_server", 12) * ns
+                )
+                gs = rcfg.get("group_size", 1)
+                lps = max(1, int((mc / ns) * gs))
+                run_total_lanes[rid] = lps * ns
+
+            # --- Single query per run: generation + compute_reward sums per step ---
+            # Step windows from save_batch; events attributed by end_time;
+            # generation = clipped (end_time - start_time);
+            # compute_reward attributed to step of last turn per sample.
+            for run_id in active_runs:
+                tl = run_total_lanes.get(run_id, 1)
+                timing_rows = con.execute("""
+                    WITH batch_events AS (
+                        SELECT step, MIN(timestamp) as batch_time
+                        FROM events_orchestrator
+                        WHERE run_id = ? AND event_type = 'save_batch' AND step IS NOT NULL
+                        GROUP BY step
+                    ),
+                    training_start AS (
+                        SELECT MIN(timestamp) as ts FROM events_orchestrator
+                        WHERE run_id = ? AND event_type = 'training_loop_start'
+                    ),
+                    step_windows AS (
+                        SELECT step,
+                               COALESCE(LAG(batch_time) OVER (ORDER BY step), t.ts) as step_start,
+                               batch_time as step_end
+                        FROM batch_events CROSS JOIN training_start t
+                    ),
+                    request_events AS (
+                        SELECT sample_id, group_id, start_time, end_time,
+                               inference_time, is_canceled
+                        FROM events_inference
+                        WHERE run_id = ? AND event_type = 'request'
+                          AND (is_eval = false OR is_eval IS NULL)
+                    ),
+                    last_event_per_sample AS (
+                        SELECT group_id, sample_id, MAX(end_time) as last_end
+                        FROM request_events
+                        GROUP BY group_id, sample_id
+                    ),
+                    sample_info AS (
+                        SELECT group_id, sample_idx, compute_reward_time, 'normal' as status
+                        FROM samples_data WHERE run_id = ?
+                        UNION ALL
+                        SELECT group_id, sample_idx, compute_reward_time, 'discarded' as status
+                        FROM samples_data_discarded WHERE run_id = ?
+                    ),
+                    gen_attributed AS (
+                        SELECT
+                            sw.step,
+                            GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
+                            re.inference_time,
+                            CASE
+                                WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
+                                WHEN si.status IS NOT NULL THEN si.status
+                                ELSE 'normal'
+                            END as status
+                        FROM request_events re
+                        JOIN step_windows sw
+                            ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
+                        LEFT JOIN sample_info si
+                            ON si.group_id = re.group_id AND si.sample_idx = re.sample_id
+                    ),
+                    cr_attributed AS (
+                        SELECT
+                            sw.step,
+                            COALESCE(si.compute_reward_time, 0) as cr_time,
+                            COALESCE(si.status, 'normal') as status
+                        FROM last_event_per_sample le
+                        JOIN step_windows sw
+                            ON le.last_end > sw.step_start AND le.last_end <= sw.step_end
+                        LEFT JOIN sample_info si
+                            ON si.group_id = le.group_id AND si.sample_idx = le.sample_id
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM request_events re2
+                            WHERE re2.group_id = le.group_id AND re2.sample_id = le.sample_id
+                              AND COALESCE(re2.is_canceled, false) = true
+                        )
+                    ),
+                    gen_agg AS (
+                        SELECT
+                            step,
+                            SUM(clipped_gen) as gen_all,
+                            SUM(CASE WHEN status = 'normal' THEN clipped_gen ELSE 0 END) as gen_normal,
+                            SUM(CASE WHEN status = 'discarded' THEN clipped_gen ELSE 0 END) as gen_discarded,
+                            SUM(CASE WHEN status = 'canceled' THEN clipped_gen ELSE 0 END) as gen_canceled,
+                            AVG(inference_time) as avg_inference_time
+                        FROM gen_attributed
+                        GROUP BY step
+                    ),
+                    cr_agg AS (
+                        SELECT
+                            step,
+                            SUM(cr_time) as cr_all,
+                            SUM(CASE WHEN status = 'normal' THEN cr_time ELSE 0 END) as cr_normal,
+                            SUM(CASE WHEN status = 'discarded' THEN cr_time ELSE 0 END) as cr_discarded,
+                            AVG(CASE WHEN cr_time > 0 THEN cr_time ELSE NULL END) as avg_cr_time
+                        FROM cr_attributed
+                        GROUP BY step
+                    )
+                    SELECT
+                        sw.step,
+                        sw.step_end - sw.step_start as step_duration,
+                        g.gen_all, g.gen_normal, g.gen_discarded, g.gen_canceled,
+                        g.avg_inference_time,
+                        c.cr_all, c.cr_normal, c.cr_discarded,
+                        c.avg_cr_time
+                    FROM step_windows sw
+                    LEFT JOIN gen_agg g ON g.step = sw.step
+                    LEFT JOIN cr_agg c ON c.step = sw.step
+                    WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
+                    ORDER BY sw.step ASC
+                """, [run_id, run_id, run_id, run_id, run_id]).fetchall()
+
+                for row in timing_rows:
+                    step = row[0]
+                    step_duration = row[1]
+
+                    if req.start_step is not None and step < req.start_step:
+                        continue
+                    if req.end_step is not None and step > req.end_step:
+                        continue
+                    if step_duration is None or step_duration <= 0:
+                        continue
+
+                    available_lane_seconds = step_duration * tl
+
+                    g_all = float(row[2] or 0)
+                    g_normal = float(row[3] or 0)
+                    g_discarded = float(row[4] or 0)
+                    g_canceled = float(row[5] or 0)
+                    avg_inf = row[6]
+
+                    cr_all = float(row[7] or 0)
+                    cr_normal = float(row[8] or 0)
+                    cr_discarded = float(row[9] or 0)
+                    avg_cr = row[10]
+
+                    # Avg metrics
+                    if metrics_to_include is None or "timing_avg_inference_time" in metrics_to_include:
+                        if avg_inf is not None:
+                            _add(run_id, step, "timing_avg_inference_time", float(avg_inf))
+                    if metrics_to_include is None or "timing_avg_compute_reward_time" in metrics_to_include:
+                        if avg_cr is not None:
+                            _add(run_id, step, "timing_avg_compute_reward_time", float(avg_cr))
+
+                    # Percentage metrics
+                    pct = {
+                        "timing_generation_normal_pct": g_normal / available_lane_seconds * 100,
+                        "timing_generation_discarded_pct": g_discarded / available_lane_seconds * 100,
+                        "timing_generation_canceled_pct": g_canceled / available_lane_seconds * 100,
+                        "timing_generation_all_pct": g_all / available_lane_seconds * 100,
+                        "timing_compute_reward_normal_pct": cr_normal / available_lane_seconds * 100,
+                        "timing_compute_reward_discarded_pct": cr_discarded / available_lane_seconds * 100,
+                        "timing_compute_reward_canceled_pct": 0.0,
+                        "timing_compute_reward_all_pct": cr_all / available_lane_seconds * 100,
+                    }
+                    pct["timing_idle_pct"] = max(0.0, 100.0 - pct["timing_generation_all_pct"] - pct["timing_compute_reward_all_pct"])
+
+                    for mname, val in pct.items():
+                        if metrics_to_include is None or mname in metrics_to_include:
+                            _add(run_id, step, mname, val)
+
+        except Exception as e:
+            log.warning(f"[API] Could not compute inference timing metrics (multi): {e}")
 
     # =====================================================================
     # Build final response per run
@@ -6803,6 +7228,12 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         timing_list.extend([
             "timing_waiting_for_data", "timing_save_batch_total",
             "timing_weight_sync_trainer_total", "timing_weight_sync_inference_total",
+            "timing_avg_inference_time", "timing_avg_compute_reward_time",
+            "timing_generation_normal_pct", "timing_generation_discarded_pct",
+            "timing_generation_canceled_pct", "timing_generation_all_pct",
+            "timing_compute_reward_normal_pct", "timing_compute_reward_discarded_pct",
+            "timing_compute_reward_canceled_pct", "timing_compute_reward_all_pct",
+            "timing_idle_pct",
         ])
         avail.extend(timing_list)
 

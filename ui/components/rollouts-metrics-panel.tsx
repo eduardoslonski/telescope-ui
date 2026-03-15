@@ -220,12 +220,11 @@ const DISCARDED_STATS_CONFIG = {
 }
 
 const TIMELINE_CONFIG = {
-  timeline_full_step: {
-    label: "Timeline",
+  timeline_trainer_full_step: {
+    label: "Timeline Trainer",
     metrics: [
       { prefix: "timing_step_total", label: "Time per Step", simple: true, group: "Full Step (Total Time)" },
       { prefix: "timing_step_active", label: "Time per Step Active", simple: true, group: "Full Step (Total Time)" },
-      { prefix: "timing_save_batch_total", label: "Batch Completion (Save Batch)", simple: true, group: "Full Step (Total Time)" },
       { prefix: "timing_microbatch_count", label: "Microbatches per Step", simple: true, group: "Full Step (Total Time)" },
       { prefix: "timing_forward_total", label: "Timing Forward", simple: true, group: "Full Step (Total Time)" },
       { prefix: "timing_backward_total", label: "Timing Backward", simple: true, group: "Full Step (Total Time)" },
@@ -239,8 +238,8 @@ const TIMELINE_CONFIG = {
       { prefix: "timing_weight_sync_inference_total", label: "Timing Weight Broadcast (Inference)", simple: true, group: "Full Step (Total Time)" },
     ],
   },
-  timeline_microbatch: {
-    label: "Timeline",
+  timeline_trainer_microbatch: {
+    label: "Timeline Trainer",
     metrics: [
       { prefix: "timing_forward_microbatch_mean", label: "Microbatch Timing Forward", simple: true, group: "Microbatch (Mean Time)" },
       { prefix: "timing_backward_microbatch_mean", label: "Microbatch Timing Backward", simple: true, group: "Microbatch (Mean Time)" },
@@ -249,6 +248,23 @@ const TIMELINE_CONFIG = {
       { prefix: "timing_compute_entropy_microbatch_mean", label: "Microbatch Timing Compute Entropy", simple: true, group: "Microbatch (Mean Time)" },
       { prefix: "timing_data_to_device_microbatch_mean", label: "Microbatch Timing Data to Device", simple: true, group: "Microbatch (Mean Time)" },
       { prefix: "timing_prepare_tensors_microbatch_mean", label: "Microbatch Timing Prepare Tensors", simple: true, group: "Microbatch (Mean Time)" },
+    ],
+  },
+  timeline_inference: {
+    label: "Timeline Inference",
+    metrics: [
+      { prefix: "timing_save_batch_total", label: "Batch Completion (Save Batch)", simple: true, group: "Batch & Averages" },
+      { prefix: "timing_avg_inference_time", label: "Avg Generation Time", simple: true, group: "Batch & Averages" },
+      { prefix: "timing_avg_compute_reward_time", label: "Avg Compute Reward Time", simple: true, group: "Batch & Averages" },
+      { prefix: "timing_generation_normal_pct", label: "Generation Normal", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_generation_discarded_pct", label: "Generation Discarded", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_generation_canceled_pct", label: "Generation Canceled", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_generation_all_pct", label: "Generation All", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_compute_reward_normal_pct", label: "Compute Reward Normal", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_compute_reward_discarded_pct", label: "Compute Reward Discarded", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_compute_reward_canceled_pct", label: "Compute Reward Canceled", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_compute_reward_all_pct", label: "Compute Reward All", simple: true, group: "Time Breakdown (% of Step Time)" },
+      { prefix: "timing_idle_pct", label: "Idle Time", simple: true, group: "Time Breakdown (% of Step Time)" },
     ],
   },
 }
@@ -432,7 +448,7 @@ function buildMetricOptions(
     pushMetricOptions(options, key, config)
   }
 
-  // 8. Timeline
+  // 8. Timeline Trainer & Inference
   for (const [key, config] of Object.entries(TIMELINE_CONFIG)) {
     pushMetricOptions(options, key, config)
   }

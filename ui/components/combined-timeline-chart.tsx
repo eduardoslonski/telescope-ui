@@ -329,6 +329,7 @@ interface CombinedTimelineChartProps {
   numInferenceServers?: number
   maxConcurrentPrompts?: number
   groupSize?: number
+  freeLaneAfterGeneration?: boolean
 }
 
 export function CombinedTimelineChart({
@@ -351,6 +352,7 @@ export function CombinedTimelineChart({
   numInferenceServers = 0,
   maxConcurrentPrompts = 12,
   groupSize = 1,
+  freeLaneAfterGeneration = false,
 }: CombinedTimelineChartProps) {
   const highlightDiscarded = useAtomValue(inferenceHighlightDiscardedAtom)
 
@@ -463,6 +465,7 @@ export function CombinedTimelineChart({
             inferenceServerNodeMap={inferenceServerNodeMap}
             totalSetupNodes={totalSetupNodes}
             isLoading={isLoading}
+            freeLaneAfterGeneration={freeLaneAfterGeneration}
           />
         )}
 
@@ -797,6 +800,7 @@ function InferenceSection({
   inferenceServerNodeMap,
   totalSetupNodes,
   isLoading,
+  freeLaneAfterGeneration = false,
 }: {
   servers: number[]
   eventsByServer: Record<number, InferenceEvent[]>
@@ -806,6 +810,7 @@ function InferenceSection({
   inferenceServerNodeMap?: Record<number, number | null>
   totalSetupNodes?: number
   isLoading?: boolean
+  freeLaneAfterGeneration?: boolean
 }) {
   const DEFAULT_LANE_HEIGHT = 14
   const LANE_HEIGHT_STEP = 4
@@ -1214,6 +1219,7 @@ function InferenceSection({
                         laneHeight={laneHeight}
                         laneStart={childLaneStart}
                         maxLanesToShow={childMaxLanesToShow}
+                        freeLaneAfterGeneration={freeLaneAfterGeneration}
                       />
                     ))}
                   </div>
@@ -1703,6 +1709,7 @@ function InferenceServerTimeline({
   laneHeight: laneHeightProp = 14,
   laneStart = 0,
   maxLanesToShow,
+  freeLaneAfterGeneration = false,
 }: {
   server: number
   nodeId?: number | null
@@ -1721,6 +1728,7 @@ function InferenceServerTimeline({
   laneHeight?: number
   laneStart?: number
   maxLanesToShow?: number
+  freeLaneAfterGeneration?: boolean
 }) {
   // Only expose nodeId for tooltips when there are multiple nodes
   const displayNodeId =
@@ -1757,13 +1765,17 @@ function InferenceServerTimeline({
       )
       const laneEnds: number[] = []
       for (const e of sorted) {
+        // When freeLaneAfterGeneration, the lane is freed after generation
+        // (end_time), so compute_reward doesn't block the lane.
+        const eventLaneEnd = freeLaneAfterGeneration
+          ? e.end_time + (e.environment_response_time ?? 0)
+          : e.end_time +
+            (e.environment_response_time ?? 0) +
+            (e.compute_reward_time ?? 0)
         let placed = false
         for (let i = 0; i < laneEnds.length; i++) {
           if (laneEnds[i] <= e.start_time) {
-            laneEnds[i] =
-              e.end_time +
-              (e.environment_response_time ?? 0) +
-              (e.compute_reward_time ?? 0)
+            laneEnds[i] = eventLaneEnd
             withLane.push({ ...e, lane: i })
             placed = true
             break
@@ -1771,11 +1783,7 @@ function InferenceServerTimeline({
         }
         if (!placed) {
           const newLane = laneEnds.length
-          laneEnds.push(
-            e.end_time +
-              (e.environment_response_time ?? 0) +
-              (e.compute_reward_time ?? 0),
-          )
+          laneEnds.push(eventLaneEnd)
           withLane.push({ ...e, lane: newLane })
         }
       }
@@ -1786,7 +1794,7 @@ function InferenceServerTimeline({
       assignedEvents: withLane,
       actualNumLanes: Math.max(numLanes, maxLane + 1),
     }
-  }, [requestEvents, numLanes])
+  }, [requestEvents, numLanes, freeLaneAfterGeneration])
 
   const intervalEnd = intervalStart + intervalDuration
   const laneHeight = laneHeightProp
@@ -2112,9 +2120,18 @@ function InferenceServerTimeline({
                               100,
                           )
                           const rewardDurationMs = rewardTime * 1000
+                          // When freeLaneAfterGeneration, compute reward can overlap
+                          // with next generation. Show it with smaller height,
+                          // vertically centered, on top (higher z-index).
+                          const rewardHeight = freeLaneAfterGeneration
+                            ? Math.max(3, Math.round(laneHeight * 0.4))
+                            : undefined
+                          const rewardTop = freeLaneAfterGeneration
+                            ? Math.round((laneHeight - rewardHeight!) / 2)
+                            : undefined
                           return (
                             <HoverTooltipBlock
-                              className="absolute top-0 bottom-0 group cursor-pointer"
+                              className="absolute group cursor-pointer"
                               style={{
                                 left: `${rewardLeftPct}%`,
                                 width: `${Math.min(rewardWidthPct, 100 - rewardLeftPct)}%`,
@@ -2123,6 +2140,9 @@ function InferenceServerTimeline({
                                 border: "1px solid rgba(0, 0, 0, 0.2)",
                                 boxSizing: "border-box",
                                 opacity: rewardStyle.opacity,
+                                ...(freeLaneAfterGeneration
+                                  ? { top: rewardTop, height: rewardHeight, zIndex: 2 }
+                                  : { top: 0, bottom: 0 }),
                               }}
                               onClick={() => onEventClick(event)}
                               tooltip={
