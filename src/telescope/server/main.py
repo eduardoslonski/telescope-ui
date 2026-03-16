@@ -407,6 +407,11 @@ class StepTimesRequest(BaseModel):
     run_path: str
 
 
+class InferencePerformanceRequest(BaseModel):
+    run_path: str
+    bucket_seconds: int = 60
+
+
 class StepHistogramRequest(BaseModel):
     run_path: str
     step: int
@@ -7291,6 +7296,161 @@ def get_step_times(req: StepTimesRequest):
     return {
         "step_times": step_times,
         "first_step_time": first_step_time,
+    }
+
+
+@app.post("/inference-performance")
+def get_inference_performance(req: InferencePerformanceRequest):
+    """Get inference performance metrics bucketed by time intervals."""
+    log.info(f"[API] Getting inference performance for {req.run_path}")
+    con = connect()
+    bucket = req.bucket_seconds
+
+    # Inference calls per bucket (all inference requests by end_time)
+    inference_calls = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Requests done per bucket (non-canceled completed requests)
+    requests_done = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Rollouts group done per bucket
+    rollouts_group_done = con.execute(
+        """
+        SELECT FLOOR(timestamp / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM events_orchestrator
+        WHERE run_id = ? AND event_type = 'rollouts_group_done' AND timestamp IS NOT NULL
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Rollouts group done kept per bucket (groups that appear in samples_data)
+    rollouts_group_done_kept = con.execute(
+        """
+        WITH group_completion AS (
+            SELECT group_id, MAX(end_time) as completion_time
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+              AND (is_canceled = false OR is_canceled IS NULL)
+            GROUP BY group_id
+        )
+        SELECT FLOOR(gc.completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM group_completion gc
+        WHERE EXISTS (
+            SELECT 1 FROM samples_data sd
+            WHERE sd.run_id = ? AND sd.group_id = gc.group_id
+        )
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [req.run_path, bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Rollouts group done discarded per bucket (groups that appear in samples_data_discarded)
+    rollouts_group_done_discarded = con.execute(
+        """
+        WITH group_completion AS (
+            SELECT group_id, MAX(end_time) as completion_time
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+              AND (is_canceled = false OR is_canceled IS NULL)
+            GROUP BY group_id
+        )
+        SELECT FLOOR(gc.completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM group_completion gc
+        WHERE EXISTS (
+            SELECT 1 FROM samples_data_discarded sdd
+            WHERE sdd.run_id = ? AND sdd.group_id = gc.group_id
+        )
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [req.run_path, bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Rollouts group done canceled per bucket (groups with any canceled request)
+    rollouts_group_done_canceled = con.execute(
+        """
+        WITH canceled_groups AS (
+            SELECT group_id, MAX(end_time) as completion_time
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+              AND is_canceled = true
+            GROUP BY group_id
+        )
+        SELECT FLOOR(completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM canceled_groups
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [req.run_path, bucket, bucket],
+    ).fetchall()
+
+    # Step times (for vertical lines)
+    step_rows = con.execute(
+        """
+        SELECT step, MAX(end_time) as last_time
+        FROM events_trainer
+        WHERE run_id = ? AND step >= 0
+        GROUP BY step
+        ORDER BY step ASC
+        """,
+        [req.run_path],
+    ).fetchall()
+
+    con.close()
+
+    # Find earliest time across all data for relative time calculation
+    all_bucket_rows = [
+        inference_calls, requests_done, rollouts_group_done,
+        rollouts_group_done_kept, rollouts_group_done_discarded, rollouts_group_done_canceled,
+    ]
+    first_time = None
+    for rows in all_bucket_rows:
+        if rows:
+            t = rows[0][0]
+            if t is not None and (first_time is None or t < first_time):
+                first_time = t
+    if step_rows:
+        t = step_rows[0][1]
+        if t is not None and (first_time is None or t < first_time):
+            first_time = t
+
+    def format_buckets(rows):
+        return [{"time": row[0], "count": row[1]} for row in rows if row[0] is not None]
+
+    return {
+        "inference_calls": format_buckets(inference_calls),
+        "requests_done": format_buckets(requests_done),
+        "rollouts_group_done": format_buckets(rollouts_group_done),
+        "rollouts_group_done_kept": format_buckets(rollouts_group_done_kept),
+        "rollouts_group_done_discarded": format_buckets(rollouts_group_done_discarded),
+        "rollouts_group_done_canceled": format_buckets(rollouts_group_done_canceled),
+        "step_times": [
+            {"step": row[0], "time": row[1]}
+            for row in step_rows
+            if row[1] is not None
+        ],
+        "first_time": first_time,
     }
 
 

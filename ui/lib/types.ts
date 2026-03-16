@@ -607,6 +607,26 @@ export interface StepTimesResponse {
 }
 
 // ============================================================================
+// Inference Performance Types
+// ============================================================================
+
+export interface InferencePerformanceBucket {
+  time: number
+  count: number
+}
+
+export interface InferencePerformanceResponse {
+  inference_calls: InferencePerformanceBucket[]
+  requests_done: InferencePerformanceBucket[]
+  rollouts_group_done: InferencePerformanceBucket[]
+  rollouts_group_done_kept: InferencePerformanceBucket[]
+  rollouts_group_done_discarded: InferencePerformanceBucket[]
+  rollouts_group_done_canceled: InferencePerformanceBucket[]
+  step_times: StepTime[]
+  first_time: number | null
+}
+
+// ============================================================================
 // Step Histogram Types
 // ============================================================================
 
@@ -686,9 +706,10 @@ export interface CustomPlotItem {
   id: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance"
   evalName?: string
   distMetricType?: string
+  inferenceMetricType?: string
 }
 
 export interface CustomGroup {

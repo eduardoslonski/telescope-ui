@@ -52,7 +52,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCustomMetricsLayout, useCustomMetricsTemplate, useStepTimes } from "@/hooks/use-run-data"
-import { MetricChart, EvalMetricChart, DistributionOverTimeChart } from "@/components/step-metrics-charts"
+import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard } from "@/components/step-metrics-charts"
 import type {
   CustomMetricsLayout,
   CustomSection,
@@ -92,10 +92,11 @@ export interface PlotCatalogItem {
   group?: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance"
   evalName?: string
   distMetricType?: string
   histogramMetricType?: string
+  inferenceMetricType?: string
   simple?: boolean
 }
 
@@ -460,6 +461,24 @@ export function buildPlotCatalog(
       label: m.label,
       plotType: "step_metric",
       simple: true,
+    })
+  }
+
+  // Inference Performance
+  for (const m of [
+    { key: "inference_calls", label: "Inference Calls / min", inferenceMetricType: "inference_calls" },
+    { key: "requests_done", label: "Requests Done / min", inferenceMetricType: "requests_done" },
+    { key: "rollouts_group_done", label: "Rollouts Group Done / min", inferenceMetricType: "rollouts_group_done" },
+    { key: "rollouts_group_done_kept", label: "Rollouts Group Done Kept / min", inferenceMetricType: "rollouts_group_done_kept" },
+    { key: "rollouts_group_done_discarded", label: "Rollouts Group Done Discarded / min", inferenceMetricType: "rollouts_group_done_discarded" },
+    { key: "rollouts_group_done_canceled", label: "Rollouts Group Done Canceled / min", inferenceMetricType: "rollouts_group_done_canceled" },
+  ]) {
+    catalog.push({
+      section: "Inference Performance",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "inference_performance",
+      inferenceMetricType: m.inferenceMetricType,
     })
   }
 
@@ -830,6 +849,21 @@ export function SortablePlotCard({
             />
           ) : null
         })()
+      ) : plot.plotType === "inference_performance" && plot.inferenceMetricType ? (
+        (() => {
+          const selectedRun = chartProps.runs.find((r) => r.isSelected) ?? chartProps.runs[0]
+          return selectedRun ? (
+            <InferencePerformanceChartCard
+              runPath={selectedRun.runPath}
+              shouldPoll={chartProps.shouldPoll}
+              scrollRoot={chartProps.scrollRoot}
+              inferenceMetricType={plot.inferenceMetricType!}
+              label={label}
+              headerPrefix={dragHandle}
+              headerSuffix={deleteButton}
+            />
+          ) : null
+        })()
       ) : plot.plotType === "eval_metric" && plot.evalName ? (
         <EvalMetricChart
           runs={chartProps.runs}
@@ -923,6 +957,7 @@ function SortableGroup({
       plotType: item.plotType,
       evalName: item.evalName,
       distMetricType: item.distMetricType,
+      inferenceMetricType: item.inferenceMetricType,
     }
     onUpdate({ ...group, plots: [...group.plots, newPlot] })
   }
@@ -1136,6 +1171,7 @@ function SortableSection({
       plotType: item.plotType,
       evalName: item.evalName,
       distMetricType: item.distMetricType,
+      inferenceMetricType: item.inferenceMetricType,
     }
     onUpdate({ ...section, plots: [...section.plots, newPlot] })
   }

@@ -693,6 +693,8 @@ export default function HomePage() {
                               label: item.label,
                               plotType: item.plotType,
                               evalName: item.evalName,
+                              distMetricType: item.distMetricType,
+                              inferenceMetricType: item.inferenceMetricType,
                             },
                           ])
                         }}
