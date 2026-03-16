@@ -23,10 +23,15 @@ import {
   timelineIntervalAtom,
   inferenceHighlightDiscardedAtom,
   inferenceShowComputeRewardAtom,
+  darkModeAtom,
 } from "@/lib/atoms"
 import {
   formatTrainerEventTitle,
   getTrainerEventColor,
+  INFERENCE_REQUEST_CANCELED_COLOR,
+  INFERENCE_REQUEST_CANCELED_COLOR_DARK,
+  INFERENCE_REQUEST_DISCARDED_COLOR,
+  INFERENCE_REQUEST_DISCARDED_COLOR_DARK,
 } from "@/lib/constants"
 import {
   useGpuMetricsForTrainerRanks,
@@ -605,6 +610,7 @@ function TimelineFooter({
   trainerEvents?: TrainerEvent[]
   totalSetupNodes?: number
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const [selectedRequest, setSelectedRequest] = useAtom(selectedInferenceRequestAtom)
   const [selectedTrainerEvent, setSelectedTrainerEvent] = useAtom(selectedTrainerEventAtom)
   const [activeTab, setActiveTab] = useState<FooterTab>("inference")
@@ -861,7 +867,7 @@ function TimelineFooter({
   const showToggle = hasInference && hasTrainer
 
   return (
-    <footer className="border-t bg-white shrink-0 h-[28vh] flex flex-col">
+    <footer className="border-t bg-background shrink-0 h-[28vh] flex flex-col">
       {/* Footer header */}
       <div className="flex items-center gap-3 px-4 py-2 shrink-0">
         {/* Tab toggle - only when both are selected */}
@@ -871,7 +877,7 @@ function TimelineFooter({
               onClick={() => setActiveTab("inference")}
               className={`text-[11px] font-medium px-2.5 py-1 rounded transition-colors ${
                 resolvedTab === "inference"
-                  ? "bg-white text-foreground shadow-sm"
+                  ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -881,7 +887,7 @@ function TimelineFooter({
               onClick={() => setActiveTab("trainer")}
               className={`text-[11px] font-medium px-2.5 py-1 rounded transition-colors ${
                 resolvedTab === "trainer"
-                  ? "bg-white text-foreground shadow-sm"
+                  ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -896,7 +902,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className="w-2.5 h-2.5 rounded-sm"
-                style={{ backgroundColor: isCanceledGroup ? "#adadad" : isDiscardedGroup ? "#6b7280" : selectedRequest.isEval ? "#047857" : "#075985" }}
+                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : selectedRequest.isEval ? "#047857" : "#075985" }}
               />
               <span className="text-xs font-medium">Sample {selectedRequest.sampleId}</span>
             </div>
@@ -904,12 +910,12 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className={`w-2.5 h-2.5 rounded-sm${!footerDiscardStatusReady ? " animate-pulse bg-muted" : ""}`}
-                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? "#c9c9c9" : isDiscardedGroup ? "#a1a1a1" : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
+                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
               />
               <span className="text-xs font-medium">Group {selectedRequest.groupId}</span>
             </div>
             {isCanceledGroup && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border">
                 Canceled due to async policy
               </span>
             )}

@@ -1,5 +1,7 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+import { useAtomValue } from "jotai"
+import { darkModeAtom } from "@/lib/atoms"
 import { ChevronDown, X, SlidersHorizontal, Loader2 } from "lucide-react"
 import uPlot from "uplot"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
@@ -514,7 +516,7 @@ function FilterBadge({
 }) {
   return (
     <span
-      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-white border border-gray-400 text-gray-600 rounded-full cursor-pointer hover:bg-gray-50 transition-colors"
+      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-background border border-border text-muted-foreground rounded-full cursor-pointer hover:bg-muted transition-colors"
       onClick={(e) => {
         e.stopPropagation()
         onRemove()
@@ -546,6 +548,7 @@ function CpuMetricChart({
   /** Offset in seconds from run start to window start, for global x-axis labels */
   xOffset?: number
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -699,8 +702,8 @@ function CpuMetricChart({
       minY !== null ? minY : Math.max(0, minVal - pad),
       maxY !== null ? maxY : maxVal + pad,
     ]
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     // Dynamic Y axis size calculation based on tick label width
     const calcYAxisSize = (_u: uPlot, values: string[]) => {
@@ -893,7 +896,7 @@ function CpuMetricChart({
       chart.destroy()
       chartRef.current = null
     }
-  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, showLegend, metricInfo.unit, nodeIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY])
+  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, showLegend, metricInfo.unit, nodeIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode])
 
   const handleMouseLeave = useCallback(() => {
     if (tooltipRef.current) tooltipRef.current.style.display = "none"
@@ -902,7 +905,7 @@ function CpuMetricChart({
   return (
     <div
       className={cn(
-        "group/chart rounded-lg border border-gray-200 p-3 transition-opacity bg-white",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
         isLoading && "opacity-60"
       )}
     >
@@ -972,12 +975,12 @@ function CpuMetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-48 relative bg-white rounded"
+          className="h-48 relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
           {isRefetching && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
           <div
             ref={tooltipRef}
@@ -1044,7 +1047,7 @@ function GpuMetricsGrid({
 
   if (metricsToRender.length === 0 && !isLoading) {
     return (
-      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-gray-200 bg-white">
+      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
         No GPU metrics data available
       </div>
     )
@@ -1126,7 +1129,7 @@ function CpuMetricsGrid({
 
   if (metricsToRender.length === 0 && !isLoading) {
     return (
-      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-gray-200 bg-white">
+      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
         No CPU metrics data available
       </div>
     )
@@ -1173,6 +1176,7 @@ function VllmMetricChart({
   overrideTimeRange?: { start: number; end: number } | null
   xOffset?: number
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -1320,8 +1324,8 @@ function VllmMetricChart({
       minY !== null ? minY : Math.max(0, minVal - pad),
       maxY !== null ? maxY : maxVal + pad,
     ]
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     const calcYAxisSize = (_u: uPlot, values: string[]) => {
       if (!values || values.length === 0) return 40
@@ -1508,7 +1512,7 @@ function VllmMetricChart({
       chart.destroy()
       chartRef.current = null
     }
-  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, metricInfo.unit, serverIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY])
+  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, metricInfo.unit, serverIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode])
 
   const handleMouseLeave = useCallback(() => {
     if (tooltipRef.current) tooltipRef.current.style.display = "none"
@@ -1517,7 +1521,7 @@ function VllmMetricChart({
   return (
     <div
       className={cn(
-        "group/chart rounded-lg border border-gray-200 p-3 transition-opacity bg-white",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
         isLoading && "opacity-60"
       )}
     >
@@ -1587,12 +1591,12 @@ function VllmMetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-48 relative bg-white rounded"
+          className="h-48 relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
           {isRefetching && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
           <div
             ref={tooltipRef}
@@ -1712,7 +1716,7 @@ function VllmMetricsGrid({
 
   if (metricsToRender.length === 0 && !isLoading) {
     return (
-      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-gray-200 bg-white">
+      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
         No vLLM metrics data available
       </div>
     )
@@ -1758,7 +1762,7 @@ function NodeGroupCollapsible({
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <CollapsibleTrigger asChild>
-        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
           <div className="flex items-center gap-1.5">
             <ChevronDown
               className={cn(
@@ -1954,7 +1958,7 @@ function RoleSection({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className="flex items-center gap-2 mb-3">
         <CollapsibleTrigger asChild>
-          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <ChevronDown
               className={cn(
                 "h-4 w-4 text-muted-foreground transition-transform",
@@ -2432,7 +2436,7 @@ export function SystemMetricsCharts({
       >
         <div className="flex items-center gap-2 mb-3">
           <CollapsibleTrigger asChild>
-            <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+            <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
               <div className="flex items-center gap-1.5">
                 <ChevronDown
                   className={cn(
@@ -2525,7 +2529,7 @@ export function SystemMetricsCharts({
                 {showInferenceSection && (
                   <>
                     {showTrainerSection && (
-                      <div className="border-t border-gray-200 my-3" />
+                      <div className="border-t border-border my-3" />
                     )}
                     <RoleSection
                       title="Inference"
@@ -2547,7 +2551,7 @@ export function SystemMetricsCharts({
                 {!isLoading &&
                   trainerGpuMetrics.length === 0 &&
                   inferenceGpuMetrics.length === 0 && (
-                    <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-gray-200 bg-white">
+                    <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
                       No GPU data matches the trainer/inference role configuration
                     </div>
                   )}
@@ -2557,12 +2561,12 @@ export function SystemMetricsCharts({
         </CollapsibleContent>
       </Collapsible>
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* CPU Metrics Section */}
       <Collapsible open={cpuMetricsOpen} onOpenChange={setCpuMetricsOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -2591,10 +2595,10 @@ export function SystemMetricsCharts({
       {/* vLLM Metrics Section */}
       {(vllmMetrics && vllmMetrics.length > 0) || (availableVllmMetrics && availableVllmMetrics.length > 0) || isLoading ? (
         <>
-          <div className="border-t border-gray-200 my-3" />
+          <div className="border-t border-border my-3" />
           <Collapsible open={vllmMetricsOpen} onOpenChange={setVllmMetricsOpen}>
             <CollapsibleTrigger asChild>
-              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
                 <div className="flex items-center gap-1.5">
                   <ChevronDown
                     className={cn(
