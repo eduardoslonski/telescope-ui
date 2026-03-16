@@ -19,7 +19,7 @@ import {
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 import { useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Plus, X, GripVertical, Pencil, Loader2 } from "lucide-react"
+import { Check, ChevronDown, Plus, X, GripVertical, Pencil, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_BASE } from "@/lib/constants"
 import {
@@ -600,18 +600,26 @@ export function plotItemKey(item: {
 export function PlotSelectPopover({
   catalog,
   onSelect,
+  onDeselect,
   existingPlots,
   children,
+  allowDuplicates = false,
 }: {
   catalog: PlotCatalogItem[]
   onSelect: (item: PlotCatalogItem) => void
+  onDeselect?: (item: PlotCatalogItem) => void
   existingPlots?: CustomPlotItem[]
   children: React.ReactNode
+  allowDuplicates?: boolean
 }) {
-  const existingKeys = useMemo(
-    () => new Set((existingPlots ?? []).map(plotItemKey)),
-    [existingPlots],
-  )
+  const existingCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const p of existingPlots ?? []) {
+      const key = plotItemKey(p)
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return counts
+  }, [existingPlots])
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
 
@@ -685,26 +693,38 @@ export function PlotSelectPopover({
                     </div>
                   )}
                   {grp.items.map((item) => {
-                    const isAlreadyAdded = existingKeys.has(plotItemKey(item))
+                    const count = existingCounts.get(plotItemKey(item)) ?? 0
+                    const isSelected = count > 0
                     return (
                       <button
                         key={`${item.plotType}-${item.evalName || ""}-${item.metricKey}`}
                         type="button"
-                        disabled={isAlreadyAdded}
                         className={cn(
-                          "flex w-full items-center gap-1.5 rounded px-3 py-0.5 text-xs text-left transition-colors",
-                          isAlreadyAdded
-                            ? "text-muted-foreground/50 cursor-default"
-                            : "hover:bg-accent hover:text-accent-foreground",
+                          "flex w-full items-center gap-1.5 rounded px-3 py-0.5 text-xs text-left transition-colors hover:bg-accent hover:text-accent-foreground",
+                          !allowDuplicates && isSelected && "text-accent-foreground",
                         )}
                         onClick={() => {
-                          if (isAlreadyAdded) return
-                          onSelect(item)
-                          setOpen(false)
-                          setSearch("")
+                          if (!allowDuplicates && isSelected && onDeselect) {
+                            onDeselect(item)
+                          } else {
+                            onSelect(item)
+                          }
+                          if (allowDuplicates) {
+                            setOpen(false)
+                            setSearch("")
+                          }
                         }}
                       >
-                        {item.label}
+                        <span className="flex-1">{item.label}</span>
+                        {allowDuplicates
+                          ? count > 0 && (
+                              <span className="text-[10px] text-muted-foreground tabular-nums">
+                                {count}
+                              </span>
+                            )
+                          : isSelected && (
+                              <Check className="h-3 w-3 text-muted-foreground shrink-0" />
+                            )}
                       </button>
                     )
                   })}
@@ -884,6 +904,7 @@ export function SortablePlotCard({
           maxTimeLimit={chartProps.maxTime}
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
+          filterKey={plot.id}
         />
       ) : (
         <MetricChart
@@ -905,6 +926,7 @@ export function SortablePlotCard({
           availableSampleTags={chartProps.availableSampleTags}
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
+          filterKey={plot.id}
         />
       )}
     </div>
@@ -1027,6 +1049,7 @@ function SortableGroup({
               catalog={catalog}
               onSelect={handleAddPlot}
               existingPlots={group.plots}
+              allowDuplicates
             >
               <button className="flex items-center gap-0.5 h-6 px-2 text-[10px] rounded-md border border-input hover:bg-accent transition-colors">
                 <Plus className="h-3 w-3" />
@@ -1072,6 +1095,7 @@ function SortableGroup({
                     catalog={catalog}
                     onSelect={handleAddPlot}
                     existingPlots={group.plots}
+                    allowDuplicates
                   >
                     <button className="h-32 rounded-lg border-2 border-dashed border-gray-200 hover:border-gray-300 hover:bg-muted/50 transition-colors flex items-center justify-center text-xs text-muted-foreground gap-1">
                       <Plus className="h-3.5 w-3.5" />
@@ -1265,6 +1289,7 @@ function SortableSection({
               catalog={catalog}
               onSelect={handleAddPlot}
               existingPlots={section.plots}
+              allowDuplicates
             >
               <button className="flex items-center gap-0.5 h-7 px-2 text-xs rounded-md border border-input hover:bg-accent transition-colors">
                 <Plus className="h-3 w-3" />
@@ -1356,6 +1381,7 @@ function SortableSection({
                   catalog={catalog}
                   onSelect={handleAddPlot}
                   existingPlots={section.plots}
+                  allowDuplicates
                 >
                   <Button size="sm" variant="outline">
                     <Plus className="h-3.5 w-3.5 mr-1" />

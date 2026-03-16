@@ -48,7 +48,7 @@ import {
 } from "@/lib/format"
 
 // Metrics that should have "ignore first step" enabled by default
-const DEFAULT_IGNORE_FIRST_STEP_METRICS = new Set([
+export const DEFAULT_IGNORE_FIRST_STEP_METRICS = new Set([
   // Full Step (Total Time)
   "timing_step_total",
   "timing_step_active",
@@ -87,7 +87,7 @@ const DEFAULT_IGNORE_FIRST_STEP_METRICS = new Set([
 ])
 
 // Filter badge component that shows X on hover
-function FilterBadge({
+export function FilterBadge({
   label,
   onRemove,
 }: {
@@ -109,7 +109,7 @@ function FilterBadge({
 }
 
 // Helper to compute IQR bounds for outlier detection
-function computeIQRBounds(
+export function computeIQRBounds(
   values: number[],
 ): { lower: number; upper: number } | null {
   if (values.length < 4) return null
@@ -2412,6 +2412,7 @@ interface EvalMetricChartProps {
   maxTimeLimit?: number | null
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
+  filterKey?: string
 }
 
 export function EvalMetricChart({
@@ -2437,6 +2438,7 @@ export function EvalMetricChart({
   maxTimeLimit,
   headerPrefix,
   headerSuffix,
+  filterKey: filterKeyProp,
 }: EvalMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
@@ -2472,7 +2474,7 @@ export function EvalMetricChart({
   }, [setSyncedCursor])
 
   // --- Chart filter state (shared atom, same as MetricChart) ---
-  const filterKey = `eval/${evalName}/${metricName}`
+  const filterKey = filterKeyProp ?? `eval/${evalName}/${metricName}`
   const [metricsChartFilters, setMetricsChartFilters] = useAtom(
     metricsChartFiltersAtom,
   )
@@ -3575,6 +3577,7 @@ interface MetricChartProps {
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
   availableSampleTags?: Record<string, string[]>
+  filterKey?: string
 }
 
 export function MetricChart({
@@ -3601,6 +3604,7 @@ export function MetricChart({
   headerPrefix,
   headerSuffix,
   availableSampleTags,
+  filterKey: filterKeyProp,
 }: MetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
@@ -3639,11 +3643,12 @@ export function MetricChart({
   }, [setSyncedCursor])
 
   // Determine default values based on metric name
+  const filterKey = filterKeyProp ?? metricName
   const defaultIgnoreOutliersValue = defaultIgnoreOutliers ?? false
   const shouldDefaultIgnoreFirstStep =
     DEFAULT_IGNORE_FIRST_STEP_METRICS.has(metricName)
   const defaultIgnoreFirstStepValue = shouldDefaultIgnoreFirstStep
-  const metricFilters = metricsChartFilters[metricName]
+  const metricFilters = metricsChartFilters[filterKey]
   const ignoreOutliers =
     metricFilters?.ignoreOutliers ?? defaultIgnoreOutliersValue
   const ignoreFirstStep =
@@ -3665,7 +3670,7 @@ export function MetricChart({
           maxY: null,
           tagFilters: {},
         }
-        const current = prev[metricName] ?? defaults
+        const current = prev[filterKey] ?? defaults
         const next = updater(current)
 
         const isAtDefaultValues =
@@ -3676,19 +3681,19 @@ export function MetricChart({
           Object.keys(next.tagFilters ?? {}).length === 0
 
         if (isAtDefaultValues) {
-          if (!Object.prototype.hasOwnProperty.call(prev, metricName)) {
+          if (!Object.prototype.hasOwnProperty.call(prev, filterKey)) {
             return prev
           }
           const rest = { ...prev }
-          delete rest[metricName]
+          delete rest[filterKey]
           return rest
         }
 
-        return { ...prev, [metricName]: next }
+        return { ...prev, [filterKey]: next }
       })
     },
     [
-      metricName,
+      filterKey,
       setMetricsChartFilters,
       defaultIgnoreOutliersValue,
       defaultIgnoreFirstStepValue,

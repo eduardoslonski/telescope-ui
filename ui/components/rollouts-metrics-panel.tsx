@@ -10,10 +10,17 @@ import {
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import type { SetStateAction, WritableAtom } from "jotai"
 import uPlot from "uplot"
-import { X, ChevronDown, PanelRightClose, Loader2 } from "lucide-react"
+import { X, ChevronDown, PanelRightClose, Loader2, SlidersHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ToggleWithInput } from "@/components/ui/toggle-with-input"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import {
   rolloutsSelectedMetricsAtom,
@@ -23,6 +30,8 @@ import {
   visibleRunsAtom,
   hoveredRunIdAtom,
   darkModeAtom,
+  metricsChartFiltersAtom,
+  type MetricsChartFilterState,
 } from "@/lib/atoms"
 import {
   useStepMetricSingle,
@@ -47,6 +56,9 @@ import {
   formatTooltipRunNameHtml,
   formatRunLabelHtml,
   InferencePerformanceChartCard,
+  FilterBadge,
+  DEFAULT_IGNORE_FIRST_STEP_METRICS,
+  computeIQRBounds,
 } from "@/components/step-metrics-charts"
 
 // Hook to detect if element is on screen
@@ -866,11 +878,19 @@ export function RolloutsMetricsPanel({
     [allMetricOptions],
   )
 
-  // Filter selected metrics to only include valid ones that exist in current options
-  const validSelectedMetrics = useMemo(() => {
+  // Filter selected metrics to only include valid ones that exist in current options,
+  // preserving the original index in selectedMetrics for stable removal of duplicates.
+  const validSelectedEntries = useMemo(() => {
     const validKeys = new Set(allMetricOptions.map((m) => m.metricKey))
-    return selectedMetrics.filter((key) => validKeys.has(key))
+    return selectedMetrics
+      .map((key, idx) => ({ metricKey: key, originalIndex: idx }))
+      .filter(({ metricKey }) => validKeys.has(metricKey))
   }, [selectedMetrics, allMetricOptions])
+
+  const validSelectedMetrics = useMemo(
+    () => validSelectedEntries.map((e) => e.metricKey),
+    [validSelectedEntries],
+  )
 
   // Build catalog for PlotSelectPopover (same data as allMetricOptions, in catalog format)
   const sidebarCatalog = useMemo(
@@ -899,17 +919,13 @@ export function RolloutsMetricsPanel({
     })
   }, [validSelectedMetrics, allMetricOptions])
 
-  const handleToggleMetric = (metricKey: string) => {
+  const handleAddMetric = (metricKey: string) => {
     if (!metricKey) return
-    setSelectedMetrics((prev) =>
-      prev.includes(metricKey)
-        ? prev.filter((m) => m !== metricKey)
-        : [...prev, metricKey],
-    )
+    setSelectedMetrics((prev) => [...prev, metricKey])
   }
 
-  const handleRemoveMetric = (metricKey: string) => {
-    setSelectedMetrics((prev) => prev.filter((m) => m !== metricKey))
+  const handleRemoveMetricAt = (index: number) => {
+    setSelectedMetrics((prev) => prev.filter((_, i) => i !== index))
   }
 
   const getMetricConfig = (metricKey: string) => {
@@ -960,8 +976,9 @@ export function RolloutsMetricsPanel({
           {/* Metrics select popover */}
           <PlotSelectPopover
             catalog={sidebarCatalog}
-            onSelect={(item) => handleToggleMetric(item.metricKey)}
+            onSelect={(item) => handleAddMetric(item.metricKey)}
             existingPlots={existingPlotsForPopover}
+            allowDuplicates
           >
             <button
               type="button"
@@ -1045,10 +1062,10 @@ export function RolloutsMetricsPanel({
                 category,
                 { label: categoryLabel, metrics: categoryMetrics },
               ]) => {
-                // Get selected metrics in the order they appear in categoryMetrics (same as dropdown)
-                const categorySelectedMetrics = categoryMetrics
-                  .filter((m) => validSelectedMetrics.includes(m.metricKey))
-                  .map((m) => m.metricKey)
+                // Get selected metrics in this category, preserving duplicates with original indices
+                const categoryKeys = new Set(categoryMetrics.map((m) => m.metricKey))
+                const categorySelectedMetrics = validSelectedEntries
+                  .filter(({ metricKey }) => categoryKeys.has(metricKey))
 
                 // Skip empty categories
                 if (categorySelectedMetrics.length === 0) return null
@@ -1059,7 +1076,7 @@ export function RolloutsMetricsPanel({
                       {categoryLabel}
                     </h3>
                     <div className="space-y-4">
-                      {categorySelectedMetrics.map((metricKey) => {
+                      {categorySelectedMetrics.map(({ metricKey, originalIndex }) => {
                         const config = getMetricConfig(metricKey)
 
                         // In eval "Selected" mode: skip histograms, distributions, and
@@ -1111,17 +1128,19 @@ export function RolloutsMetricsPanel({
                               )
                             : config?.label || metricKey
 
+                        const instanceKey = `${metricKey}-${originalIndex}`
+
                         // Render inference performance chart
                         if (config?.isInferencePerformance && config.inferenceMetricType) {
                           return (
                             <InferencePerformanceChartCard
-                              key={metricKey}
+                              key={instanceKey}
                               runPath={selectedRunPath}
                               shouldPoll={shouldPoll}
                               scrollRoot={scrollRoot}
                               inferenceMetricType={config.inferenceMetricType}
                               label={chartLabel}
-                              onRemove={() => handleRemoveMetric(metricKey)}
+                              onRemove={() => handleRemoveMetricAt(originalIndex)}
                             />
                           )
                         }
@@ -1130,7 +1149,7 @@ export function RolloutsMetricsPanel({
                         if (config?.isHistogram) {
                           return (
                             <HistogramChart
-                              key={fetchMetricType}
+                              key={instanceKey}
                               runPath={selectedRunPath}
                               step={currentStep}
                               metricType={fetchMetricType}
@@ -1138,7 +1157,7 @@ export function RolloutsMetricsPanel({
                               showZeroLine={config?.showZeroLine}
                               unit={config?.unit}
                               isTokenMetric={config?.category === "tokens"}
-                              onRemove={() => handleRemoveMetric(metricKey)}
+                              onRemove={() => handleRemoveMetricAt(originalIndex)}
                               scrollRoot={scrollRoot}
                             />
                           )
@@ -1148,7 +1167,7 @@ export function RolloutsMetricsPanel({
                         if (config?.isDistributionOverTime) {
                           return (
                             <DistributionOverTimeChart
-                              key={fetchMetricType}
+                              key={instanceKey}
                               runPath={selectedRunPath}
                               metricType={fetchMetricType}
                               label={chartLabel}
@@ -1157,7 +1176,7 @@ export function RolloutsMetricsPanel({
                               isTokenMetric={config?.category === "tokens"}
                               currentStep={currentStep}
                               shouldPoll={shouldPoll}
-                              onRemove={() => handleRemoveMetric(metricKey)}
+                              onRemove={() => handleRemoveMetricAt(originalIndex)}
                               selectedStepAtom={selectedStepAtom}
                               maxSelectableStep={maxSelectableStep}
                               scrollRoot={scrollRoot}
@@ -1167,7 +1186,7 @@ export function RolloutsMetricsPanel({
 
                         return (
                           <MetricChart
-                            key={metricKey}
+                            key={instanceKey}
                             runs={runsToDisplay}
                             shouldPoll={shouldPoll}
                             metricKey={fetchKey}
@@ -1178,11 +1197,12 @@ export function RolloutsMetricsPanel({
                             showEma={showEma}
                             emaSpan={emaSpan}
                             currentStep={currentStep}
-                            onRemove={() => handleRemoveMetric(metricKey)}
+                            onRemove={() => handleRemoveMetricAt(originalIndex)}
                             hoveredRunId={hoveredRunId}
                             selectedStepAtom={selectedStepAtom}
                             maxSelectableStep={maxSelectableStep}
                             scrollRoot={scrollRoot}
+                            filterKey={instanceKey}
                           />
                         )
                       })}
@@ -1215,6 +1235,7 @@ interface MetricChartProps {
   selectedStepAtom?: AtomWithState<number | null>
   maxSelectableStep?: number | null
   scrollRoot?: Element | null
+  filterKey?: string
 }
 
 function parseEvalMetricKey(metricName: string): {
@@ -1282,6 +1303,7 @@ function MetricChart({
   selectedStepAtom = rolloutsSelectedStepAtom,
   maxSelectableStep,
   scrollRoot = null,
+  filterKey: filterKeyProp,
 }: MetricChartProps) {
   const setSelectedStep = useSetAtom(selectedStepAtom)
   const darkMode = useAtomValue(darkModeAtom)
@@ -1290,6 +1312,63 @@ function MetricChart({
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
   const cursorIdxRef = useRef<number | null>(null)
+
+  // --- Chart filter state ---
+  const filterKey = filterKeyProp ?? metricKey
+  const [metricsChartFilters, setMetricsChartFilters] = useAtom(metricsChartFiltersAtom)
+  const shouldDefaultIgnoreFirstStep = DEFAULT_IGNORE_FIRST_STEP_METRICS.has(metricKey)
+  const metricFilters = metricsChartFilters[filterKey]
+  const ignoreOutliers = metricFilters?.ignoreOutliers ?? false
+  const ignoreFirstStep = metricFilters?.ignoreFirstStep ?? shouldDefaultIgnoreFirstStep
+  const minY = metricFilters?.minY ?? null
+  const maxY = metricFilters?.maxY ?? null
+
+  const updateMetricFilters = useCallback(
+    (updater: (current: MetricsChartFilterState) => MetricsChartFilterState) => {
+      setMetricsChartFilters((prev) => {
+        const defaults: MetricsChartFilterState = {
+          ignoreOutliers: false,
+          ignoreFirstStep: shouldDefaultIgnoreFirstStep,
+          minY: null,
+          maxY: null,
+          tagFilters: {},
+        }
+        const current = prev[filterKey] ?? defaults
+        const next = updater(current)
+        const isAtDefaultValues =
+          next.ignoreOutliers === defaults.ignoreOutliers &&
+          next.ignoreFirstStep === defaults.ignoreFirstStep &&
+          next.minY === defaults.minY &&
+          next.maxY === defaults.maxY &&
+          Object.keys(next.tagFilters ?? {}).length === 0
+        if (isAtDefaultValues) {
+          if (!Object.prototype.hasOwnProperty.call(prev, filterKey)) return prev
+          const rest = { ...prev }
+          delete rest[filterKey]
+          return rest
+        }
+        return { ...prev, [filterKey]: next }
+      })
+    },
+    [filterKey, setMetricsChartFilters, shouldDefaultIgnoreFirstStep],
+  )
+
+  const setIgnoreOutliers = useCallback(
+    (checked: boolean) => updateMetricFilters((c) => ({ ...c, ignoreOutliers: checked })),
+    [updateMetricFilters],
+  )
+  const setIgnoreFirstStep = useCallback(
+    (checked: boolean) => updateMetricFilters((c) => ({ ...c, ignoreFirstStep: checked })),
+    [updateMetricFilters],
+  )
+  const setMinYFilter = useCallback(
+    (v: number | null) => updateMetricFilters((c) => ({ ...c, minY: v })),
+    [updateMetricFilters],
+  )
+  const setMaxYFilter = useCallback(
+    (v: number | null) => updateMetricFilters((c) => ({ ...c, maxY: v })),
+    [updateMetricFilters],
+  )
 
   const isVisible = useOnScreen(visibilityRef, {
     root: scrollRoot,
@@ -1599,16 +1678,33 @@ function MetricChart({
     const width = container.clientWidth
     const height = 160 // h-40 = 160px
 
+    // Compute outlier bounds if needed
+    let outlierBounds: { lower: number; upper: number } | null = null
+    if (ignoreOutliers) {
+      const allValues: number[] = []
+      for (let i = 1; i < uplotData.length; i++) {
+        const arr = uplotData[i]
+        const startJ = ignoreFirstStep ? 1 : 0
+        for (let j = startJ; j < arr.length; j++) {
+          const v = arr[j]
+          if (v !== null && v !== undefined) allValues.push(v as number)
+        }
+      }
+      outlierBounds = computeIQRBounds(allValues)
+    }
+
     // Calculate Y domain
     let minVal = Infinity
     let maxVal = -Infinity
     for (let i = 1; i < uplotData.length; i++) {
       const arr = uplotData[i]
-      for (let j = 0; j < arr.length; j++) {
+      const startJ = ignoreFirstStep ? 1 : 0
+      for (let j = startJ; j < arr.length; j++) {
         const v = arr[j]
         if (v !== null && v !== undefined) {
-          if (v < minVal) minVal = v
-          if (v > maxVal) maxVal = v
+          if (ignoreOutliers && outlierBounds && ((v as number) < outlierBounds.lower || (v as number) > outlierBounds.upper)) continue
+          if (v < minVal) minVal = v as number
+          if (v > maxVal) maxVal = v as number
         }
       }
     }
@@ -1626,6 +1722,10 @@ function MetricChart({
       yMin = minVal - padding
       yMax = maxVal + padding
     }
+
+    // Apply manual min/max Y overrides
+    if (minY !== null) yMin = minY
+    if (maxY !== null) yMax = maxY
 
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
@@ -1904,6 +2004,10 @@ function MetricChart({
     plottedRuns,
     runDataIndexByRunPath,
     darkMode,
+    ignoreOutliers,
+    ignoreFirstStep,
+    minY,
+    maxY,
   ])
 
   // Handle mouse leave
@@ -1914,6 +2018,7 @@ function MetricChart({
   }, [])
 
   const showLoadingOpacity = isFetching && (!isRefetching || isPlaceholderData)
+  const hasActiveFilters = ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null
 
   return (
     <div
@@ -1924,23 +2029,93 @@ function MetricChart({
         showLoadingOpacity && "opacity-50",
       )}
     >
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex-1 min-w-0">
-          <h4
-            className="text-xs font-medium leading-snug line-clamp-2 break-words"
-            title={label}
-          >
-            {label}
-          </h4>
+      <div className="shrink-0 mb-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <h4
+              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              title={label}
+            >
+              {label}
+            </h4>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all opacity-0 group-hover/card:opacity-100">
+                  <SlidersHorizontal className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[160px]">
+                <DropdownMenuCheckboxItem
+                  checked={ignoreOutliers}
+                  onCheckedChange={setIgnoreOutliers}
+                >
+                  Ignore Outliers
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={ignoreFirstStep}
+                  onCheckedChange={setIgnoreFirstStep}
+                >
+                  Ignore First Step
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                <div className="flex items-center gap-2 px-2 py-1.5">
+                  <span className="text-xs text-muted-foreground font-medium w-10">Min Y</span>
+                  <input
+                    type="number"
+                    className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                    placeholder="Auto"
+                    value={minY ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setMinYFilter(val === "" ? null : Number(val))
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  />
+                </div>
+                <div className="flex items-center gap-2 px-2 py-1.5">
+                  <span className="text-xs text-muted-foreground font-medium w-10">Max Y</span>
+                  <input
+                    type="number"
+                    className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                    placeholder="Auto"
+                    value={maxY ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setMaxYFilter(val === "" ? null : Number(val))
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  />
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <button
+              onClick={onRemove}
+              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onRemove}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        {hasActiveFilters && (
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
+            {ignoreOutliers && (
+              <FilterBadge label="Ignore Outliers" onRemove={() => setIgnoreOutliers(false)} />
+            )}
+            {ignoreFirstStep && (
+              <FilterBadge label="Ignore First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            )}
+            {minY !== null && (
+              <FilterBadge label={`Min Y: ${minY}`} onRemove={() => setMinYFilter(null)} />
+            )}
+            {maxY !== null && (
+              <FilterBadge label={`Max Y: ${maxY}`} onRemove={() => setMaxYFilter(null)} />
+            )}
+          </div>
+        )}
       </div>
       {hasData ? (
         <div
