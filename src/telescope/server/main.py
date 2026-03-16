@@ -7331,18 +7331,6 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [bucket, bucket, req.run_path],
     ).fetchall()
 
-    # Rollouts group done per bucket
-    rollouts_group_done = con.execute(
-        """
-        SELECT FLOOR(timestamp / ?) * ? as bucket_time, COUNT(*) as cnt
-        FROM events_orchestrator
-        WHERE run_id = ? AND event_type = 'rollouts_group_done' AND timestamp IS NOT NULL
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
     # Rollouts group done kept per bucket (groups that appear in samples_data)
     rollouts_group_done_kept = con.execute(
         """
@@ -7385,6 +7373,39 @@ def get_inference_performance(req: InferencePerformanceRequest):
         ORDER BY bucket_time ASC
         """,
         [req.run_path, bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Rollouts group done per bucket (kept + discarded combined)
+    rollouts_group_done = con.execute(
+        """
+        WITH group_completion AS (
+            SELECT group_id, MAX(end_time) as completion_time
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+              AND (is_canceled = false OR is_canceled IS NULL)
+            GROUP BY group_id
+        ),
+        kept_and_discarded AS (
+            SELECT gc.group_id, gc.completion_time
+            FROM group_completion gc
+            WHERE EXISTS (
+                SELECT 1 FROM samples_data sd
+                WHERE sd.run_id = ? AND sd.group_id = gc.group_id
+            )
+            UNION ALL
+            SELECT gc.group_id, gc.completion_time
+            FROM group_completion gc
+            WHERE EXISTS (
+                SELECT 1 FROM samples_data_discarded sdd
+                WHERE sdd.run_id = ? AND sdd.group_id = gc.group_id
+            )
+        )
+        SELECT FLOOR(completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
+        FROM kept_and_discarded
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [req.run_path, req.run_path, req.run_path, bucket, bucket],
     ).fetchall()
 
     # Rollouts group done canceled per bucket (groups with any canceled request)
