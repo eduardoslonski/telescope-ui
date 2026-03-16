@@ -33,6 +33,7 @@ import type {
   CustomMetricsLayoutResponse,
   CustomMetricsTemplatesResponse,
   CustomMetricsTemplateResponse,
+  InferencePerformanceResponse,
 } from "@/lib/types"
 
 // ============================================================================
@@ -431,6 +432,33 @@ export function useTrainerBreakdownEvents(
       !!parentEventType &&
       rank !== null &&
       step !== null,
+  })
+}
+
+// ============================================================================
+// Inference Performance Query
+// ============================================================================
+
+export function useInferencePerformance(
+  runPath: string,
+  enabled: boolean,
+  shouldPoll: boolean,
+  bucketSeconds: number = 60,
+) {
+  return useQuery<InferencePerformanceResponse>({
+    queryKey: ["inference-performance", runPath, bucketSeconds],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/inference-performance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_path: runPath, bucket_seconds: bucketSeconds }),
+      })
+      if (!response.ok) throw new Error("Failed to fetch inference performance")
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    refetchInterval: shouldPoll ? POLL_INTERVAL : false,
+    placeholderData: keepPreviousData,
   })
 }
 

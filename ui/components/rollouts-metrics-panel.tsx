@@ -46,6 +46,7 @@ import {
   escapeHtml,
   formatTooltipRunNameHtml,
   formatRunLabelHtml,
+  InferencePerformanceChartCard,
 } from "@/components/step-metrics-charts"
 
 // Hook to detect if element is on screen
@@ -289,6 +290,8 @@ type MetricOption = {
   histogramMetricType?: string // e.g., "reward_sum", "advantage", "length_prompt", etc.
   isEvalMetric?: boolean
   evalName?: string
+  isInferencePerformance?: boolean
+  inferenceMetricType?: string
 }
 
 // Map metric prefix to histogram API metric_type
@@ -452,6 +455,27 @@ function buildMetricOptions(
   // 8. Timeline Trainer & Inference
   for (const [key, config] of Object.entries(TIMELINE_CONFIG)) {
     pushMetricOptions(options, key, config)
+  }
+
+  // 9. Inference Performance
+  for (const m of [
+    { key: "inference_calls", label: "Inference Calls / min", inferenceMetricType: "inference_calls" },
+    { key: "requests_done", label: "Requests Done / min", inferenceMetricType: "requests_done" },
+    { key: "rollouts_group_done", label: "Rollouts Group Done / min", inferenceMetricType: "rollouts_group_done" },
+    { key: "rollouts_group_done_kept", label: "Rollouts Group Done Kept / min", inferenceMetricType: "rollouts_group_done_kept" },
+    { key: "rollouts_group_done_discarded", label: "Rollouts Group Done Discarded / min", inferenceMetricType: "rollouts_group_done_discarded" },
+    { key: "rollouts_group_done_canceled", label: "Rollouts Group Done Canceled / min", inferenceMetricType: "rollouts_group_done_canceled" },
+  ]) {
+    options.push({
+      category: "inference_performance",
+      categoryLabel: "Inference Performance",
+      metricKey: m.key,
+      label: m.label,
+      prefix: m.key,
+      suffix: "",
+      isInferencePerformance: true,
+      inferenceMetricType: m.inferenceMetricType,
+    })
   }
 
   return options
@@ -651,15 +675,18 @@ function metricOptionsToCatalog(options: MetricOption[]): PlotCatalogItem[] {
     })() : undefined),
     metricKey: opt.metricKey,
     label: opt.label,
-    plotType: opt.isHistogram
-      ? ("histogram" as const)
-      : opt.isDistributionOverTime
-        ? ("distribution_over_time" as const)
-        : opt.isEvalMetric
-          ? ("eval_metric" as const)
-          : ("step_metric" as const),
+    plotType: opt.isInferencePerformance
+      ? ("inference_performance" as const)
+      : opt.isHistogram
+        ? ("histogram" as const)
+        : opt.isDistributionOverTime
+          ? ("distribution_over_time" as const)
+          : opt.isEvalMetric
+            ? ("eval_metric" as const)
+            : ("step_metric" as const),
     evalName: opt.evalName,
     histogramMetricType: opt.histogramMetricType,
+    inferenceMetricType: opt.inferenceMetricType,
     simple: !opt.suffix,
   }))
 }
@@ -859,13 +886,15 @@ export function RolloutsMetricsPanel({
         id: key,
         metricKey: key,
         label: config?.label || key,
-        plotType: (config?.isHistogram
-          ? "histogram"
-          : config?.isDistributionOverTime
-            ? "distribution_over_time"
-            : config?.isEvalMetric
-              ? "eval_metric"
-              : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time",
+        plotType: (config?.isInferencePerformance
+          ? "inference_performance"
+          : config?.isHistogram
+            ? "histogram"
+            : config?.isDistributionOverTime
+              ? "distribution_over_time"
+              : config?.isEvalMetric
+                ? "eval_metric"
+                : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance",
       }
     })
   }, [validSelectedMetrics, allMetricOptions])
@@ -1081,6 +1110,21 @@ export function RolloutsMetricsPanel({
                                 "",
                               )
                             : config?.label || metricKey
+
+                        // Render inference performance chart
+                        if (config?.isInferencePerformance && config.inferenceMetricType) {
+                          return (
+                            <InferencePerformanceChartCard
+                              key={metricKey}
+                              runPath={selectedRunPath}
+                              shouldPoll={shouldPoll}
+                              scrollRoot={scrollRoot}
+                              inferenceMetricType={config.inferenceMetricType}
+                              label={chartLabel}
+                              onRemove={() => handleRemoveMetric(metricKey)}
+                            />
+                          )
+                        }
 
                         // Render histogram chart for histogram metrics
                         if (config?.isHistogram) {
