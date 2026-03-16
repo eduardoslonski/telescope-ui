@@ -4978,7 +4978,7 @@ function InferencePerformanceBarChart({
         setCursor: [
           (u) => {
             if (!tooltipRef.current || !uplotData) return
-            const { left, top, idx } = u.cursor
+            const { left, top } = u.cursor
 
             if (
               left === undefined ||
@@ -4989,20 +4989,28 @@ function InferencePerformanceBarChart({
               return
             }
 
-            // Check if cursor is visually inside any bar (by x-position in data coords)
-            let isInsideBar = false
+            // Find which bar the cursor's x-position falls within
             const cursorDataX = u.posToVal(left, "x")
+            let hoveredBarIdx: number | null = null
             for (let i = 0; i < uplotData[0].length; i++) {
               const xVal = Number(uplotData[0][i])
-              const yVal = Number(uplotData[1][i])
-              if (cursorDataX >= xVal && cursorDataX <= xVal + bucketSeconds && Number.isFinite(yVal) && yVal > 0) {
+              if (cursorDataX >= xVal && cursorDataX < xVal + bucketSeconds) {
+                hoveredBarIdx = i
+                break
+              }
+            }
+
+            // Check if cursor is visually inside any bar (by x AND y position)
+            let isInsideBar = false
+            if (hoveredBarIdx !== null) {
+              const yVal = Number(uplotData[1][hoveredBarIdx])
+              if (Number.isFinite(yVal) && yVal > 0) {
                 const barTopPx = u.valToPos(yVal, "y", true)
                 const basePx = u.valToPos(0, "y", true)
                 const cursorCanvasY = u.bbox.top + top * devicePixelRatio
                 if (cursorCanvasY >= barTopPx && cursorCanvasY <= basePx) {
                   isInsideBar = true
                 }
-                break
               }
             }
 
@@ -5033,14 +5041,10 @@ function InferencePerformanceBarChart({
                 <div class="text-muted-foreground">${timeLabel}</div>
               `
               tooltipRef.current.style.display = "block"
-            } else if (idx !== null && idx !== undefined) {
+            } else if (hoveredBarIdx !== null) {
               // Show bar data tooltip with interval range
-              const xValue = uplotData[0][idx]
-              const yValue = uplotData[1][idx]
-              if (xValue === undefined) {
-                tooltipRef.current.style.display = "none"
-                return
-              }
+              const xValue = uplotData[0][hoveredBarIdx]
+              const yValue = uplotData[1][hoveredBarIdx]
 
               const bucketStart = Number(xValue)
               const bucketEnd = bucketStart + bucketSeconds
