@@ -4797,18 +4797,30 @@ function InferencePerformanceBarChart({
 
   const hasData = data.length > 0 && firstTime !== null
 
-  // Build uPlot data with relative time
+  // Build uPlot data with relative time, filling in zero-count buckets
   const { uplotData, relativeStepTimes } = useMemo(() => {
     if (!hasData || firstTime === null) {
       return { uplotData: null, relativeStepTimes: [] }
     }
 
-    const xValues = new Float64Array(data.length)
-    const yValues = new Float64Array(data.length)
-
+    // Build a map of relative-time -> count from the sparse data
+    const countByTime = new Map<number, number>()
+    let maxRelTime = 0
     for (let i = 0; i < data.length; i++) {
-      xValues[i] = data[i].time - firstTime
-      yValues[i] = data[i].count
+      const rel = data[i].time - firstTime
+      countByTime.set(rel, data[i].count)
+      if (rel > maxRelTime) maxRelTime = rel
+    }
+
+    // Generate all buckets from 0 to maxRelTime, filling gaps with 0
+    const numBuckets = Math.floor(maxRelTime / bucketSeconds) + 1
+    const xValues = new Float64Array(numBuckets)
+    const yValues = new Float64Array(numBuckets)
+
+    for (let i = 0; i < numBuckets; i++) {
+      const t = i * bucketSeconds
+      xValues[i] = t
+      yValues[i] = countByTime.get(t) ?? 0
     }
 
     const relStepTimes = stepTimes
@@ -4822,7 +4834,7 @@ function InferencePerformanceBarChart({
       uplotData: [xValues, yValues] as uPlot.AlignedData,
       relativeStepTimes: relStepTimes,
     }
-  }, [data, stepTimes, firstTime, hasData])
+  }, [data, stepTimes, firstTime, hasData, bucketSeconds])
 
   useEffect(() => {
     if (!containerRef.current || !uplotData || !hasData || !isVisible) return
@@ -4991,7 +5003,6 @@ function InferencePerformanceBarChart({
 
             // Find which bar the cursor's x-position falls within
             const cursorDataX = u.posToVal(left, "x")
-            const xScale = u.scales.x
             let hoveredBarIdx: number | null = null
             for (let i = 0; i < uplotData[0].length; i++) {
               const xVal = Number(uplotData[0][i])
@@ -5000,11 +5011,6 @@ function InferencePerformanceBarChart({
                 break
               }
             }
-
-            // Compute the bucket the cursor is in (even if no data point exists)
-            const dataMin = Number(uplotData[0][0])
-            const hoveredBucketStart = dataMin + Math.floor((cursorDataX - dataMin) / bucketSeconds) * bucketSeconds
-            const isInChartRange = cursorDataX >= xScale.min! && cursorDataX <= xScale.max!
 
             // Check if cursor is visually inside any bar (by x AND y position)
             let isInsideBar = false
@@ -5025,6 +5031,7 @@ function InferencePerformanceBarChart({
             if (drawStepLines && !isInsideBar) {
               const STEP_LINE_HIT_PX = 6
               for (const st of relativeStepTimes) {
+                const xScale = u.scales.x
                 if (
                   st.relativeTime < xScale.min! ||
                   st.relativeTime > xScale.max!
@@ -5046,18 +5053,24 @@ function InferencePerformanceBarChart({
                 <div class="text-muted-foreground">${timeLabel}</div>
               `
               tooltipRef.current.style.display = "block"
-            } else if (hoveredBarIdx !== null || isInChartRange) {
-              // Show bar data tooltip with interval range (including 0-count gaps)
-              const bucketStart = hoveredBarIdx !== null ? Number(uplotData[0][hoveredBarIdx]) : hoveredBucketStart
-              const count = hoveredBarIdx !== null ? Math.round(Number(uplotData[1][hoveredBarIdx])) : 0
+            } else if (hoveredBarIdx !== null) {
+              // Show bar data tooltip with interval range
+              const xValue = uplotData[0][hoveredBarIdx]
+              const yValue = uplotData[1][hoveredBarIdx]
+
+              const bucketStart = Number(xValue)
               const bucketEnd = bucketStart + bucketSeconds
               const rangeLabel = `${formatSecondsCompact(bucketStart)} — ${formatSecondsCompact(bucketEnd)}`
+              const countStr =
+                yValue !== null && yValue !== undefined
+                  ? Math.round(Number(yValue)).toLocaleString()
+                  : "N/A"
 
               tooltipRef.current.innerHTML = `
                 <div class="font-medium mb-1">${rangeLabel}</div>
                 <div class="flex items-center gap-2">
                   <div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${color}"></div>
-                  <span>${escapeHtml(label)}: <span class="font-medium">${count.toLocaleString()}</span></span>
+                  <span>${escapeHtml(label)}: <span class="font-medium">${countStr}</span></span>
                 </div>
               `
               tooltipRef.current.style.display = "block"
