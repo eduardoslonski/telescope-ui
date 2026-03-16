@@ -466,12 +466,12 @@ export function buildPlotCatalog(
 
   // Inference Performance
   for (const m of [
-    { key: "inference_calls", label: "Inference Calls / min", inferenceMetricType: "inference_calls" },
-    { key: "requests_done", label: "Requests Done / min", inferenceMetricType: "requests_done" },
-    { key: "rollouts_group_done", label: "Rollouts Group Done / min", inferenceMetricType: "rollouts_group_done" },
-    { key: "rollouts_group_done_kept", label: "Rollouts Group Done Kept / min", inferenceMetricType: "rollouts_group_done_kept" },
-    { key: "rollouts_group_done_discarded", label: "Rollouts Group Done Discarded / min", inferenceMetricType: "rollouts_group_done_discarded" },
-    { key: "rollouts_group_done_canceled", label: "Rollouts Group Done Canceled / min", inferenceMetricType: "rollouts_group_done_canceled" },
+    { key: "inference_calls", label: "Inference Calls", inferenceMetricType: "inference_calls" },
+    { key: "requests_done", label: "Requests Done", inferenceMetricType: "requests_done" },
+    { key: "rollouts_group_done", label: "Rollouts Group Done", inferenceMetricType: "rollouts_group_done" },
+    { key: "rollouts_group_done_kept", label: "Rollouts Group Done Kept", inferenceMetricType: "rollouts_group_done_kept" },
+    { key: "rollouts_group_done_discarded", label: "Rollouts Group Done Discarded", inferenceMetricType: "rollouts_group_done_discarded" },
+    { key: "rollouts_group_done_canceled", label: "Rollouts Group Done Canceled", inferenceMetricType: "rollouts_group_done_canceled" },
   ]) {
     catalog.push({
       section: "Inference Performance",

@@ -5307,37 +5307,37 @@ export function InferencePerformanceSection({
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <InferencePerformanceBarChart
           data={inferenceCallsData}
-          label="Inference Calls / min"
+          label="Inference Calls"
           color="#0284c7"
           {...sharedProps}
         />
         <InferencePerformanceBarChart
           data={requestsDoneData}
-          label="Requests Done / min"
+          label="Requests Done"
           color="#22c55e"
           {...sharedProps}
         />
         <InferencePerformanceBarChart
           data={rolloutsGroupDoneData}
-          label="Rollouts Group Done / min"
+          label="Rollouts Group Done"
           color="#f59e0b"
           {...sharedProps}
         />
         <InferencePerformanceBarChart
           data={rolloutsGroupDoneKeptData}
-          label="Rollouts Group Done Kept / min"
+          label="Rollouts Group Done Kept"
           color="#10b981"
           {...sharedProps}
         />
         <InferencePerformanceBarChart
           data={rolloutsGroupDoneDiscardedData}
-          label="Rollouts Group Done Discarded / min"
+          label="Rollouts Group Done Discarded"
           color="#ef4444"
           {...sharedProps}
         />
         <InferencePerformanceBarChart
           data={rolloutsGroupDoneCanceledData}
-          label="Rollouts Group Done Canceled / min"
+          label="Rollouts Group Done Canceled"
           color="#8b5cf6"
           {...sharedProps}
         />
