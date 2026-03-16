@@ -960,7 +960,7 @@ function SortableGroup({
           onMouseLeave={() => setTitleHovered(false)}
         >
           <CollapsibleTrigger asChild>
-            <div className="flex items-center gap-1.5 py-1 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors shrink-0">
+            <div className="flex items-center gap-1.5 py-1 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors shrink-0">
               <ChevronDown
                 className={cn(
                   "h-3.5 w-3.5 text-muted-foreground transition-transform shrink-0",
@@ -1038,7 +1038,7 @@ function SortableGroup({
                     onSelect={handleAddPlot}
                     existingPlots={group.plots}
                   >
-                    <button className="h-32 rounded-lg border-2 border-dashed border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 transition-colors flex items-center justify-center text-xs text-muted-foreground gap-1">
+                    <button className="h-32 rounded-lg border-2 border-dashed border-gray-200 hover:border-gray-300 hover:bg-muted/50 transition-colors flex items-center justify-center text-xs text-muted-foreground gap-1">
                       <Plus className="h-3.5 w-3.5" />
                       Add a plot
                     </button>
@@ -1192,7 +1192,7 @@ function SortableSection({
           onMouseLeave={() => setTitleHovered(false)}
         >
           <CollapsibleTrigger asChild>
-            <div className="flex items-center gap-1.5 py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+            <div className="flex items-center gap-1.5 py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
               <ChevronDown
                 className={cn(
                   "h-4 w-4 text-muted-foreground transition-transform shrink-0",

@@ -736,7 +736,7 @@ export default function HomePage() {
                   /* Collapsed: just the header */
                   <button
                     onClick={() => setPlotsOpen(true)}
-                    className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors flex items-center gap-1.5"
+                    className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors flex items-center gap-1.5"
                   >
                     <svg
                       className="h-4 w-4 text-muted-foreground -rotate-90"
@@ -859,7 +859,7 @@ export default function HomePage() {
                   ) : (
                     <button
                       onClick={() => setConfigsOpen(true)}
-                      className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors flex items-center gap-1.5"
+                      className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors flex items-center gap-1.5"
                     >
                       <svg
                         className="h-4 w-4 text-muted-foreground -rotate-90"
