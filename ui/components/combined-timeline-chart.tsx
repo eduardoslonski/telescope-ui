@@ -46,8 +46,11 @@ import {
   INFERENCE_REQUEST_COLOR,
   INFERENCE_REQUEST_EVAL_COLOR,
   INFERENCE_REQUEST_DISCARDED_COLOR,
+  INFERENCE_REQUEST_DISCARDED_COLOR_DARK,
   INFERENCE_REQUEST_CANCELED_COLOR,
+  INFERENCE_REQUEST_CANCELED_COLOR_DARK,
   IDLE_COLOR,
+  IDLE_COLOR_DARK,
   getOrchestratorEventColor,
   getTrainerEventColor,
   getInferenceEventColor,
@@ -66,6 +69,7 @@ import {
   selectedRunPathAtom,
   selectedTrainerEventAtom,
   selectedInferenceRequestAtom,
+  darkModeAtom,
   type SelectedTrainerEvent,
   type SelectedInferenceRequest,
 } from "@/lib/atoms"
@@ -229,6 +233,23 @@ function lightenColor(hex: string, amount: number): string {
   const lg = Math.round(g + (255 - g) * amount)
   const lb = Math.round(b + (255 - b) * amount)
   return `#${lr.toString(16).padStart(2, "0")}${lg.toString(16).padStart(2, "0")}${lb.toString(16).padStart(2, "0")}`
+}
+
+/** Darken a hex color by mixing it with black. amount=0 returns original, amount=1 returns black. */
+function darkenColor(hex: string, amount: number): string {
+  const h = hex.replace("#", "")
+  const r = parseInt(h.substring(0, 2), 16)
+  const g = parseInt(h.substring(2, 4), 16)
+  const b = parseInt(h.substring(4, 6), 16)
+  const dr = Math.round(r * (1 - amount))
+  const dg = Math.round(g * (1 - amount))
+  const db = Math.round(b * (1 - amount))
+  return `#${dr.toString(16).padStart(2, "0")}${dg.toString(16).padStart(2, "0")}${db.toString(16).padStart(2, "0")}`
+}
+
+/** Dim a color: lighten in light mode, darken in dark mode. */
+function dimColor(hex: string, amount: number, darkMode: boolean): string {
+  return darkMode ? darkenColor(hex, amount) : lightenColor(hex, amount)
 }
 
 const EMPTY_CHILD_EVENT_KEYS = new Set<string>()
@@ -556,7 +577,7 @@ function OrchestratorSection({
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <CollapsibleTrigger asChild>
-        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
           <div className="flex items-center gap-1.5">
             <ChevronDown
               className={cn(
@@ -613,7 +634,7 @@ function OrchestratorSection({
           )}
 
           <div className="relative">
-            <div className="relative h-32 bg-white rounded-lg border border-border/50">
+            <div className="relative h-32 bg-background rounded-lg border border-border/50">
               {/* Time axis labels */}
               <div className="absolute bottom-0 left-0 right-0 h-8 flex items-center justify-between px-2 text-xs text-muted-foreground border-t border-border/50">
                 <span>{formatTimeShort(0)}</span>
@@ -666,6 +687,7 @@ function OrchestratorEventLine({
 
   if (relativePosition < 0 || relativePosition > 100) return null
 
+  const darkMode = useAtomValue(darkModeAtom)
   const color = getOrchestratorEventColor(event.event_type)
   const closeEventCount = closeEventWindow
     ? Math.max(0, closeEventWindow.end - closeEventWindow.start)
@@ -685,7 +707,7 @@ function OrchestratorEventLine({
       style={{
         left: `${relativePosition}%`,
         backgroundColor:
-          isHighlighted === false ? lightenColor(color, 0.8) : color,
+          isHighlighted === false ? dimColor(color, 0.8, darkMode) : color,
         zIndex: isHighlighted === true ? 20 : 1,
       }}
       interactive={hasCloseEvents}
@@ -1033,7 +1055,7 @@ function InferenceSection({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className="flex items-center gap-2 mb-3">
         <CollapsibleTrigger asChild>
-          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <ChevronDown
               className={cn(
                 "h-4 w-4 text-muted-foreground transition-transform",
@@ -1250,20 +1272,26 @@ const INFERENCE_REQUEST_EVAL_SELECTED_COLOR = "#047857" // emerald-700 (darker g
 // Group timeline: non-selected samples
 const GROUP_SAMPLE_COLOR = "#0284c7" // sky-600
 const GROUP_SAMPLE_EVAL_COLOR = "#10b981" // emerald-500
-const GROUP_SAMPLE_DISCARDED_COLOR = "#a1a1a1"
-const GROUP_SAMPLE_CANCELED_COLOR = "#b0b0b0"
+const GROUP_SAMPLE_DISCARDED_COLOR_LIGHT = "#a1a1a1"
+const GROUP_SAMPLE_DISCARDED_COLOR_DARK = "#555555"
+const GROUP_SAMPLE_CANCELED_COLOR_LIGHT = "#b0b0b0"
+const GROUP_SAMPLE_CANCELED_COLOR_DARK = "#4a4a4a"
 // Group timeline: selected sample (darker)
 const GROUP_SAMPLE_SELECTED_COLOR = "#0c4a6e" // sky-900
 const GROUP_SAMPLE_EVAL_SELECTED_COLOR = "#065f46" // emerald-800
-const GROUP_SAMPLE_CANCELED_SELECTED_COLOR = "#8a8a8a"
+const GROUP_SAMPLE_CANCELED_SELECTED_COLOR_LIGHT = "#8a8a8a"
+const GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK = "#606060"
 // Env response and compute reward base colors
 const ENV_RESPONSE_COLOR = "#0ea5e9" // sky-400
-const ENV_RESPONSE_DISCARDED_COLOR = "#ababab"
+const ENV_RESPONSE_DISCARDED_COLOR_LIGHT = "#ababab"
+const ENV_RESPONSE_DISCARDED_COLOR_DARK = "#555555"
 const COMPUTE_REWARD_COLOR = "#0ea5e9" // sky-400
-const COMPUTE_REWARD_DISCARDED_COLOR = "#ababab"
+const COMPUTE_REWARD_DISCARDED_COLOR_LIGHT = "#ababab"
+const COMPUTE_REWARD_DISCARDED_COLOR_DARK = "#555555"
 // Eval compute metrics colors (green variants)
 const COMPUTE_METRICS_COLOR = "#34d399" // emerald-400
-const COMPUTE_METRICS_DISCARDED_COLOR = "#ababab"
+const COMPUTE_METRICS_DISCARDED_COLOR_LIGHT = "#ababab"
+const COMPUTE_METRICS_DISCARDED_COLOR_DARK = "#555555"
 // Env response / compute reward for selected sample (darker version of base)
 const ENV_RESPONSE_SELECTED_COLOR = "#0369a1" // sky-700
 const COMPUTE_REWARD_SELECTED_COLOR = "#0369a1" // sky-700
@@ -1272,9 +1300,12 @@ const COMPUTE_METRICS_SELECTED_COLOR = "#047857" // emerald-700
 const ENV_RESPONSE_GROUP_COLOR = "#0284c7" // sky-600
 const COMPUTE_REWARD_GROUP_COLOR = "#0284c7" // sky-600
 const COMPUTE_METRICS_GROUP_COLOR = "#10b981" // emerald-500
-const ENV_RESPONSE_GROUP_DISCARDED_COLOR = "#b3b3b3"
-const COMPUTE_REWARD_GROUP_DISCARDED_COLOR = "#b3b3b3"
-const COMPUTE_METRICS_GROUP_DISCARDED_COLOR = "#b3b3b3"
+const ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT = "#b3b3b3"
+const ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK = "#505050"
+const COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT = "#b3b3b3"
+const COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK = "#505050"
+const COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT = "#b3b3b3"
+const COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK = "#505050"
 
 // Mini timeline showing all samples in a group
 export function GroupSampleTimeline({
@@ -1308,6 +1339,10 @@ export function GroupSampleTimeline({
     .sort((a, b) => a - b)
 
   const highlightDiscarded = useAtomValue(inferenceHighlightDiscardedAtom)
+  const darkMode = useAtomValue(darkModeAtom)
+  const eventBorderLight = darkMode ? "1px solid rgba(255, 255, 255, 0.2)" : "1px solid rgba(0, 0, 0, 0.3)"
+  const eventBorderLightSubtle = darkMode ? "1px solid rgba(255, 255, 255, 0.1)" : "1px solid rgba(0, 0, 0, 0.12)"
+  const eventBorderMedium = darkMode ? "1px solid rgba(255, 255, 255, 0.15)" : "1px solid rgba(0, 0, 0, 0.2)"
 
   // Check discard status for all samples in this group
   const requestSamples = useMemo(
@@ -1342,9 +1377,9 @@ export function GroupSampleTimeline({
   }, [eventsBySampleId])
 
   const groupColor = isCanceledGroup
-    ? GROUP_SAMPLE_CANCELED_COLOR
+    ? (darkMode ? GROUP_SAMPLE_CANCELED_COLOR_DARK : GROUP_SAMPLE_CANCELED_COLOR_LIGHT)
     : isDiscardedGroup
-      ? GROUP_SAMPLE_DISCARDED_COLOR
+      ? (darkMode ? GROUP_SAMPLE_DISCARDED_COLOR_DARK : GROUP_SAMPLE_DISCARDED_COLOR_LIGHT)
       : isEvalGroup
         ? GROUP_SAMPLE_EVAL_COLOR
         : GROUP_SAMPLE_COLOR
@@ -1390,16 +1425,16 @@ export function GroupSampleTimeline({
                   className={`text-[10px] font-semibold text-center rounded transition-colors flex items-center justify-center ${
                     isSelected
                       ? isCanceledGroup
-                        ? "text-gray-500 bg-gray-400/15 hover:bg-gray-400/25"
+                        ? "text-muted-foreground bg-gray-400/15 hover:bg-gray-400/25"
                         : isDiscardedGroup
-                          ? "text-gray-600 bg-gray-500/15 hover:bg-gray-500/25"
+                          ? "text-muted-foreground bg-gray-500/15 hover:bg-gray-500/25"
                           : isEvalGroup
                             ? "text-emerald-800 bg-emerald-500/15 hover:bg-emerald-500/25"
                             : "text-sky-900 bg-sky-500/15 hover:bg-sky-500/25"
                       : isCanceledGroup
-                        ? "text-gray-400 bg-gray-400/10 hover:bg-gray-400/20"
+                        ? "text-muted-foreground bg-gray-400/10 hover:bg-gray-400/20"
                         : isDiscardedGroup
-                          ? "text-gray-500 bg-gray-500/10 hover:bg-gray-500/20"
+                          ? "text-muted-foreground bg-gray-500/10 hover:bg-gray-500/20"
                           : isEvalGroup
                             ? "text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20"
                             : "text-sky-700 bg-sky-500/10 hover:bg-sky-500/20"
@@ -1424,9 +1459,9 @@ export function GroupSampleTimeline({
             const rowTop = idx * (rowHeight + rowGap)
             const color = isSelected
               ? isCanceledGroup
-                ? GROUP_SAMPLE_CANCELED_SELECTED_COLOR
+                ? (darkMode ? GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK : GROUP_SAMPLE_CANCELED_SELECTED_COLOR_LIGHT)
                 : isDiscardedGroup
-                  ? "#6b7280"
+                  ? (darkMode ? "#9ca3af" : "#6b7280")
                   : isEvalGroup
                     ? GROUP_SAMPLE_EVAL_SELECTED_COLOR
                     : GROUP_SAMPLE_SELECTED_COLOR
@@ -1502,8 +1537,8 @@ export function GroupSampleTimeline({
                         backgroundColor: color,
                         borderRadius: "1px",
                         border: isCanceledGroup
-                          ? "1px solid rgba(0, 0, 0, 0.12)"
-                          : "1px solid rgba(0, 0, 0, 0.3)",
+                          ? eventBorderLightSubtle
+                          : eventBorderLight,
                         boxSizing: "border-box",
                       }}
                       onClick={
@@ -1528,7 +1563,7 @@ export function GroupSampleTimeline({
                           color={color}
                           statusLabel={
                             isCanceledGroup
-                              ? { text: "Canceled", className: "text-gray-500" }
+                              ? { text: "Canceled", className: "text-muted-foreground" }
                               : isDiscardedGroup
                                 ? {
                                     text: "Discarded",
@@ -1573,10 +1608,10 @@ export function GroupSampleTimeline({
                   const durationMs = trace.duration * 1000
                   const envColor = isSelected
                     ? isDiscardedGroup
-                      ? "#6b7280"
+                      ? (darkMode ? "#9ca3af" : "#6b7280")
                       : ENV_RESPONSE_SELECTED_COLOR
                     : isDiscardedGroup
-                      ? ENV_RESPONSE_GROUP_DISCARDED_COLOR
+                      ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
                       : ENV_RESPONSE_GROUP_COLOR
 
                   return (
@@ -1588,7 +1623,7 @@ export function GroupSampleTimeline({
                         width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
                         backgroundColor: envColor,
                         borderRadius: "1px",
-                        border: "1px solid rgba(0, 0, 0, 0.2)",
+                        border: eventBorderMedium,
                         boxSizing: "border-box",
                         opacity: 0.85,
                       }}
@@ -1628,14 +1663,14 @@ export function GroupSampleTimeline({
                     const durationMs = rewardTime * 1000
                     const rwdColor = isSelected
                       ? isDiscardedGroup
-                        ? "#6b7280"
+                        ? (darkMode ? "#9ca3af" : "#6b7280")
                         : isEval
                           ? COMPUTE_METRICS_SELECTED_COLOR
                           : COMPUTE_REWARD_SELECTED_COLOR
                       : isDiscardedGroup
                         ? isEval
-                          ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR
-                          : COMPUTE_REWARD_GROUP_DISCARDED_COLOR
+                          ? (darkMode ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK : COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT)
+                          : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
                         : isEval
                           ? COMPUTE_METRICS_GROUP_COLOR
                           : COMPUTE_REWARD_GROUP_COLOR
@@ -1648,7 +1683,7 @@ export function GroupSampleTimeline({
                           width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
                           backgroundColor: rwdColor,
                           borderRadius: "1px",
-                          border: "1px solid rgba(0, 0, 0, 0.2)",
+                          border: eventBorderMedium,
                           boxSizing: "border-box",
                           opacity: 0.85,
                         }}
@@ -1730,6 +1765,10 @@ function InferenceServerTimeline({
   maxLanesToShow?: number
   freeLaneAfterGeneration?: boolean
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
+  const eventBorderMedium = darkMode ? "1px solid rgba(255, 255, 255, 0.15)" : "1px solid rgba(0, 0, 0, 0.2)"
+  const eventBorderWide = darkMode ? "1.5px solid rgba(255, 255, 255, 0.15)" : "1.5px solid rgba(0, 0, 0, 0.2)"
+
   // Only expose nodeId for tooltips when there are multiple nodes
   const displayNodeId =
     showNodeLabel && nodeId !== null && nodeId !== undefined
@@ -1937,6 +1976,7 @@ function InferenceServerTimeline({
                   )
                     return null
 
+                  const idleColor = darkMode ? IDLE_COLOR_DARK : IDLE_COLOR
                   return (
                     <HoverTooltipBlock
                       key={`idle-${idleIdx}`}
@@ -1944,13 +1984,13 @@ function InferenceServerTimeline({
                       style={{
                         left: `${leftPercent}%`,
                         width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
-                        backgroundColor: IDLE_COLOR,
+                        backgroundColor: idleColor,
                         borderRadius: "1px",
                       }}
                       tooltip={
                         <EventTooltip
                           title="Idle"
-                          color={IDLE_COLOR}
+                          color={idleColor}
                           details={[
                             {
                               label: "Duration",
@@ -1984,6 +2024,7 @@ function InferenceServerTimeline({
                     sampleStatusByKey,
                     highlightDiscarded,
                     discardStatusReady,
+                    darkMode,
                   )
                   const rewardStyle = getTimingBarStyle(
                     event,
@@ -1992,6 +2033,7 @@ function InferenceServerTimeline({
                     sampleStatusByKey,
                     highlightDiscarded,
                     discardStatusReady,
+                    darkMode,
                   )
                   return (
                     <Fragment key={`event-${eventIdx}`}>
@@ -2042,7 +2084,7 @@ function InferenceServerTimeline({
                                 width: `${Math.min(envWidthPct, 100 - envLeftPct)}%`,
                                 backgroundColor: envStyle.color,
                                 borderRadius: "1px",
-                                border: "1px solid rgba(0, 0, 0, 0.2)",
+                                border: eventBorderMedium,
                                 boxSizing: "border-box",
                                 opacity: envStyle.opacity,
                               }}
@@ -2137,7 +2179,7 @@ function InferenceServerTimeline({
                                 width: `${Math.min(rewardWidthPct, 100 - rewardLeftPct)}%`,
                                 backgroundColor: rewardStyle.color,
                                 borderRadius: "1px",
-                                border: "1px solid rgba(0, 0, 0, 0.2)",
+                                border: eventBorderMedium,
                                 boxSizing: "border-box",
                                 opacity: rewardStyle.opacity,
                                 ...(freeLaneAfterGeneration
@@ -2222,7 +2264,7 @@ function InferenceServerTimeline({
                     height: totalHeight,
                     backgroundColor: color,
                     borderRadius: "2px",
-                    border: "1.5px solid rgba(0, 0, 0, 0.2)",
+                    border: eventBorderWide,
                     boxSizing: "border-box",
                     opacity: 0.6,
                   }}
@@ -2262,12 +2304,13 @@ function getInferenceEventBaseColor(
   sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
+  darkMode: boolean = false,
 ): string {
   if (event.event_type !== "request") {
     return getInferenceEventColor(event.event_type)
   }
   if (event.is_canceled) {
-    return INFERENCE_REQUEST_CANCELED_COLOR
+    return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
   }
   if (!highlightDiscarded) {
     return event.is_eval
@@ -2275,7 +2318,7 @@ function getInferenceEventBaseColor(
       : INFERENCE_REQUEST_COLOR
   }
   if (!discardStatusReady) {
-    return INFERENCE_REQUEST_DISCARDED_COLOR
+    return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
   }
   if (!sampleStatusByKey || event.sample_id == null || event.group_id == null) {
     return event.is_eval
@@ -2285,7 +2328,7 @@ function getInferenceEventBaseColor(
   const key = `${event.group_id}:${event.sample_id}`
   const status = sampleStatusByKey.get(key)
   if (status === "rollouts_discarded") {
-    return INFERENCE_REQUEST_DISCARDED_COLOR
+    return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
   }
   return event.is_eval ? INFERENCE_REQUEST_EVAL_COLOR : INFERENCE_REQUEST_COLOR
 }
@@ -2296,28 +2339,30 @@ function getInferenceEventSelectionColor(
   sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
+  darkMode: boolean = false,
 ): { color: string; opacity: number } {
   const defaultColor = getInferenceEventBaseColor(
     event,
     sampleStatusByKey,
     highlightDiscarded,
     discardStatusReady,
+    darkMode,
   )
 
   if (!selectedRequest) {
     return { color: defaultColor, opacity: 1 }
   }
 
-  const isDiscarded = defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR
-  const isCanceled = defaultColor === INFERENCE_REQUEST_CANCELED_COLOR
+  const isDiscarded = defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR || defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR_DARK
+  const isCanceled = defaultColor === INFERENCE_REQUEST_CANCELED_COLOR || defaultColor === INFERENCE_REQUEST_CANCELED_COLOR_DARK
 
   // Selected sample = darker version of base color
   if (event.sample_id === selectedRequest.sampleId) {
     if (isCanceled) {
-      return { color: GROUP_SAMPLE_CANCELED_SELECTED_COLOR, opacity: 1 }
+      return { color: darkMode ? GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK : GROUP_SAMPLE_CANCELED_SELECTED_COLOR_LIGHT, opacity: 1 }
     }
     if (isDiscarded) {
-      return { color: "#6b7280", opacity: 1 } // gray-500 (darker gray)
+      return { color: darkMode ? "#9ca3af" : "#6b7280", opacity: 1 }
     }
     const selectedColor = event.is_eval
       ? INFERENCE_REQUEST_EVAL_SELECTED_COLOR
@@ -2328,10 +2373,10 @@ function getInferenceEventSelectionColor(
   // Same group_id but different sample_id
   if (event.group_id === selectedRequest.groupId) {
     if (isCanceled) {
-      return { color: GROUP_SAMPLE_CANCELED_COLOR, opacity: 1 }
+      return { color: darkMode ? GROUP_SAMPLE_CANCELED_COLOR_DARK : GROUP_SAMPLE_CANCELED_COLOR_LIGHT, opacity: 1 }
     }
     if (isDiscarded) {
-      return { color: GROUP_SAMPLE_DISCARDED_COLOR, opacity: 1 }
+      return { color: darkMode ? GROUP_SAMPLE_DISCARDED_COLOR_DARK : GROUP_SAMPLE_DISCARDED_COLOR_LIGHT, opacity: 1 }
     }
     return {
       color: event.is_eval ? GROUP_SAMPLE_EVAL_COLOR : GROUP_SAMPLE_COLOR,
@@ -2352,6 +2397,7 @@ function getTimingBarStyle(
   sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | null>,
   highlightDiscarded: boolean,
   discardStatusReady: boolean,
+  darkMode: boolean = false,
 ): { color: string; opacity: number } {
   const isEval = kind === "reward" && event.is_eval
   // Determine if the sample is discarded
@@ -2365,10 +2411,10 @@ function getTimingBarStyle(
 
   const baseColor = isDiscarded
     ? kind === "env"
-      ? ENV_RESPONSE_DISCARDED_COLOR
+      ? (darkMode ? ENV_RESPONSE_DISCARDED_COLOR_DARK : ENV_RESPONSE_DISCARDED_COLOR_LIGHT)
       : isEval
-        ? COMPUTE_METRICS_DISCARDED_COLOR
-        : COMPUTE_REWARD_DISCARDED_COLOR
+        ? (darkMode ? COMPUTE_METRICS_DISCARDED_COLOR_DARK : COMPUTE_METRICS_DISCARDED_COLOR_LIGHT)
+        : (darkMode ? COMPUTE_REWARD_DISCARDED_COLOR_DARK : COMPUTE_REWARD_DISCARDED_COLOR_LIGHT)
     : kind === "env"
       ? ENV_RESPONSE_COLOR
       : isEval
@@ -2380,7 +2426,7 @@ function getTimingBarStyle(
   // Selected sample: darker version of base color (or darker gray if discarded)
   if (event.sample_id === selectedRequest.sampleId) {
     if (isDiscarded) {
-      return { color: "#6b7280", opacity: 1 } // gray-500
+      return { color: darkMode ? "#9ca3af" : "#6b7280", opacity: 1 }
     }
     const selectedColor =
       kind === "env"
@@ -2395,10 +2441,10 @@ function getTimingBarStyle(
   if (event.group_id === selectedRequest.groupId) {
     const groupColor = isDiscarded
       ? kind === "env"
-        ? ENV_RESPONSE_GROUP_DISCARDED_COLOR
+        ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
         : isEval
-          ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR
-          : COMPUTE_REWARD_GROUP_DISCARDED_COLOR
+          ? (darkMode ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK : COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT)
+          : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
       : kind === "env"
         ? ENV_RESPONSE_GROUP_COLOR
         : isEval
@@ -2436,6 +2482,7 @@ function InferenceEventBlock({
   discardStatusReady: boolean
   onClick: () => void
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const intervalEnd = intervalStart + intervalDuration
 
   if (event.end_time <= intervalStart || event.start_time >= intervalEnd)
@@ -2458,6 +2505,7 @@ function InferenceEventBlock({
     sampleStatusByKey,
     highlightDiscarded,
     discardStatusReady,
+    darkMode,
   )
   const isClickable =
     event.event_type === "request" && event.sample_id !== undefined
@@ -2466,7 +2514,7 @@ function InferenceEventBlock({
   const statusLabel = (() => {
     if (event.event_type !== "request") return null
     if (event.is_canceled)
-      return { text: "Canceled", className: "text-gray-500" }
+      return { text: "Canceled", className: "text-muted-foreground" }
     if (
       highlightDiscarded &&
       discardStatusReady &&
@@ -2493,8 +2541,8 @@ function InferenceEventBlock({
         backgroundColor: color,
         borderRadius: "1px",
         border: event.is_canceled
-          ? "1.5px solid rgba(0, 0, 0, 0.2)"
-          : "1.5px solid rgba(0, 0, 0, 0.3)",
+          ? (darkMode ? "1.5px solid rgba(255, 255, 255, 0.15)" : "1.5px solid rgba(0, 0, 0, 0.2)")
+          : (darkMode ? "1.5px solid rgba(255, 255, 255, 0.2)" : "1.5px solid rgba(0, 0, 0, 0.3)"),
         boxSizing: "border-box",
         opacity,
       }}
@@ -2853,7 +2901,7 @@ function TrainerSection({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className="flex items-center gap-2 mb-3">
         <CollapsibleTrigger asChild>
-          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="flex items-center gap-1.5 py-1.5 px-2 -ml-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <ChevronDown
               className={cn(
                 "h-4 w-4 text-muted-foreground transition-transform",
@@ -3004,7 +3052,7 @@ function TrainerNodeGroup({
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <CollapsibleTrigger asChild>
-        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+        <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
           <div className="flex items-center gap-1.5">
             <ChevronDown
               className={cn(
@@ -3202,6 +3250,8 @@ function IdleBlock({
   intervalDuration: number
   dimmed?: boolean
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
+  const idleColor = darkMode ? IDLE_COLOR_DARK : IDLE_COLOR
   const relativeStart = idle.start - intervalStart
   const leftPercent = (relativeStart / intervalDuration) * 100
   const widthPercent = (idle.duration / intervalDuration) * 100
@@ -3214,14 +3264,14 @@ function IdleBlock({
       style={{
         left: `${leftPercent}%`,
         width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
-        backgroundColor: IDLE_COLOR,
+        backgroundColor: idleColor,
         borderRadius: "2px",
         opacity: dimmed ? 0.3 : 1,
       }}
       tooltip={
         <EventTooltip
           title="Idle"
-          color={IDLE_COLOR}
+          color={idleColor}
           details={[
             {
               label: "Duration",
@@ -3328,6 +3378,7 @@ export function TrainerBreakdownContent({
   parentEvent: TrainerEvent
   childEvents: TrainerEvent[]
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const sortedChildren = [...childEvents].sort(
     (a, b) => a.start_time - b.start_time,
   )
@@ -3450,7 +3501,7 @@ export function TrainerBreakdownContent({
                   width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
                   backgroundColor: color,
                   borderRadius: "1px",
-                  border: "1px solid rgba(0, 0, 0, 0.3)",
+                  border: darkMode ? "1px solid rgba(255, 255, 255, 0.2)" : "1px solid rgba(0, 0, 0, 0.3)",
                   boxSizing: "border-box",
                 }}
                 tooltip={

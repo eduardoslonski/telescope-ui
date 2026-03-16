@@ -7,6 +7,9 @@ import type {
   CustomPlotItem,
 } from "@/lib/types"
 
+// Dark mode preference (persisted to localStorage)
+export const darkModeAtom = atomWithStorage<boolean>("dark-mode", false)
+
 // Whether the server has a W&B API key configured (boolean flag only, not the secret).
 // Regular atom (not localStorage) — set optimistically on config submit, server response is source of truth.
 export const wandbApiKeyAtom = atom<boolean>(false)

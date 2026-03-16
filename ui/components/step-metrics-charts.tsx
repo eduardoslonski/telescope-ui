@@ -7,9 +7,9 @@ import {
   useCallback,
   RefObject,
 } from "react"
-import { useAtom } from "jotai"
+import { useAtom, useAtomValue } from "jotai"
 import uPlot from "uplot"
-import { metricsChartFiltersAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
+import { darkModeAtom, metricsChartFiltersAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
 import {
   getSidebarRunNameParts,
   SIDEBAR_MAX_RUN_NAME_CHARS,
@@ -94,7 +94,7 @@ function FilterBadge({
 }) {
   return (
     <span
-      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] bg-white border border-gray-300 text-gray-400 rounded-full cursor-pointer hover:bg-gray-50 transition-colors whitespace-nowrap shrink-0"
+      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full cursor-pointer hover:bg-muted transition-colors whitespace-nowrap shrink-0"
       onClick={(e) => {
         e.stopPropagation()
         onRemove()
@@ -735,13 +735,13 @@ export function StepMetricsCharts({
         const groupEntries = Object.entries(groups)
         return (
           <div key={sectionName}>
-            {idx > 0 && <div className="border-t border-gray-200 my-3" />}
+            {idx > 0 && <div className="border-t border-border my-3" />}
             <Collapsible
               open={isOpen}
               onOpenChange={() => toggleGroup(sectionName)}
             >
               <CollapsibleTrigger asChild>
-                <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+                <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
                   <div className="flex items-center gap-1.5">
                     <ChevronDown
                       className={cn(
@@ -790,13 +790,13 @@ export function StepMetricsCharts({
       })}
 
       {sectionNames.length > 0 && (
-        <div className="border-t border-gray-200 my-3" />
+        <div className="border-t border-border my-3" />
       )}
 
       {/* Reward Metrics Section */}
       <Collapsible open={rewardOpen} onOpenChange={setRewardOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -848,7 +848,7 @@ export function StepMetricsCharts({
 
       {METRIC_GROUPS.samples_metrics && (
         <>
-          <div className="border-t border-gray-200 my-3" />
+          <div className="border-t border-border my-3" />
 
           {/* Samples Metrics Section */}
           <Collapsible
@@ -856,7 +856,7 @@ export function StepMetricsCharts({
             onOpenChange={setSamplesMetricsOpen}
           >
             <CollapsibleTrigger asChild>
-              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
                 <div className="flex items-center gap-1.5">
                   <ChevronDown
                     className={cn(
@@ -905,12 +905,12 @@ export function StepMetricsCharts({
         </>
       )}
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* Advantage Metrics Section */}
       <Collapsible open={advantageOpen} onOpenChange={setAdvantageOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -949,11 +949,11 @@ export function StepMetricsCharts({
       {/* Evals Metrics Section */}
       {hasEvals && (
         <>
-          <div className="border-t border-gray-200 my-3" />
+          <div className="border-t border-border my-3" />
 
           <Collapsible open={evalsOpen} onOpenChange={setEvalsOpen}>
             <CollapsibleTrigger asChild>
-              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
                 <div className="flex items-center gap-1.5">
                   <ChevronDown
                     className={cn(
@@ -982,7 +982,7 @@ export function StepMetricsCharts({
                         onOpenChange={() => toggleEvalGroup(evalName)}
                       >
                         <CollapsibleTrigger asChild>
-                          <div className="py-1 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+                          <div className="py-1 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
                             <div className="flex items-center gap-1.5">
                               <ChevronDown
                                 className={cn(
@@ -1115,12 +1115,12 @@ export function StepMetricsCharts({
         </>
       )}
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* Rollouts Metrics Section */}
       <Collapsible open={rolloutsOpen} onOpenChange={setRolloutsOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -1197,12 +1197,12 @@ export function StepMetricsCharts({
         </CollapsibleContent>
       </Collapsible>
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* Discarded Rollouts Metrics Section */}
       <Collapsible open={discardedOpen} onOpenChange={setDiscardedOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -1384,12 +1384,12 @@ export function StepMetricsCharts({
         </CollapsibleContent>
       </Collapsible>
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* Timeline Trainer Section */}
       <Collapsible open={timelineTrainerOpen} onOpenChange={setTimelineTrainerOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -1624,12 +1624,12 @@ export function StepMetricsCharts({
         </CollapsibleContent>
       </Collapsible>
 
-      <div className="border-t border-gray-200 my-3" />
+      <div className="border-t border-border my-3" />
 
       {/* Timeline Inference Section */}
       <Collapsible open={timelineInferenceOpen} onOpenChange={setTimelineInferenceOpen}>
         <CollapsibleTrigger asChild>
-          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors">
+          <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
             <div className="flex items-center gap-1.5">
               <ChevronDown
                 className={cn(
@@ -1849,6 +1849,7 @@ export function DistributionOverTimeChart({
   headerPrefix,
   headerSuffix,
 }: DistributionOverTimeChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -1953,8 +1954,8 @@ export function DistributionOverTimeChart({
 
     const width = container.clientWidth
     const height = 200
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
-    const gridColor = "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const axisFont = "10px system-ui, sans-serif"
 
     const dpr = window.devicePixelRatio || 1
@@ -2061,7 +2062,7 @@ export function DistributionOverTimeChart({
       (data.global_max ?? 0) > 0
     ) {
       const zeroY = yScale(0)
-      ctx.strokeStyle = "rgba(128, 128, 128, 0.5)"
+      ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.3)" : "rgba(128, 128, 128, 0.5)"
       ctx.lineWidth = 1
       ctx.setLineDash([5, 5])
       ctx.beginPath()
@@ -2119,6 +2120,7 @@ export function DistributionOverTimeChart({
     showZeroLine,
     formatYAxisLabel,
     getDistributionPadding,
+    darkMode,
   ])
 
   // Handle resize
@@ -2262,7 +2264,7 @@ export function DistributionOverTimeChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-gray-200 p-3 transition-opacity bg-white",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -2281,7 +2283,7 @@ export function DistributionOverTimeChart({
         )}
       </div>
       {hasData ? (
-        <div className="h-[200px] relative bg-white rounded" ref={containerRef}>
+        <div className="h-[200px] relative bg-background rounded" ref={containerRef}>
           <canvas
             className="block w-full h-full max-w-full"
             ref={canvasRef}
@@ -2299,7 +2301,7 @@ export function DistributionOverTimeChart({
             style={{ display: "none" }}
           />
           {isRefetching && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (
@@ -2403,6 +2405,7 @@ export function EvalMetricChart({
   headerPrefix,
   headerSuffix,
 }: EvalMetricChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -2883,8 +2886,8 @@ export function EvalMetricChart({
     if (minY !== null) yMin = minY
     if (maxY !== null) yMax = maxY
 
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     const calcYAxisSize = (u: uPlot, values: string[]) => {
       if (!values || values.length === 0) return 40
@@ -3098,6 +3101,7 @@ export function EvalMetricChart({
     outlierBounds,
     minY,
     maxY,
+    darkMode,
   ])
 
   useEffect(() => {
@@ -3148,7 +3152,7 @@ export function EvalMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-gray-200 p-3 transition-opacity bg-white h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -3259,7 +3263,7 @@ export function EvalMetricChart({
       </div>
       {hasData ? (
         <div
-          className="flex-1 min-h-0 relative bg-white rounded"
+          className="flex-1 min-h-0 relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -3269,7 +3273,7 @@ export function EvalMetricChart({
             style={{ display: "none" }}
           />
           {isRefetching && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (
@@ -3565,6 +3569,7 @@ export function MetricChart({
   headerSuffix,
   availableSampleTags,
 }: MetricChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -4131,8 +4136,8 @@ export function MetricChart({
       yMax = maxY
     }
 
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     // Dynamic Y axis size calculation based on tick label width
     const calcYAxisSize = (u: uPlot, values: string[]) => {
@@ -4443,6 +4448,7 @@ export function MetricChart({
     chartId,
     isTimingMetric,
     setSyncedCursor,
+    darkMode,
   ])
 
   // Sync cursor from other charts when CTRL is held
@@ -4507,7 +4513,7 @@ export function MetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-gray-200 p-3 transition-opacity bg-white h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -4649,7 +4655,7 @@ export function MetricChart({
       </div>
       {hasData ? (
         <div
-          className="flex-1 min-h-0 relative bg-white rounded"
+          className="flex-1 min-h-0 relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -4660,7 +4666,7 @@ export function MetricChart({
           />
           {/* Loading indicator for background polling */}
           {isRefetching && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (

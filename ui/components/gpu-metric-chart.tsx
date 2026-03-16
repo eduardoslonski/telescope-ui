@@ -1,6 +1,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import uPlot from "uplot"
+import { useAtomValue } from "jotai"
 import { X, SlidersHorizontal, Loader2 } from "lucide-react"
 import {
   DropdownMenu,
@@ -10,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { darkModeAtom } from "@/lib/atoms"
 import {
   formatClockTimeAdaptive,
   formatSecondsCompact,
@@ -182,7 +184,7 @@ function FilterBadge({
 }) {
   return (
     <span
-      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-white border border-gray-400 text-gray-600 rounded-full cursor-pointer hover:bg-gray-50 transition-colors"
+      className="group inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] bg-background border border-border text-muted-foreground rounded-full cursor-pointer hover:bg-muted transition-colors"
       onClick={(e) => {
         e.stopPropagation()
         onRemove()
@@ -286,6 +288,7 @@ export function GpuMetricChart({
   /** Background refetch indicator (keep plot visible, show spinner) */
   isRefetching?: boolean
 }) {
+  const darkMode = useAtomValue(darkModeAtom)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -458,8 +461,8 @@ export function GpuMetricChart({
       maxY !== null ? maxY : maxVal + padding,
     ]
 
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     // Dynamic Y axis size calculation based on tick label width
     const calcYAxisSize = (_u: uPlot, values: string[]) => {
@@ -741,6 +744,7 @@ export function GpuMetricChart({
     outlierBounds,
     minY,
     maxY,
+    darkMode,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -759,7 +763,7 @@ export function GpuMetricChart({
         "rounded-lg border transition-opacity",
         isTimeline
           ? "overflow-hidden"
-          : "group/chart border-gray-200 p-3 bg-white",
+          : "group/chart border-border p-3 bg-background",
         isLoading && "opacity-60"
       )}
     >
@@ -830,9 +834,9 @@ export function GpuMetricChart({
         </div>
       )}
       {hasData ? (
-        <div className="h-48 relative bg-white rounded" ref={containerRef} onMouseLeave={handleMouseLeave}>
+        <div className="h-48 relative bg-background rounded" ref={containerRef} onMouseLeave={handleMouseLeave}>
         {!isTimeline && isRefetching && (
-          <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+          <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
         )}
         <div
           ref={tooltipRef}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, Link } from "react-router-dom"
-import { useAtom, useSetAtom } from "jotai"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   AlertTriangle,
@@ -8,6 +8,8 @@ import {
   ArrowUp,
   Check,
   Menu,
+  Moon,
+  Sun,
   Trash2,
 } from "lucide-react"
 import {
@@ -62,6 +64,7 @@ import {
   isSyncingAtom,
   isTrackingAtom,
   overviewShowCodeViewAtom,
+  darkModeAtom,
 } from "@/lib/atoms"
 import { useRemovedRuns, useRuns, useKnownProjects } from "@/hooks/use-run-data"
 import { cn } from "@/lib/utils"
@@ -150,6 +153,7 @@ export function AppSidebar() {
   const [configDialogOpen, setConfigDialogOpen] = useAtom(
     wandbConfigDialogOpenAtom,
   )
+  const [darkMode, setDarkMode] = useAtom(darkModeAtom)
   const setHoveredRunId = useSetAtom(hoveredRunIdAtom)
   const setOverviewShowCodeView = useSetAtom(overviewShowCodeViewAtom)
   const [addRunDialogOpen, setAddRunDialogOpen] = useState(false)
@@ -710,13 +714,20 @@ export function AppSidebar() {
     <>
       <div className="flex flex-col h-screen w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground fixed left-0 top-0">
         {/* Header */}
-        <div className="py-2.5 px-4 border-b border-sidebar-border shrink-0">
+        <div className="py-2.5 px-4 border-b border-sidebar-border shrink-0 flex items-center justify-between">
           <Link
             to="/about"
             className="flex items-center h-7 hover:opacity-80 transition-opacity"
           >
-            <img src="/logo-full.svg" alt="Telescope" className="h-5" />
+            <img src={darkMode ? "/logo-full-dark.svg" : "/logo-full.svg"} alt="Telescope" className="h-5" />
           </Link>
+          <button
+            onClick={() => setDarkMode((prev) => !prev)}
+            className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+            aria-label="Toggle dark mode"
+          >
+            {darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+          </button>
         </div>
 
         {/* Navigation */}

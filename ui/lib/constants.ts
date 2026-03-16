@@ -61,13 +61,16 @@ export const TRAINER_EVENT_COLORS: Record<string, string> = {
 export const INFERENCE_REQUEST_COLOR = "#0284c7" // sky-600 (blue)
 export const INFERENCE_REQUEST_EVAL_COLOR = "#10b981" // emerald-500 (green for eval)
 export const INFERENCE_REQUEST_DISCARDED_COLOR = "#ababab" // gray for discarded
+export const INFERENCE_REQUEST_DISCARDED_COLOR_DARK = "#555555" // darker gray for dark mode
 export const INFERENCE_REQUEST_CANCELED_COLOR = "#c9c9c9" // lighter gray for canceled (gray-300)
+export const INFERENCE_REQUEST_CANCELED_COLOR_DARK = "#4a4a4a" // darker gray for canceled in dark mode
 export const INFERENCE_EVENT_COLORS: Record<string, string> = {
   request: INFERENCE_REQUEST_COLOR,
   weight_broadcast: "#f97316", // orange - same as trainer weight_broadcast
 } as const
 
 export const IDLE_COLOR = "#e6e9ed" // light gray
+export const IDLE_COLOR_DARK = "#2a2d32" // dark gray
 export const DEFAULT_EVENT_COLOR = "#6b7280" // gray
 
 // ============================================================================

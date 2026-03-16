@@ -22,6 +22,7 @@ import {
   selectedRunPathAtom,
   visibleRunsAtom,
   hoveredRunIdAtom,
+  darkModeAtom,
 } from "@/lib/atoms"
 import {
   useStepMetricSingle,
@@ -1239,6 +1240,7 @@ function MetricChart({
   scrollRoot = null,
 }: MetricChartProps) {
   const setSelectedStep = useSetAtom(selectedStepAtom)
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -1581,8 +1583,8 @@ function MetricChart({
       yMax = maxVal + padding
     }
 
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     // Dynamic Y axis size calculation based on tick label width
     const calcYAxisSize = (u: uPlot, values: string[]) => {
@@ -1667,7 +1669,7 @@ function MetricChart({
               const y1 = u.valToPos(yMin, "y", true)
 
               ctx.save()
-              ctx.strokeStyle = "rgba(128, 128, 128, 0.25)"
+              ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.2)" : "rgba(128, 128, 128, 0.25)"
               ctx.lineWidth = 2
               ctx.beginPath()
               ctx.moveTo(x, y0)
@@ -1684,7 +1686,7 @@ function MetricChart({
               const x1 = u.valToPos(u.scales.x.max!, "x", true)
 
               ctx.save()
-              ctx.strokeStyle = "rgba(128, 128, 128, 0.5)"
+              ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.35)" : "rgba(128, 128, 128, 0.5)"
               ctx.lineWidth = 1
               ctx.setLineDash([5, 5])
               ctx.beginPath()
@@ -1857,6 +1859,7 @@ function MetricChart({
     runs,
     plottedRuns,
     runDataIndexByRunPath,
+    darkMode,
   ])
 
   // Handle mouse leave
@@ -1872,8 +1875,8 @@ function MetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/card rounded-lg border border-gray-200 p-3 transition-opacity",
-        "bg-white",
+        "group/card rounded-lg border border-border p-3 transition-opacity",
+        "bg-background",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -1897,7 +1900,7 @@ function MetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-40 cursor-pointer relative bg-white rounded"
+          className="h-40 cursor-pointer relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -1908,7 +1911,7 @@ function MetricChart({
             style={{ display: "none" }}
           />
           {isRefetching && !isPlaceholderData && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (
@@ -1980,6 +1983,7 @@ function HistogramChart({
   onRemove,
   scrollRoot = null,
 }: HistogramChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -2060,8 +2064,8 @@ function HistogramChart({
     const maxCount = Math.max(...histogramData.counts)
     const yMax = maxCount * 1.1
 
-    const gridColor = "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
     const barColor = "rgba(59, 130, 246, 0.7)" // Blue bars
 
     // Calculate bar width based on bin width
@@ -2190,7 +2194,7 @@ function HistogramChart({
               const y1 = u.valToPos(yMax, "y", true)
 
               ctx.save()
-              ctx.strokeStyle = "rgba(128, 128, 128, 0.5)"
+              ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.35)" : "rgba(128, 128, 128, 0.5)"
               ctx.lineWidth = 1
               ctx.setLineDash([5, 5])
               ctx.beginPath()
@@ -2293,7 +2297,7 @@ function HistogramChart({
       chart.destroy()
       chartRef.current = null
     }
-  }, [histogramData, hasData, showZeroLine, formatValue])
+  }, [histogramData, hasData, showZeroLine, formatValue, darkMode])
 
   // Handle mouse leave
   const handleMouseLeave = useCallback(() => {
@@ -2308,8 +2312,8 @@ function HistogramChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/card rounded-lg border border-gray-200 p-3 transition-opacity",
-        "bg-white",
+        "group/card rounded-lg border border-border p-3 transition-opacity",
+        "bg-background",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -2333,7 +2337,7 @@ function HistogramChart({
       </div>
       {hasData ? (
         <div
-          className="h-40 relative bg-white rounded"
+          className="h-40 relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -2344,7 +2348,7 @@ function HistogramChart({
             style={{ display: "none" }}
           />
           {isRefetching && !isPlaceholderData && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (
@@ -2427,6 +2431,7 @@ function DistributionOverTimeChart({
   maxSelectableStep,
   scrollRoot = null,
 }: DistributionOverTimeChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -2535,8 +2540,8 @@ function DistributionOverTimeChart({
 
     const width = container.clientWidth
     const height = 160 // h-40 = 160px
-    const tickLabelColor = "rgba(100, 100, 100, 0.9)"
-    const gridColor = "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const axisFont = "10px system-ui, sans-serif"
 
     // Set canvas size
@@ -2649,7 +2654,7 @@ function DistributionOverTimeChart({
       (data.global_max ?? 0) > 0
     ) {
       const zeroY = yScale(0)
-      ctx.strokeStyle = "rgba(128, 128, 128, 0.5)"
+      ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.35)" : "rgba(128, 128, 128, 0.5)"
       ctx.lineWidth = 1
       ctx.setLineDash([5, 5])
       ctx.beginPath()
@@ -2673,7 +2678,7 @@ function DistributionOverTimeChart({
       }
       if (closestIdx >= 0) {
         const x = xScale(closestIdx)
-        ctx.strokeStyle = "rgba(128, 128, 128, 0.25)"
+        ctx.strokeStyle = darkMode ? "rgba(255, 255, 255, 0.2)" : "rgba(128, 128, 128, 0.25)"
         ctx.lineWidth = 1
         ctx.beginPath()
         ctx.moveTo(x, padding.top)
@@ -2733,6 +2738,7 @@ function DistributionOverTimeChart({
     currentStep,
     formatYAxisLabel,
     getDistributionPadding,
+    darkMode,
   ])
 
   // Handle resize
@@ -2921,8 +2927,8 @@ function DistributionOverTimeChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/card rounded-lg border border-gray-200 p-3 transition-opacity",
-        "bg-white",
+        "group/card rounded-lg border border-border p-3 transition-opacity",
+        "bg-background",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -2945,7 +2951,7 @@ function DistributionOverTimeChart({
         </div>
       </div>
       {hasData ? (
-        <div className="h-40 relative bg-white rounded" ref={containerRef}>
+        <div className="h-40 relative bg-background rounded" ref={containerRef}>
           <canvas
             className="block w-full h-full max-w-full cursor-pointer"
             ref={canvasRef}
@@ -2955,7 +2961,7 @@ function DistributionOverTimeChart({
           />
           <div
             ref={hoverLineRef}
-            className="absolute z-[2] border-l border-dashed border-gray-500/70 pointer-events-none"
+            className="absolute z-[2] border-l border-dashed border-border pointer-events-none"
             style={{ display: "none" }}
           />
           {/* Custom tooltip */}
@@ -2965,7 +2971,7 @@ function DistributionOverTimeChart({
             style={{ display: "none" }}
           />
           {isRefetching && !isPlaceholderData && (
-            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-gray-600" />
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
           )}
         </div>
       ) : (

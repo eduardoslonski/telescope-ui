@@ -4,6 +4,8 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber"
 import { OrbitControls, RoundedBox, Text, Html, Edges } from "@react-three/drei"
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib"
 import * as THREE from "three"
+import { useAtomValue } from "jotai"
+import { darkModeAtom } from "@/lib/atoms"
 
 // ============================================================================
 // Types for parsed setup data
@@ -331,8 +333,7 @@ export function parseTopology(
 // Color Constants — Light theme
 // ============================================================================
 
-const COLORS = {
-  // Keep only two accent colors; everything else is black/white.
+const COLORS_LIGHT = {
   trainer: "#2563eb",
   inference: "#dc2626",
   unassigned: "#111111",
@@ -352,6 +353,33 @@ const COLORS = {
   textLight: "#000000",
   background: "#ffffff",
   gridColor: "#ffffff",
+}
+
+const COLORS_DARK = {
+  trainer: "#3b82f6",
+  inference: "#ef4444",
+  unassigned: "#d4d4d4",
+  nvlink: "#3b5998",
+  nvlinkDot: "#4a4a4a",
+  platform: "#1e1e1e",
+  platformBorder: "#555555",
+  gpuBody: "#2a2a2a",
+  gpuBodyHover: "#333333",
+  moduleBody: "#2a2a2a",
+  moduleBodyHover: "#333333",
+  chip: "#2a2a2a",
+  chipBorder: "#444444",
+  textBlack: "#e5e5e5",
+  textDark: "#e5e5e5",
+  textMuted: "#a3a3a3",
+  textLight: "#d4d4d4",
+  background: "#141414",
+  gridColor: "#141414",
+}
+
+function useColors() {
+  const darkMode = useAtomValue(darkModeAtom)
+  return darkMode ? COLORS_DARK : COLORS_LIGHT
 }
 
 // ============================================================================
@@ -389,6 +417,7 @@ function GpuCard({
   onClick: () => void
   isHovered: boolean
 }) {
+  const COLORS = useColors()
   const roleColor =
     gpu.role.role === "trainer"
       ? COLORS.trainer
@@ -528,11 +557,11 @@ function GpuCard({
           distanceFactor={5}
           style={{ pointerEvents: "none" }}
         >
-          <div className="bg-white border border-black rounded-none px-3 py-2 min-w-[180px]">
-            <div className="text-xs font-semibold text-black mb-1">
+          <div className="bg-background border border-foreground rounded-none px-3 py-2 min-w-[180px]">
+            <div className="text-xs font-semibold text-foreground mb-1">
               {gpu.hardware.name}
             </div>
-            <div className="text-[10px] text-black space-y-0.5">
+            <div className="text-[10px] text-foreground space-y-0.5">
               <div className="flex justify-between gap-4">
                 <span>VRAM</span>
                 <span className="font-mono">
@@ -581,6 +610,7 @@ function VramModule({
   onHover: () => void
   onUnhover: () => void
 }) {
+  const COLORS = useColors()
   // VRAM box: same width as GPU column, shorter height, shallower depth
   const roofY = 0.063
 
@@ -659,6 +689,7 @@ function CpuChip({
   onUnhover: () => void
   onClick: () => void
 }) {
+  const COLORS = useColors()
   const modelLabel = shortCpuModel(cpu.model)
 
   return (
@@ -735,11 +766,11 @@ function CpuChip({
           distanceFactor={5}
           style={{ pointerEvents: "none" }}
         >
-          <div className="bg-white border border-black rounded-none px-3 py-2 min-w-[180px]">
-            <div className="text-xs font-semibold text-black mb-1">
+          <div className="bg-background border border-foreground rounded-none px-3 py-2 min-w-[180px]">
+            <div className="text-xs font-semibold text-foreground mb-1">
               {cpu.model}
             </div>
-            <div className="text-[10px] text-black space-y-0.5">
+            <div className="text-[10px] text-foreground space-y-0.5">
               <div className="flex justify-between gap-4">
                 <span>Cores</span>
                 <span className="font-mono">{cpu.cores}</span>
@@ -786,6 +817,7 @@ function RamModule({
   onUnhover: () => void
   onClick: () => void
 }) {
+  const COLORS = useColors()
   const roofY = 0.063
 
   return (
@@ -842,11 +874,11 @@ function RamModule({
           distanceFactor={5}
           style={{ pointerEvents: "none" }}
         >
-          <div className="bg-white border border-black rounded-none px-3 py-2 min-w-[140px]">
-            <div className="text-xs font-semibold text-black mb-1">
+          <div className="bg-background border border-foreground rounded-none px-3 py-2 min-w-[140px]">
+            <div className="text-xs font-semibold text-foreground mb-1">
               System Memory
             </div>
-            <div className="text-[10px] text-black space-y-0.5">
+            <div className="text-[10px] text-foreground space-y-0.5">
               <div className="flex justify-between gap-4">
                 <span>Total</span>
                 <span className="font-mono">
@@ -871,6 +903,7 @@ function NvlinkConnections({
   vramDepth: number
   interconnect: GpuInterconnect | null
 }) {
+  const COLORS = useColors()
   if (!interconnect?.nvlink || vramPositions.length < 2) return null
 
   // Sort by X to find leftmost/rightmost
@@ -948,6 +981,7 @@ function NodePlatform({
   setHoveredItem: (id: string | null) => void
   setSelectedItem: (item: SelectedItem | null) => void
 }) {
+  const COLORS = useColors()
   // Layout (back → front): NVLink — VRAMs — GPUs — PCIe bar — CPU+RAM — software
   const gpuCount = node.gpus.length
   const gpuSpacing = 1.15
@@ -1219,6 +1253,7 @@ function NodePlatform({
 
 /** Floor */
 function FloorGrid() {
+  const COLORS = useColors()
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]}>
       <planeGeometry args={[50, 50]} />
@@ -1241,6 +1276,7 @@ function NodeBox({
   position: [number, number, number]
   onClick: () => void
 }) {
+  const COLORS = useColors()
   const [hovered, setHovered] = useState(false)
   const groupRef = useRef<THREE.Group>(null)
 
@@ -1388,6 +1424,9 @@ function FloorOverviewScene({
   topology: ParsedTopology
   onSelectNode: (nodeId: number) => void
 }) {
+  const COLORS = useColors()
+  const hemiColor = COLORS.background === "#ffffff" ? "#ffffff" : "#888888"
+  const hemiGround = COLORS.background === "#ffffff" ? "#ffffff" : "#333333"
   const nodeBoxW = 2.5
   const nodeBoxD = 1.5
 
@@ -1436,7 +1475,7 @@ function FloorOverviewScene({
       <ambientLight intensity={0.7} />
       <directionalLight position={[8, 12, 5]} intensity={0.8} />
       <directionalLight position={[-5, 8, -5]} intensity={0.4} />
-      <hemisphereLight color="#ffffff" groundColor="#ffffff" intensity={0.5} />
+      <hemisphereLight color={hemiColor} groundColor={hemiGround} intensity={0.5} />
 
       <FloorGrid />
       <gridHelper
@@ -1588,11 +1627,12 @@ function InfoPanel({
   focusedItem: SelectedItem | null
   onClose: () => void
 }) {
+  const COLORS = useColors()
   return (
     <div className="absolute top-4 right-4 w-72 max-h-[calc(100%-2rem)] overflow-auto">
       {/* When focused — show full detail card only */}
       {focusedItem ? (
-        <div className="bg-white border border-black rounded-none p-4">
+        <div className="bg-background border border-foreground rounded-none p-4">
           {/* GPU detail */}
           {focusedItem.type === "gpu" &&
             (() => {
@@ -1604,11 +1644,11 @@ function InfoPanel({
                     ? COLORS.inference
                     : COLORS.unassigned
               return (
-                <div className="space-y-1 text-[11px] text-black">
-                  <div className="text-xs font-semibold text-black mb-2">
+                <div className="space-y-1 text-[11px] text-foreground">
+                  <div className="text-xs font-semibold text-foreground mb-2">
                     GPU Details
                   </div>
-                  <div className="font-mono text-black text-xs mb-1">
+                  <div className="font-mono text-foreground text-xs mb-1">
                     {gpu.hardware.name}
                   </div>
                   <DetailRow
@@ -1646,7 +1686,7 @@ function InfoPanel({
                       value={<span className="text-[9px]">{gpu.role.url}</span>}
                     />
                   )}
-                  <div className="border-t border-black mt-1.5 pt-1.5" />
+                  <div className="border-t border-foreground mt-1.5 pt-1.5" />
                   <DetailRow
                     label="VRAM"
                     value={`${gpu.hardware.memory_total_gb} GB`}
@@ -1678,11 +1718,11 @@ function InfoPanel({
             (() => {
               const cpu = focusedItem.data as CpuInfo
               return (
-                <div className="space-y-1 text-[11px] text-black">
-                  <div className="text-xs font-semibold text-black mb-2">
+                <div className="space-y-1 text-[11px] text-foreground">
+                  <div className="text-xs font-semibold text-foreground mb-2">
                     CPU Details
                   </div>
-                  <div className="font-mono text-black text-xs mb-1">
+                  <div className="font-mono text-foreground text-xs mb-1">
                     {cpu.model}
                   </div>
                   <DetailRow label="Node" value={`#${focusedItem.nodeId}`} />
@@ -1703,8 +1743,8 @@ function InfoPanel({
             (() => {
               const mem = focusedItem.data as MemoryInfo
               return (
-                <div className="space-y-1 text-[11px] text-black">
-                  <div className="text-xs font-semibold text-black mb-2">
+                <div className="space-y-1 text-[11px] text-foreground">
+                  <div className="text-xs font-semibold text-foreground mb-2">
                     System Memory
                   </div>
                   <DetailRow label="Node" value={`#${focusedItem.nodeId}`} />
@@ -1719,7 +1759,7 @@ function InfoPanel({
           {/* Close button */}
           <button
             onClick={onClose}
-            className="mt-4 w-full py-1.5 text-xs font-medium text-black border border-black rounded-none hover:bg-black hover:text-white transition-colors"
+            className="mt-4 w-full py-1.5 text-xs font-medium text-foreground border border-foreground rounded-none hover:bg-foreground hover:text-background transition-colors"
           >
             Close
           </button>
@@ -1727,15 +1767,15 @@ function InfoPanel({
       ) : (
         <>
           {/* Summary card */}
-          <div className="bg-white border border-black rounded-none p-4 mb-3">
-            <div className="text-xs font-semibold text-black mb-2">
+          <div className="bg-background border border-foreground rounded-none p-4 mb-3">
+            <div className="text-xs font-semibold text-foreground mb-2">
               Cluster Overview
             </div>
-            <div className="space-y-1 text-[11px] text-black">
+            <div className="space-y-1 text-[11px] text-foreground">
               <DetailRow
                 label="Model"
                 value={
-                  <span className="text-black">{topology.model || "—"}</span>
+                  <span className="text-foreground">{topology.model || "—"}</span>
                 }
                 mono={false}
               />
@@ -1744,7 +1784,7 @@ function InfoPanel({
               {topology.trainer_config && (
                 <>
                   <div
-                    className="border-t border-black mt-2 pt-2 mb-1 text-[10px] font-semibold uppercase tracking-wider"
+                    className="border-t border-foreground mt-2 pt-2 mb-1 text-[10px] font-semibold uppercase tracking-wider"
                     style={{ color: COLORS.trainer }}
                   >
                     Trainer
@@ -1763,7 +1803,7 @@ function InfoPanel({
               {topology.inference_config && (
                 <>
                   <div
-                    className="border-t border-black mt-2 pt-2 mb-1 text-[10px] font-semibold uppercase tracking-wider"
+                    className="border-t border-foreground mt-2 pt-2 mb-1 text-[10px] font-semibold uppercase tracking-wider"
                     style={{ color: COLORS.inference }}
                   >
                     Inference
@@ -1790,33 +1830,33 @@ function InfoPanel({
           </div>
 
           {/* Legend */}
-          <div className="bg-white border border-black rounded-none p-3">
-            <div className="text-[10px] font-semibold text-black mb-1.5">
+          <div className="bg-background border border-foreground rounded-none p-3">
+            <div className="text-[10px] font-semibold text-foreground mb-1.5">
               Legend
             </div>
             <div className="space-y-1">
-              <div className="flex items-center gap-2 text-[10px] text-black">
+              <div className="flex items-center gap-2 text-[10px] text-foreground">
                 <div
                   className="w-3 h-2"
                   style={{ background: COLORS.trainer }}
                 />
                 Trainer GPU
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-black">
+              <div className="flex items-center gap-2 text-[10px] text-foreground">
                 <div
                   className="w-3 h-2"
                   style={{ background: COLORS.inference }}
                 />
                 Inference GPU
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-black">
+              <div className="flex items-center gap-2 text-[10px] text-foreground">
                 <div
                   className="w-3 h-2"
                   style={{ background: COLORS.unassigned }}
                 />
                 Unassigned GPU
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-black">
+              <div className="flex items-center gap-2 text-[10px] text-foreground">
                 <div
                   className="w-3 h-1"
                   style={{ background: COLORS.nvlink }}
@@ -1848,6 +1888,9 @@ function Scene({
   setSelectedItem: (item: SelectedItem | null) => void
   focusedItem: SelectedItem | null
 }) {
+  const COLORS = useColors()
+  const hemiColor = COLORS.background === "#ffffff" ? "#ffffff" : "#888888"
+  const hemiGround = COLORS.background === "#ffffff" ? "#ffffff" : "#333333"
   // Layout nodes in a grid
   const nodePositions = useMemo(() => {
     const positions: [number, number, number][] = []
@@ -1874,7 +1917,7 @@ function Scene({
       <ambientLight intensity={0.7} />
       <directionalLight position={[8, 12, 5]} intensity={0.8} />
       <directionalLight position={[-5, 8, -5]} intensity={0.4} />
-      <hemisphereLight color="#ffffff" groundColor="#ffffff" intensity={0.5} />
+      <hemisphereLight color={hemiColor} groundColor={hemiGround} intensity={0.5} />
 
       {/* Floor */}
       <FloorGrid />
@@ -1899,10 +1942,24 @@ function Scene({
 }
 
 // ============================================================================
+// Clear Color Updater — updates WebGL clear color on dark mode change
+// ============================================================================
+
+function ClearColorUpdater() {
+  const COLORS = useColors()
+  const { gl } = useThree()
+  useEffect(() => {
+    gl.setClearColor(COLORS.background)
+  }, [gl, COLORS.background])
+  return null
+}
+
+// ============================================================================
 // Exported TopologyViewer Component
 // ============================================================================
 
 export function TopologyViewer({ topology }: { topology: ParsedTopology }) {
+  const COLORS = useColors()
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
   const [focusedItem, setFocusedItem] = useState<SelectedItem | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null)
@@ -1962,7 +2019,7 @@ export function TopologyViewer({ topology }: { topology: ParsedTopology }) {
   const isFocused = focusedItem !== null
 
   return (
-    <div className="relative w-full h-full bg-white">
+    <div className="relative w-full h-full bg-background">
       <Canvas
         camera={{
           position: overviewPosition,
@@ -2011,13 +2068,14 @@ export function TopologyViewer({ topology }: { topology: ParsedTopology }) {
             if (focusedItem) handleClose()
           }}
         />
+        <ClearColorUpdater />
       </Canvas>
 
       {/* Back to cluster button — shown when viewing a single node in multi-node topology */}
       {isMultiNode && selectedNodeId !== null && (
         <button
           onClick={handleBackToCluster}
-          className="absolute top-4 left-4 px-3 py-1.5 text-xs font-medium text-black bg-white border border-black rounded-none hover:bg-black hover:text-white transition-colors select-none"
+          className="absolute top-4 left-4 px-3 py-1.5 text-xs font-medium text-foreground bg-background border border-foreground rounded-none hover:bg-foreground hover:text-background transition-colors select-none"
         >
           ← Back to cluster
         </button>
@@ -2031,7 +2089,7 @@ export function TopologyViewer({ topology }: { topology: ParsedTopology }) {
       />
 
       {/* Controls hint */}
-      <div className="absolute bottom-4 left-4 text-[10px] text-black/60 select-none">
+      <div className="absolute bottom-4 left-4 text-[10px] text-foreground/60 select-none">
         {showFloor
           ? "Click a node to inspect · Drag to orbit · Scroll to zoom"
           : isFocused

@@ -1,9 +1,13 @@
+import { useAtomValue } from "jotai"
+import { darkModeAtom } from "@/lib/atoms"
+
 export default function AboutPage() {
+  const darkMode = useAtomValue(darkModeAtom)
   return (
     <div className="h-full flex items-center justify-center overflow-auto pb-40">
       <div className="max-w-2xl px-6 py-12 text-center">
         <div className="flex items-center justify-center mb-8">
-          <img src="/logo-full.svg" alt="Telescope" className="h-12" />
+          <img src={darkMode ? "/logo-full-dark.svg" : "/logo-full.svg"} alt="Telescope" className="h-12" />
         </div>
 
         <div className="space-y-4 text-base text-foreground/60 leading-relaxed text-justify">
