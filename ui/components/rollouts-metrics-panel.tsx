@@ -10,7 +10,23 @@ import {
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import type { SetStateAction, WritableAtom } from "jotai"
 import uPlot from "uplot"
-import { X, ChevronDown, PanelRightClose, Loader2, SlidersHorizontal } from "lucide-react"
+import { X, ChevronDown, PanelRightClose, Loader2, SlidersHorizontal, GripVertical } from "lucide-react"
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ToggleWithInput } from "@/components/ui/toggle-with-input"
@@ -721,6 +737,49 @@ export function RolloutsMetricsSidebarToggle({
   )
 }
 
+function SortableChartWrapper({
+  id,
+  children,
+}: {
+  id: string
+  children: (dragHandle: React.ReactNode) => React.ReactNode
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  const style: React.CSSProperties = {
+    transform: transform
+      ? `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
+      : undefined,
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    position: "relative" as const,
+    zIndex: isDragging ? 50 : undefined,
+  }
+
+  const dragHandle = (
+    <button
+      {...attributes}
+      {...listeners}
+      className="-ml-1.5 cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-muted transition-all shrink-0 opacity-0 group-hover/card:opacity-100"
+    >
+      <GripVertical className="h-3 w-3 text-muted-foreground" />
+    </button>
+  )
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children(dragHandle)}
+    </div>
+  )
+}
+
 export function RolloutsMetricsPanel({
   currentStep,
   maxSelectableStep,
@@ -880,10 +939,17 @@ export function RolloutsMetricsPanel({
 
   // Filter selected metrics to only include valid ones that exist in current options,
   // preserving the original index in selectedMetrics for stable removal of duplicates.
+  // Also assign stable sortable IDs using occurrence-counting so dnd-kit can track
+  // items correctly across reorders (positional indices break drag animations).
   const validSelectedEntries = useMemo(() => {
     const validKeys = new Set(allMetricOptions.map((m) => m.metricKey))
+    const counts: Record<string, number> = {}
     return selectedMetrics
-      .map((key, idx) => ({ metricKey: key, originalIndex: idx }))
+      .map((key, idx) => {
+        const count = counts[key] || 0
+        counts[key] = count + 1
+        return { metricKey: key, originalIndex: idx, sortableId: `${key}::${count}` }
+      })
       .filter(({ metricKey }) => validKeys.has(metricKey))
   }, [selectedMetrics, allMetricOptions])
 
@@ -927,6 +993,28 @@ export function RolloutsMetricsPanel({
   const handleRemoveMetricAt = (index: number) => {
     setSelectedMetrics((prev) => prev.filter((_, i) => i !== index))
   }
+
+  // Drag-and-drop sensors and handler for plot reordering
+  const plotSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
+
+  const handlePlotDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over || active.id === over.id) return
+      const activeEntry = validSelectedEntries.find((e) => e.sortableId === active.id)
+      const overEntry = validSelectedEntries.find((e) => e.sortableId === over.id)
+      if (!activeEntry || !overEntry) return
+      setSelectedMetrics((prev) =>
+        arrayMove(prev, activeEntry.originalIndex, overEntry.originalIndex),
+      )
+    },
+    [setSelectedMetrics, validSelectedEntries],
+  )
 
   const getMetricConfig = (metricKey: string) => {
     return allMetricOptions.find((m) => m.metricKey === metricKey)
@@ -1056,100 +1144,93 @@ export function RolloutsMetricsPanel({
               Click on a metric above to add charts
             </div>
           ) : (
-            // Group metrics by category, maintaining the same order as in the select dropdown
-            Object.entries(metricsByCategory).map(
-              ([
-                category,
-                { label: categoryLabel, metrics: categoryMetrics },
-              ]) => {
-                // Get selected metrics in this category, preserving duplicates with original indices
-                const categoryKeys = new Set(categoryMetrics.map((m) => m.metricKey))
-                const categorySelectedMetrics = validSelectedEntries
-                  .filter(({ metricKey }) => categoryKeys.has(metricKey))
+            <DndContext
+              sensors={plotSensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handlePlotDragEnd}
+            >
+              <SortableContext
+                items={validSelectedEntries.map(({ sortableId }) => sortableId)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="space-y-4">
+                  {validSelectedEntries.map(({ metricKey, originalIndex, sortableId }) => {
+                    const config = getMetricConfig(metricKey)
 
-                // Skip empty categories
-                if (categorySelectedMetrics.length === 0) return null
+                    // In eval "Selected" mode: skip histograms, distributions, and
+                    // non-mean stat suffixes — only show one raw-value chart per prefix
+                    if (effectiveShowSelected) {
+                      if (
+                        config?.isHistogram ||
+                        config?.isDistributionOverTime
+                      )
+                        return null
+                      if (
+                        config?.suffix &&
+                        config.suffix !== "mean" &&
+                        config.suffix !== ""
+                      )
+                        return null
+                    }
 
-                return (
-                  <div key={category} className="space-y-3">
-                    <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      {categoryLabel}
-                    </h3>
-                    <div className="space-y-4">
-                      {categorySelectedMetrics.map(({ metricKey, originalIndex }) => {
-                        const config = getMetricConfig(metricKey)
-
-                        // In eval "Selected" mode: skip histograms, distributions, and
-                        // non-mean stat suffixes — only show one raw-value chart per prefix
-                        if (effectiveShowSelected) {
-                          if (
-                            config?.isHistogram ||
-                            config?.isDistributionOverTime
+                    // In eval "Selected" mode, inject /s/{sampleIdx}/ into eval metric keys
+                    const evalSamplePrefix =
+                      isEvalMode && effectiveShowSelected
+                        ? `/s/${evalConfig!.selectedSampleIdx}/`
+                        : "/"
+                    const sampleFilteredKey =
+                      isEvalMode && metricKey.startsWith("eval/")
+                        ? metricKey.replace(
+                            /^(eval\/[^/]+)\//,
+                            `$1${evalSamplePrefix}`,
                           )
-                            return null
-                          if (
-                            config?.suffix &&
-                            config.suffix !== "mean" &&
-                            config.suffix !== ""
+                        : metricKey
+
+                    const fetchKey = sampleFilteredKey
+
+                    const rawMetricType = config?.histogramMetricType || ""
+                    const fetchMetricType =
+                      isEvalMode && rawMetricType.startsWith("eval/")
+                        ? rawMetricType.replace(
+                            /^(eval\/[^/]+)\//,
+                            `$1${evalSamplePrefix}`,
                           )
-                            return null
-                        }
+                        : rawMetricType
 
-                        // In eval "Selected" mode, inject /s/{sampleIdx}/ into eval metric keys
-                        const evalSamplePrefix =
-                          isEvalMode && effectiveShowSelected
-                            ? `/s/${evalConfig!.selectedSampleIdx}/`
-                            : "/"
-                        const sampleFilteredKey =
-                          isEvalMode && metricKey.startsWith("eval/")
-                            ? metricKey.replace(
-                                /^(eval\/[^/]+)\//,
-                                `$1${evalSamplePrefix}`,
-                              )
-                            : metricKey
+                    // In "Selected" mode, strip " - Mean" from labels
+                    const chartLabel =
+                      effectiveShowSelected && config?.suffix === "mean"
+                        ? (config.label || metricKey).replace(
+                            / - Mean$/,
+                            "",
+                          )
+                        : config?.label || metricKey
 
-                        const fetchKey = sampleFilteredKey
-
-                        const rawMetricType = config?.histogramMetricType || ""
-                        const fetchMetricType =
-                          isEvalMode && rawMetricType.startsWith("eval/")
-                            ? rawMetricType.replace(
-                                /^(eval\/[^/]+)\//,
-                                `$1${evalSamplePrefix}`,
-                              )
-                            : rawMetricType
-
-                        // In "Selected" mode, strip " - Mean" from labels
-                        const chartLabel =
-                          effectiveShowSelected && config?.suffix === "mean"
-                            ? (config.label || metricKey).replace(
-                                / - Mean$/,
-                                "",
-                              )
-                            : config?.label || metricKey
-
-                        const instanceKey = `${metricKey}-${originalIndex}`
-
-                        // Render inference performance chart
-                        if (config?.isInferencePerformance && config.inferenceMetricType) {
-                          return (
+                    // Render inference performance chart
+                    if (config?.isInferencePerformance && config.inferenceMetricType) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
                             <InferencePerformanceChartCard
-                              key={instanceKey}
                               runPath={selectedRunPath}
                               shouldPoll={shouldPoll}
                               scrollRoot={scrollRoot}
-                              inferenceMetricType={config.inferenceMetricType}
+                              inferenceMetricType={config.inferenceMetricType!}
                               label={chartLabel}
                               onRemove={() => handleRemoveMetricAt(originalIndex)}
+                              headerPrefix={dragHandle}
                             />
-                          )
-                        }
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
 
-                        // Render histogram chart for histogram metrics
-                        if (config?.isHistogram) {
-                          return (
+                    // Render histogram chart for histogram metrics
+                    if (config?.isHistogram) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
                             <HistogramChart
-                              key={instanceKey}
                               runPath={selectedRunPath}
                               step={currentStep}
                               metricType={fetchMetricType}
@@ -1159,15 +1240,19 @@ export function RolloutsMetricsPanel({
                               isTokenMetric={config?.category === "tokens"}
                               onRemove={() => handleRemoveMetricAt(originalIndex)}
                               scrollRoot={scrollRoot}
+                              headerPrefix={dragHandle}
                             />
-                          )
-                        }
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
 
-                        // Render distribution over time chart
-                        if (config?.isDistributionOverTime) {
-                          return (
+                    // Render distribution over time chart
+                    if (config?.isDistributionOverTime) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
                             <DistributionOverTimeChart
-                              key={instanceKey}
                               runPath={selectedRunPath}
                               metricType={fetchMetricType}
                               label={chartLabel}
@@ -1180,13 +1265,17 @@ export function RolloutsMetricsPanel({
                               selectedStepAtom={selectedStepAtom}
                               maxSelectableStep={maxSelectableStep}
                               scrollRoot={scrollRoot}
+                              headerPrefix={dragHandle}
                             />
-                          )
-                        }
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
 
-                        return (
+                    return (
+                      <SortableChartWrapper key={sortableId} id={sortableId}>
+                        {(dragHandle) => (
                           <MetricChart
-                            key={instanceKey}
                             runs={runsToDisplay}
                             shouldPoll={shouldPoll}
                             metricKey={fetchKey}
@@ -1202,15 +1291,16 @@ export function RolloutsMetricsPanel({
                             selectedStepAtom={selectedStepAtom}
                             maxSelectableStep={maxSelectableStep}
                             scrollRoot={scrollRoot}
-                            filterKey={instanceKey}
+                            filterKey={`${metricKey}-${originalIndex}`}
+                            headerPrefix={dragHandle}
                           />
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              },
-            )
+                        )}
+                      </SortableChartWrapper>
+                    )
+                  })}
+                </div>
+              </SortableContext>
+            </DndContext>
           )}
         </div>
       </ScrollArea>
@@ -1236,6 +1326,7 @@ interface MetricChartProps {
   maxSelectableStep?: number | null
   scrollRoot?: Element | null
   filterKey?: string
+  headerPrefix?: React.ReactNode
 }
 
 function parseEvalMetricKey(metricName: string): {
@@ -1304,6 +1395,7 @@ function MetricChart({
   maxSelectableStep,
   scrollRoot = null,
   filterKey: filterKeyProp,
+  headerPrefix,
 }: MetricChartProps) {
   const setSelectedStep = useSetAtom(selectedStepAtom)
   const darkMode = useAtomValue(darkModeAtom)
@@ -2031,6 +2123,7 @@ function MetricChart({
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
+          {headerPrefix}
           <div className="flex-1 min-w-0">
             <h4
               className="text-xs font-medium leading-snug line-clamp-2 break-words"
@@ -2153,6 +2246,7 @@ interface HistogramChartProps {
   isTokenMetric?: boolean
   onRemove: () => void
   scrollRoot?: Element | null
+  headerPrefix?: React.ReactNode
 }
 
 // Compute histogram bins from values
@@ -2201,6 +2295,7 @@ function HistogramChart({
   isTokenMetric,
   onRemove,
   scrollRoot = null,
+  headerPrefix,
 }: HistogramChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
@@ -2537,6 +2632,7 @@ function HistogramChart({
       )}
     >
       <div className="flex items-center justify-between mb-2">
+        {headerPrefix}
         <div className="flex-1 min-w-0">
           <h4
             className="text-xs font-medium leading-snug line-clamp-2 break-words"
@@ -2597,6 +2693,7 @@ interface DistributionOverTimeChartProps {
   selectedStepAtom?: AtomWithState<number | null>
   maxSelectableStep?: number | null
   scrollRoot?: Element | null
+  headerPrefix?: React.ReactNode
 }
 
 // Helper: aggregate distribution data to ~100 time bins
@@ -2649,6 +2746,7 @@ function DistributionOverTimeChart({
   selectedStepAtom = rolloutsSelectedStepAtom,
   maxSelectableStep,
   scrollRoot = null,
+  headerPrefix,
 }: DistributionOverTimeChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
@@ -3152,6 +3250,7 @@ function DistributionOverTimeChart({
       )}
     >
       <div className="flex items-center justify-between mb-2">
+        {headerPrefix}
         <div className="flex-1 min-w-0">
           <h4
             className="text-xs font-medium leading-snug line-clamp-2 break-words"
