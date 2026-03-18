@@ -109,6 +109,7 @@ _TABLES_WITH_RUN_ID = [
     "rollouts_metrics_eval",
     "golden_answers_eval",
     "info_turns_eval",
+    "logs",
     "ingest_state",
     "ingested_tails",
     "ingested_steps",
@@ -7895,6 +7896,111 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
         "global_max": global_max,
     }
 
+
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+
+class LogsRequest(BaseModel):
+    run_path: str
+    page: int = 0
+    page_size: int = 500
+    components: list[str] | None = None
+    levels: list[str] | None = None
+    sources: list[str] | None = None
+    search: str | None = None
+    time_start: float | None = None
+    time_end: float | None = None
+
+
+@app.post("/api/logs")
+def get_logs(req: LogsRequest):
+    """Get paginated and filtered log records for a run."""
+    con = connect()
+    try:
+        conditions = ["run_id = ?"]
+        params: list = [req.run_path]
+
+        if req.components:
+            placeholders = ", ".join(["?"] * len(req.components))
+            conditions.append(f"component IN ({placeholders})")
+            params.extend(req.components)
+
+        if req.levels:
+            placeholders = ", ".join(["?"] * len(req.levels))
+            conditions.append(f"level IN ({placeholders})")
+            params.extend(req.levels)
+
+        if req.sources:
+            placeholders = ", ".join(["?"] * len(req.sources))
+            conditions.append(f"source IN ({placeholders})")
+            params.extend(req.sources)
+
+        if req.search:
+            conditions.append("message ILIKE ?")
+            params.append(f"%{req.search}%")
+
+        if req.time_start is not None:
+            conditions.append("timestamp >= ?")
+            params.append(req.time_start)
+
+        if req.time_end is not None:
+            conditions.append("timestamp <= ?")
+            params.append(req.time_end)
+
+        where = " AND ".join(conditions)
+
+        total = con.execute(f"SELECT COUNT(*) FROM logs WHERE {where}", params).fetchone()[0]
+
+        offset = req.page * req.page_size
+        rows = con.execute(
+            f"""SELECT timestamp, level, component, source, message
+                FROM logs WHERE {where}
+                ORDER BY timestamp ASC
+                LIMIT ? OFFSET ?""",
+            params + [req.page_size, offset]
+        ).fetchall()
+
+        return {
+            "logs": [
+                {"timestamp": r[0], "level": r[1], "component": r[2], "source": r[3], "message": r[4]}
+                for r in rows
+            ],
+            "total": total,
+            "page": req.page,
+            "page_size": req.page_size,
+            "total_pages": max(1, (total + req.page_size - 1) // req.page_size),
+        }
+    finally:
+        con.close()
+
+
+@app.get("/api/logs/summary/{run_path:path}")
+def get_logs_summary(run_path: str):
+    """Get available components, levels, sources for filter dropdowns."""
+    con = connect()
+    try:
+        components = [r[0] for r in con.execute(
+            "SELECT DISTINCT component FROM logs WHERE run_id = ? ORDER BY component", [run_path]
+        ).fetchall()]
+        levels = [r[0] for r in con.execute(
+            "SELECT DISTINCT level FROM logs WHERE run_id = ? ORDER BY level", [run_path]
+        ).fetchall()]
+        sources = [r[0] for r in con.execute(
+            "SELECT DISTINCT source FROM logs WHERE run_id = ? ORDER BY source", [run_path]
+        ).fetchall()]
+        total_count = con.execute(
+            "SELECT COUNT(*) FROM logs WHERE run_id = ?", [run_path]
+        ).fetchone()[0]
+        return {
+            "components": components,
+            "levels": levels,
+            "sources": sources,
+            "total_count": total_count,
+        }
+    finally:
+        con.close()
 
 
 # ---------------------------------------------------------------------------

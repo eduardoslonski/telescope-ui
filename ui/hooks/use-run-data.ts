@@ -34,6 +34,8 @@ import type {
   CustomMetricsTemplatesResponse,
   CustomMetricsTemplateResponse,
   InferencePerformanceResponse,
+  LogsResponse,
+  LogsSummaryResponse,
 } from "@/lib/types"
 
 // ============================================================================
@@ -277,6 +279,62 @@ export function useRunSummary(
     refetchInterval: shouldPoll ? POLL_INTERVAL : false,
   })
 }
+
+// ============================================================================
+// Logs Queries
+// ============================================================================
+
+export function useLogs(
+  runPath: string,
+  page: number,
+  filters: {
+    components?: string[]
+    levels?: string[]
+    sources?: string[]
+    search?: string
+  },
+  enabled: boolean
+) {
+  return useQuery<LogsResponse>({
+    queryKey: ["logs", runPath, page, filters],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/api/logs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_path: runPath,
+          page,
+          page_size: 500,
+          ...filters,
+        }),
+      })
+      if (!response.ok) throw new Error("Failed to fetch logs")
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    refetchInterval: POLL_INTERVAL,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useLogsSummary(runPath: string, enabled: boolean) {
+  return useQuery<LogsSummaryResponse>({
+    queryKey: ["logs-summary", runPath],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/api/logs/summary/${encodeURIComponent(runPath)}`
+      )
+      if (!response.ok) throw new Error("Failed to fetch logs summary")
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    staleTime: 10000,
+  })
+}
+
+// ============================================================================
+// Run Code Queries
+// ============================================================================
 
 export function useRunCodeTree(runPath: string, enabled: boolean) {
   return useQuery<RunCodeTreeResponse>({

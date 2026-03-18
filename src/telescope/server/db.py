@@ -298,7 +298,20 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             value DOUBLE
         );
     """)
-    
+
+    # Logs table - captured log records from training
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS logs (
+            run_id TEXT,
+            timestamp DOUBLE,
+            level TEXT,
+            component TEXT,
+            source TEXT,
+            message TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
     # Step metrics table - stores per-step training metrics (e.g., grad_norm, kl_divergence, entropy)
     con.execute("""
         CREATE TABLE IF NOT EXISTS step_metrics (
@@ -712,6 +725,36 @@ def update_ingest_state(
             summary_id = COALESCE(EXCLUDED.summary_id, ingest_state.summary_id)
     """, [run_id, last_block_idx, last_rollout_step, last_summary_json,
           last_config_json, last_event_zip_idx, last_rollout_block_idx, summary_id])
+
+
+def insert_logs(con: duckdb.DuckDBPyConnection, run_id: str, logs: list[dict]):
+    """Insert log records into the database."""
+    if not logs:
+        return
+
+    log.info(f"[DB] Inserting {len(logs)} log records...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "timestamp": entry.get("timestamp"),
+            "level": entry.get("level"),
+            "component": entry.get("component"),
+            "source": entry.get("source"),
+            "message": entry.get("message"),
+            "tail_idx": entry.get("tail_idx"),
+        }
+        for entry in logs
+    ])
+
+    con.execute("""
+        INSERT INTO logs (run_id, timestamp, level, component, source, message, tail_idx)
+        SELECT run_id, timestamp, level, component, source, message, tail_idx FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(logs)} log records in {elapsed:.2f}s")
 
 
 def insert_events_orchestrator(con: duckdb.DuckDBPyConnection, run_id: str, events: list[dict]):

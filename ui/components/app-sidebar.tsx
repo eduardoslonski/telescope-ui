@@ -64,6 +64,7 @@ import {
   isSyncingAtom,
   isTrackingAtom,
   overviewShowCodeViewAtom,
+  overviewShowLogsViewAtom,
   darkModeAtom,
 } from "@/lib/atoms"
 import { useRemovedRuns, useRuns, useKnownProjects } from "@/hooks/use-run-data"
@@ -156,6 +157,7 @@ export function AppSidebar() {
   const [darkMode, setDarkMode] = useAtom(darkModeAtom)
   const setHoveredRunId = useSetAtom(hoveredRunIdAtom)
   const setOverviewShowCodeView = useSetAtom(overviewShowCodeViewAtom)
+  const setOverviewShowLogsView = useSetAtom(overviewShowLogsViewAtom)
   const [addRunDialogOpen, setAddRunDialogOpen] = useState(false)
   const [projectsDialogOpen, setProjectsDialogOpen] = useAtom(
     knownProjectsDialogOpenAtom,
@@ -269,12 +271,13 @@ export function AppSidebar() {
     }
   }, [runsData?.runs, selectedRunPath, setIsSyncing, setIsTracking])
 
-  // Keep Overview's inline Code view from sticking when navigating away.
+  // Keep Overview's inline Code/Logs views from sticking when navigating away.
   useEffect(() => {
     if (pathname !== "/") {
       setOverviewShowCodeView(false)
+      setOverviewShowLogsView(false)
     }
-  }, [pathname, setOverviewShowCodeView])
+  }, [pathname, setOverviewShowCodeView, setOverviewShowLogsView])
 
   // Keep persisted run selection state consistent with server data.
   // This prevents stale localStorage values from showing a phantom run
@@ -739,6 +742,7 @@ export function AppSidebar() {
               onClick={() => {
                 if (item.href === "/") {
                   setOverviewShowCodeView(false)
+                  setOverviewShowLogsView(false)
                 }
               }}
               className={cn(

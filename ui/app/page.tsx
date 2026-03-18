@@ -25,6 +25,7 @@ import { ToggleWithInput } from "@/components/ui/toggle-with-input"
 import { RunConfigPanel } from "@/components/run-config-panel"
 import { RunConfigCompareDialog } from "@/components/run-config-compare-dialog"
 import { RunCodeVisualizer } from "@/components/run-code-visualizer"
+import { LogsViewer } from "@/components/logs-viewer"
 import { NoRunSelectedState } from "@/components/no-run-selected-state"
 import { RunInfo } from "@/components/step-metrics-charts"
 import {
@@ -39,6 +40,7 @@ import {
   isSyncingAtom,
   hoveredRunIdAtom,
   overviewShowCodeViewAtom,
+  overviewShowLogsViewAtom,
   overviewPlotsAtom,
   overviewShowEmaAtom,
   overviewEmaSpanAtom,
@@ -364,6 +366,7 @@ export default function HomePage() {
   const [emaSpanInput, setEmaSpanInput] = useState(String(emaSpan))
   const [showAllRuns, setShowAllRuns] = useAtom(overviewShowAllRunsAtom)
   const [showCodeView, setShowCodeView] = useAtom(overviewShowCodeViewAtom)
+  const [showLogsView, setShowLogsView] = useAtom(overviewShowLogsViewAtom)
   const [overviewPlots, setOverviewPlots] = useAtom(overviewPlotsAtom)
 
   // Only highlight hovered run when all selected runs are shown
@@ -574,7 +577,7 @@ export default function HomePage() {
       {/* Content */}
       <div
         className={
-          showCodeView
+          showCodeView || showLogsView
             ? "flex-1 min-h-0 overflow-hidden"
             : "flex-1 overflow-auto p-6"
         }
@@ -584,6 +587,12 @@ export default function HomePage() {
             key={selectedRunPath}
             runPath={selectedRunPath}
             onBack={() => setShowCodeView(false)}
+          />
+        ) : showLogsView ? (
+          <LogsViewer
+            key={`logs-${selectedRunPath}`}
+            runPath={selectedRunPath}
+            onBack={() => setShowLogsView(false)}
           />
         ) : (
           <div className="max-w-7xl mx-auto space-y-6">
@@ -838,6 +847,14 @@ export default function HomePage() {
                           onClick={() => setShowCodeView(true)}
                         >
                           Code
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => setShowLogsView(true)}
+                        >
+                          Logs
                         </Button>
                         <Button
                           variant="outline"
