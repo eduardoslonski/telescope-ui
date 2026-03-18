@@ -34,6 +34,7 @@ import type {
   CustomMetricsTemplatesResponse,
   CustomMetricsTemplateResponse,
   InferencePerformanceResponse,
+  TrainerPerformanceResponse,
   LogsResponse,
   LogsSummaryResponse,
 } from "@/lib/types"
@@ -512,6 +513,33 @@ export function useInferencePerformance(
         body: JSON.stringify({ run_path: runPath, bucket_seconds: bucketSeconds }),
       })
       if (!response.ok) throw new Error("Failed to fetch inference performance")
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    refetchInterval: shouldPoll ? POLL_INTERVAL : false,
+    placeholderData: keepPreviousData,
+  })
+}
+
+// ============================================================================
+// Trainer Performance Query
+// ============================================================================
+
+export function useTrainerPerformance(
+  runPath: string,
+  enabled: boolean,
+  shouldPoll: boolean,
+  bucketSeconds: number = 60,
+) {
+  return useQuery<TrainerPerformanceResponse>({
+    queryKey: ["trainer-performance", runPath, bucketSeconds],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/trainer-performance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_path: runPath, bucket_seconds: bucketSeconds }),
+      })
+      if (!response.ok) throw new Error("Failed to fetch trainer performance")
       return response.json()
     },
     enabled: enabled && !!runPath,

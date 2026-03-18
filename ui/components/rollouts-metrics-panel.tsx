@@ -72,6 +72,9 @@ import {
   formatTooltipRunNameHtml,
   formatRunLabelHtml,
   InferencePerformanceChartCard,
+  TrainerPerformanceChartCard,
+  TrainerPerformanceAreaChartCard,
+  TRAINER_PERF_AREA_VARIANTS,
   FilterBadge,
   DEFAULT_IGNORE_FIRST_STEP_METRICS,
   computeIQRBounds,
@@ -320,6 +323,10 @@ type MetricOption = {
   evalName?: string
   isInferencePerformance?: boolean
   inferenceMetricType?: string
+  isTrainerPerformance?: boolean
+  trainerMetricType?: string
+  isTrainerPerformanceArea?: boolean
+  trainerAreaCategories?: string[]
 }
 
 // Map metric prefix to histogram API metric_type
@@ -503,6 +510,49 @@ function buildMetricOptions(
       suffix: "",
       isInferencePerformance: true,
       inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Trainer Performance - Area Charts (first, to match Metrics page order)
+  for (const variant of TRAINER_PERF_AREA_VARIANTS) {
+    options.push({
+      category: "trainer_performance_area",
+      categoryLabel: "Trainer Performance",
+      group: "Time Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      prefix: variant.key,
+      suffix: "",
+      isTrainerPerformanceArea: true,
+      trainerAreaCategories: [...variant.categories],
+    })
+  }
+
+  // Trainer Performance - % Time per Category (line charts)
+  for (const m of [
+    { key: "trainer_perf_idle", label: "Idle", trainerMetricType: "idle" },
+    { key: "trainer_perf_working", label: "Working", trainerMetricType: "working" },
+    { key: "trainer_perf_working_except_weight_sync", label: "Working (excl. Weight Sync)", trainerMetricType: "working_except_weight_sync" },
+    { key: "trainer_perf_forward", label: "Forward", trainerMetricType: "forward" },
+    { key: "trainer_perf_backward", label: "Backward", trainerMetricType: "backward" },
+    { key: "trainer_perf_optimizer", label: "Optimizer", trainerMetricType: "optimizer" },
+    { key: "trainer_perf_loss_computation", label: "Loss Computation", trainerMetricType: "loss_computation" },
+    { key: "trainer_perf_weight_broadcast", label: "Weight Sync", trainerMetricType: "weight_broadcast" },
+    { key: "trainer_perf_data_wait", label: "Data Wait", trainerMetricType: "data_wait" },
+    { key: "trainer_perf_grad_clip", label: "Grad Clip", trainerMetricType: "grad_clip" },
+    { key: "trainer_perf_grad_norm", label: "Grad Norm", trainerMetricType: "grad_norm" },
+    { key: "trainer_perf_checkpoint", label: "Checkpoint", trainerMetricType: "checkpoint" },
+  ]) {
+    options.push({
+      category: "trainer_performance",
+      categoryLabel: "Trainer Performance",
+      group: "% Time per Category",
+      metricKey: m.key,
+      label: m.label,
+      prefix: m.key,
+      suffix: "",
+      isTrainerPerformance: true,
+      trainerMetricType: m.trainerMetricType,
     })
   }
 
@@ -705,16 +755,22 @@ function metricOptionsToCatalog(options: MetricOption[]): PlotCatalogItem[] {
     label: opt.label,
     plotType: opt.isInferencePerformance
       ? ("inference_performance" as const)
-      : opt.isHistogram
-        ? ("histogram" as const)
-        : opt.isDistributionOverTime
-          ? ("distribution_over_time" as const)
-          : opt.isEvalMetric
-            ? ("eval_metric" as const)
-            : ("step_metric" as const),
+      : opt.isTrainerPerformance
+        ? ("trainer_performance" as const)
+        : opt.isTrainerPerformanceArea
+          ? ("trainer_performance_area" as const)
+          : opt.isHistogram
+            ? ("histogram" as const)
+            : opt.isDistributionOverTime
+              ? ("distribution_over_time" as const)
+              : opt.isEvalMetric
+                ? ("eval_metric" as const)
+                : ("step_metric" as const),
     evalName: opt.evalName,
     histogramMetricType: opt.histogramMetricType,
     inferenceMetricType: opt.inferenceMetricType,
+    trainerMetricType: opt.trainerMetricType,
+    trainerAreaCategories: opt.trainerAreaCategories,
     simple: !opt.suffix,
   }))
 }
@@ -974,13 +1030,17 @@ export function RolloutsMetricsPanel({
         label: config?.label || key,
         plotType: (config?.isInferencePerformance
           ? "inference_performance"
-          : config?.isHistogram
-            ? "histogram"
-            : config?.isDistributionOverTime
-              ? "distribution_over_time"
-              : config?.isEvalMetric
-                ? "eval_metric"
-                : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance",
+          : config?.isTrainerPerformance
+            ? "trainer_performance"
+            : config?.isTrainerPerformanceArea
+              ? "trainer_performance_area"
+              : config?.isHistogram
+                ? "histogram"
+                : config?.isDistributionOverTime
+                  ? "distribution_over_time"
+                  : config?.isEvalMetric
+                    ? "eval_metric"
+                    : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance" | "trainer_performance" | "trainer_performance_area",
       }
     })
   }, [validSelectedMetrics, allMetricOptions])
@@ -1218,6 +1278,43 @@ export function RolloutsMetricsPanel({
                               scrollRoot={scrollRoot}
                               inferenceMetricType={config.inferenceMetricType!}
                               label={chartLabel}
+                              headerPrefix={dragHandle}
+                            />
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
+
+                    // Render trainer performance chart
+                    if (config?.isTrainerPerformance && config.trainerMetricType) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
+                            <TrainerPerformanceChartCard
+                              runs={runsToDisplay}
+                              shouldPoll={shouldPoll}
+                              hoveredRunId={hoveredRunId}
+                              scrollRoot={scrollRoot}
+                              trainerMetricType={config.trainerMetricType!}
+                              label={chartLabel}
+                              headerPrefix={dragHandle}
+                            />
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
+
+                    // Render trainer performance area chart
+                    if (config?.isTrainerPerformanceArea && config.trainerAreaCategories) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
+                            <TrainerPerformanceAreaChartCard
+                              runs={runsToDisplay}
+                              shouldPoll={shouldPoll}
+                              scrollRoot={scrollRoot}
+                              label={chartLabel}
+                              categories={config.trainerAreaCategories!}
                               headerPrefix={dragHandle}
                             />
                           )}
