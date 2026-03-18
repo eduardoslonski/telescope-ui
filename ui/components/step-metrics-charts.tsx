@@ -413,6 +413,7 @@ interface StepMetricsChartsProps {
   hoveredRunId?: string | null
   availableRewardNames?: string[]
   availableSampleTags?: Record<string, string[]>
+  availableEnvs?: string[]
   customMetricSections?: Record<string, Record<string, string[]>>
   xAxisMode?: "step" | "time"
   scrollRoot?: Element | null
@@ -432,6 +433,7 @@ export function StepMetricsCharts({
   hoveredRunId = null,
   availableRewardNames = [],
   availableSampleTags,
+  availableEnvs,
   customMetricSections = {},
   xAxisMode = "step",
   scrollRoot = null,
@@ -779,6 +781,7 @@ export function StepMetricsCharts({
                             emaSpan={emaSpan}
                             hoveredRunId={hoveredRunId}
                             availableSampleTags={availableSampleTags}
+                            availableEnvs={availableEnvs}
                             {...axisProps}
                           />
                         ))}
@@ -827,6 +830,7 @@ export function StepMetricsCharts({
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
                 availableSampleTags={availableSampleTags}
+                availableEnvs={availableEnvs}
                 {...axisProps}
                 extraCharts={
                   prefixInfo.prefix === "reward_sum" ? (
@@ -839,6 +843,7 @@ export function StepMetricsCharts({
                       emaSpan={emaSpan}
                       hoveredRunId={hoveredRunId}
                       availableSampleTags={availableSampleTags}
+                      availableEnvs={availableEnvs}
                       {...axisProps}
                     />
                   ) : undefined
@@ -886,6 +891,7 @@ export function StepMetricsCharts({
                     emaSpan={emaSpan}
                     hoveredRunId={hoveredRunId}
                     availableSampleTags={availableSampleTags}
+                    availableEnvs={availableEnvs}
                     {...axisProps}
                     extraCharts={
                       <MetricChart
@@ -897,6 +903,7 @@ export function StepMetricsCharts({
                         emaSpan={emaSpan}
                         hoveredRunId={hoveredRunId}
                         availableSampleTags={availableSampleTags}
+                        availableEnvs={availableEnvs}
                         {...axisProps}
                       />
                     }
@@ -942,6 +949,7 @@ export function StepMetricsCharts({
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
                 availableSampleTags={availableSampleTags}
+                availableEnvs={availableEnvs}
                 {...axisProps}
               />
             ))}
@@ -1026,6 +1034,7 @@ export function StepMetricsCharts({
                                 }
                                 maxStepLimit={axisProps.maxStepLimit}
                                 maxTimeLimit={axisProps.maxTimeLimit}
+                                availableEnvs={availableEnvs}
                               />
                             ))}
                             <EvalMetricPrefixSection
@@ -1152,6 +1161,7 @@ export function StepMetricsCharts({
                 emaSpan={emaSpan}
                 hoveredRunId={hoveredRunId}
                 availableSampleTags={availableSampleTags}
+                availableEnvs={availableEnvs}
                 {...axisProps}
               />
             ))}
@@ -1170,6 +1180,7 @@ export function StepMetricsCharts({
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
                   availableSampleTags={availableSampleTags}
+                  availableEnvs={availableEnvs}
                   {...axisProps}
                 />
                 <MetricChart
@@ -1181,6 +1192,7 @@ export function StepMetricsCharts({
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
                   availableSampleTags={availableSampleTags}
+                  availableEnvs={availableEnvs}
                   {...axisProps}
                 />
                 <MetricChart
@@ -1192,6 +1204,7 @@ export function StepMetricsCharts({
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
                   availableSampleTags={availableSampleTags}
+                  availableEnvs={availableEnvs}
                   {...axisProps}
                 />
               </div>
@@ -2356,6 +2369,7 @@ function useEvalMetricsByRunPath(
   metricName: string,
   shouldPoll: boolean,
   enabled: boolean,
+  envFilters?: string[],
 ) {
   const runPaths = useMemo(
     () =>
@@ -2372,6 +2386,7 @@ function useEvalMetricsByRunPath(
     metricName ? [metricName] : [],
     enabled && runPaths.length > 0 && !!metricName,
     shouldPoll,
+    envFilters,
   )
 
   const metricsByRunPath = useMemo(() => {
@@ -2407,6 +2422,7 @@ interface EvalMetricChartProps {
   firstStepTimesByRun?: Map<string, number>
   isStepTimesFetching?: boolean
   isStepTimesRefetching?: boolean
+  availableEnvs?: string[]
   scrollRoot?: Element | null
   maxStepLimit?: number | null
   maxTimeLimit?: number | null
@@ -2438,6 +2454,7 @@ export function EvalMetricChart({
   maxTimeLimit,
   headerPrefix,
   headerSuffix,
+  availableEnvs,
   filterKey: filterKeyProp,
 }: EvalMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
@@ -2488,7 +2505,9 @@ export function EvalMetricChart({
   const minY = metricFilters?.minY ?? null
   const maxY = metricFilters?.maxY ?? null
   const tagFilters = metricFilters?.tagFilters ?? {}
+  const envFilters = metricFilters?.envFilters ?? []
   const hasActiveTagFilters = Object.keys(tagFilters).length > 0
+  const hasActiveEnvFilters = envFilters.length > 0
 
   const updateMetricFilters = useCallback(
     (
@@ -2501,6 +2520,7 @@ export function EvalMetricChart({
           minY: null,
           maxY: null,
           tagFilters: {},
+          envFilters: [],
         }
         const current = prev[filterKey] ?? defaults
         const next = updater(current)
@@ -2510,7 +2530,8 @@ export function EvalMetricChart({
           next.ignoreFirstStep === defaults.ignoreFirstStep &&
           next.minY === defaults.minY &&
           next.maxY === defaults.maxY &&
-          Object.keys(next.tagFilters ?? {}).length === 0
+          Object.keys(next.tagFilters ?? {}).length === 0 &&
+          (next.envFilters ?? []).length === 0
 
         if (isAtDefaultValues) {
           if (!Object.prototype.hasOwnProperty.call(prev, filterKey)) {
@@ -2588,6 +2609,22 @@ export function EvalMetricChart({
     [updateMetricFilters],
   )
 
+  const toggleEnvFilter = useCallback(
+    (envName: string) => {
+      updateMetricFilters((current) => {
+        const currentEnvs = [...(current.envFilters ?? [])]
+        const idx = currentEnvs.indexOf(envName)
+        if (idx >= 0) {
+          currentEnvs.splice(idx, 1)
+        } else {
+          currentEnvs.push(envName)
+        }
+        return { ...current, envFilters: currentEnvs }
+      })
+    },
+    [updateMetricFilters],
+  )
+
   const isVisible = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
@@ -2611,7 +2648,7 @@ export function EvalMetricChart({
     metricsByRunPath,
     isFetching: isMetricsFetching,
     isRefetching: isMetricsRefetching,
-  } = useEvalMetricsByRunPath(runs, evalName, metricName, shouldPoll, isVisible)
+  } = useEvalMetricsByRunPath(runs, evalName, metricName, shouldPoll, isVisible, envFilters)
 
   const {
     uplotData,
@@ -3253,12 +3290,29 @@ export function EvalMetricChart({
                     onKeyDown={(e) => e.stopPropagation()}
                   />
                 </div>
+                {availableEnvs && availableEnvs.length > 1 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-[10px] text-muted-foreground">
+                      Filter by Environment
+                    </DropdownMenuLabel>
+                    {availableEnvs.map((envName) => (
+                      <DropdownMenuCheckboxItem
+                        key={envName}
+                        checked={envFilters.includes(envName)}
+                        onCheckedChange={() => toggleEnvFilter(envName)}
+                      >
+                        {envName}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
             {headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters) && (
+        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters || hasActiveEnvFilters) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
             {ignoreOutliers && (
               <FilterBadge
@@ -3284,6 +3338,13 @@ export function EvalMetricChart({
                 onRemove={() => setMaxY(null)}
               />
             )}
+            {envFilters.map((envName) => (
+              <FilterBadge
+                key={`env:${envName}`}
+                label={`env: ${envName}`}
+                onRemove={() => toggleEnvFilter(envName)}
+              />
+            ))}
             {Object.entries(tagFilters).map(([tagName, tagValues]) =>
               tagValues.map((tagValue) => (
                 <FilterBadge
@@ -3340,6 +3401,7 @@ interface EvalMetricPrefixSectionProps {
   scrollRoot?: Element | null
   maxStepLimit?: number | null
   maxTimeLimit?: number | null
+  availableEnvs?: string[]
 }
 
 function EvalMetricPrefixSection({
@@ -3362,6 +3424,7 @@ function EvalMetricPrefixSection({
   scrollRoot,
   maxStepLimit,
   maxTimeLimit,
+  availableEnvs,
 }: EvalMetricPrefixSectionProps) {
   return (
     <div>
@@ -3392,6 +3455,7 @@ function EvalMetricPrefixSection({
             scrollRoot={scrollRoot}
             maxStepLimit={maxStepLimit}
             maxTimeLimit={maxTimeLimit}
+            availableEnvs={availableEnvs}
           />
         ))}
       </div>
@@ -3425,6 +3489,7 @@ interface MetricPrefixSectionProps {
   extraCharts?: React.ReactNode
   hideGroupLabel?: boolean
   availableSampleTags?: Record<string, string[]>
+  availableEnvs?: string[]
 }
 
 function MetricPrefixSection({
@@ -3449,6 +3514,7 @@ function MetricPrefixSection({
   extraCharts,
   hideGroupLabel,
   availableSampleTags,
+  availableEnvs,
 }: MetricPrefixSectionProps) {
   // Use the first selected run for distribution over time (single-run chart)
   const selectedRun = runs.find((r) => r.isSelected) ?? runs[0]
@@ -3484,6 +3550,7 @@ function MetricPrefixSection({
             maxStepLimit={maxStepLimit}
             maxTimeLimit={maxTimeLimit}
             availableSampleTags={availableSampleTags}
+            availableEnvs={availableEnvs}
           />
         ))}
         {extraCharts}
@@ -3510,6 +3577,7 @@ function useMetricsByRunPath(
   shouldPoll: boolean,
   enabled: boolean,
   tagFilters?: Record<string, string[]>,
+  envFilters?: string[],
 ) {
   const runPaths = useMemo(
     () =>
@@ -3530,6 +3598,7 @@ function useMetricsByRunPath(
     enabled && runPaths.length > 0 && metricNames.length > 0,
     shouldPoll,
     tagFilters,
+    envFilters,
   )
 
   const metricsByRunPath = useMemo(() => {
@@ -3577,6 +3646,7 @@ interface MetricChartProps {
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
   availableSampleTags?: Record<string, string[]>
+  availableEnvs?: string[]
   filterKey?: string
 }
 
@@ -3604,6 +3674,7 @@ export function MetricChart({
   headerPrefix,
   headerSuffix,
   availableSampleTags,
+  availableEnvs,
   filterKey: filterKeyProp,
 }: MetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
@@ -3657,6 +3728,7 @@ export function MetricChart({
   const maxY = metricFilters?.maxY ?? null
 
   const tagFilters = metricFilters?.tagFilters ?? {}
+  const envFilters = metricFilters?.envFilters ?? []
 
   const updateMetricFilters = useCallback(
     (
@@ -3669,6 +3741,7 @@ export function MetricChart({
           minY: null,
           maxY: null,
           tagFilters: {},
+          envFilters: [],
         }
         const current = prev[filterKey] ?? defaults
         const next = updater(current)
@@ -3678,7 +3751,8 @@ export function MetricChart({
           next.ignoreFirstStep === defaults.ignoreFirstStep &&
           next.minY === defaults.minY &&
           next.maxY === defaults.maxY &&
-          Object.keys(next.tagFilters ?? {}).length === 0
+          Object.keys(next.tagFilters ?? {}).length === 0 &&
+          (next.envFilters ?? []).length === 0
 
         if (isAtDefaultValues) {
           if (!Object.prototype.hasOwnProperty.call(prev, filterKey)) {
@@ -3761,7 +3835,24 @@ export function MetricChart({
     [updateMetricFilters],
   )
 
+  const toggleEnvFilter = useCallback(
+    (envName: string) => {
+      updateMetricFilters((current) => {
+        const currentEnvs = [...(current.envFilters ?? [])]
+        const idx = currentEnvs.indexOf(envName)
+        if (idx >= 0) {
+          currentEnvs.splice(idx, 1)
+        } else {
+          currentEnvs.push(envName)
+        }
+        return { ...current, envFilters: currentEnvs }
+      })
+    },
+    [updateMetricFilters],
+  )
+
   const hasActiveTagFilters = Object.keys(tagFilters).length > 0
+  const hasActiveEnvFilters = envFilters.length > 0
 
   const isVisible = useOnScreen(visibilityRef, {
     root: scrollRoot,
@@ -3787,7 +3878,7 @@ export function MetricChart({
     metricsByRunPath,
     isFetching: isMetricsFetching,
     isRefetching: isMetricsRefetching,
-  } = useMetricsByRunPath(runs, metricName, shouldPoll, isVisible, tagFilters)
+  } = useMetricsByRunPath(runs, metricName, shouldPoll, isVisible, tagFilters, envFilters)
 
   // Combine data from all runs into uPlot format
   const {
@@ -4617,6 +4708,23 @@ export function MetricChart({
                     onKeyDown={(e) => e.stopPropagation()}
                   />
                 </div>
+                {availableEnvs && availableEnvs.length > 1 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-[10px] text-muted-foreground">
+                      Filter by Environment
+                    </DropdownMenuLabel>
+                    {availableEnvs.map((envName) => (
+                      <DropdownMenuCheckboxItem
+                        key={envName}
+                        checked={envFilters.includes(envName)}
+                        onCheckedChange={() => toggleEnvFilter(envName)}
+                      >
+                        {envName}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </>
+                )}
                 {availableSampleTags && Object.keys(availableSampleTags).length > 0 && (
                   <>
                     <DropdownMenuSeparator />
@@ -4653,7 +4761,7 @@ export function MetricChart({
             {headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters) && (
+        {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters || hasActiveEnvFilters) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
             {ignoreOutliers && (
               <FilterBadge
@@ -4679,6 +4787,13 @@ export function MetricChart({
                 onRemove={() => setMaxY(null)}
               />
             )}
+            {envFilters.map((envName) => (
+              <FilterBadge
+                key={`env:${envName}`}
+                label={`env: ${envName}`}
+                onRemove={() => toggleEnvFilter(envName)}
+              />
+            ))}
             {Object.entries(tagFilters).map(([tagName, tagValues]) =>
               tagValues.map((tagValue) => (
                 <FilterBadge

@@ -759,7 +759,8 @@ export function useStepMetricsMultiRun(
   metricNames: string[] | null,
   enabled: boolean,
   shouldPoll: boolean,
-  tagFilters?: Record<string, string[]>
+  tagFilters?: Record<string, string[]>,
+  envFilters?: string[]
 ) {
   const queryClient = useQueryClient()
   const prevRunPathsRef = useRef<string[]>([])
@@ -775,12 +776,12 @@ export function useStepMetricsMultiRun(
       const prevSet = new Set(prevPaths)
       const isRemovalOnly = runPaths.every((p) => prevSet.has(p))
       if (isRemovalOnly) {
-        const oldKey = ["step-metrics-multi", prevPaths, metricNames, tagFilters]
+        const oldKey = ["step-metrics-multi", prevPaths, metricNames, tagFilters, envFilters]
         const oldData =
           queryClient.getQueryData<StepMetricsMultiRunResponse>(oldKey)
         if (oldData) {
           const currSet = new Set(runPaths)
-          const newKey = ["step-metrics-multi", runPaths, metricNames, tagFilters]
+          const newKey = ["step-metrics-multi", runPaths, metricNames, tagFilters, envFilters]
           queryClient.setQueryData<StepMetricsMultiRunResponse>(newKey, {
             runs: oldData.runs.filter((r) => currSet.has(r.run_path)),
           })
@@ -791,7 +792,7 @@ export function useStepMetricsMultiRun(
   }
 
   return useQuery<StepMetricsMultiRunResponse>({
-    queryKey: ["step-metrics-multi", runPaths, metricNames, tagFilters],
+    queryKey: ["step-metrics-multi", runPaths, metricNames, tagFilters, envFilters],
     queryFn: async () => {
       const body: Record<string, unknown> = {
         run_paths: runPaths,
@@ -800,6 +801,9 @@ export function useStepMetricsMultiRun(
       }
       if (tagFilters && Object.keys(tagFilters).length > 0) {
         body.tag_filters = tagFilters
+      }
+      if (envFilters && envFilters.length > 0) {
+        body.env_filters = envFilters
       }
       const response = await fetch(`${API_BASE}/step-metrics/multi`, {
         method: "POST",
@@ -925,7 +929,8 @@ export function useEvalStepMetricsMultiRun(
   evalName: string,
   metricNames: string[],
   enabled: boolean,
-  shouldPoll: boolean
+  shouldPoll: boolean,
+  envFilters?: string[]
 ) {
   const queryClient = useQueryClient()
   const prevRunPathsRef = useRef<string[]>([])
@@ -944,6 +949,7 @@ export function useEvalStepMetricsMultiRun(
           prevPaths,
           evalName,
           metricNames,
+          envFilters,
         ]
         const oldData =
           queryClient.getQueryData<EvalStepMetricsMultiRunResponse>(oldKey)
@@ -954,6 +960,7 @@ export function useEvalStepMetricsMultiRun(
             runPaths,
             evalName,
             metricNames,
+            envFilters,
           ]
           queryClient.setQueryData<EvalStepMetricsMultiRunResponse>(newKey, {
             runs: oldData.runs.filter((r) => currSet.has(r.run_path)),
@@ -965,19 +972,23 @@ export function useEvalStepMetricsMultiRun(
   }
 
   return useQuery<EvalStepMetricsMultiRunResponse>({
-    queryKey: ["eval-step-metrics-multi", runPaths, evalName, metricNames],
+    queryKey: ["eval-step-metrics-multi", runPaths, evalName, metricNames, envFilters],
     queryFn: async () => {
       const results = await Promise.all(
         runPaths.map(async (runPath) => {
+          const reqBody: Record<string, unknown> = {
+            run_path: runPath,
+            eval_name: evalName,
+            metric_names: metricNames,
+            limit: 100000,
+          }
+          if (envFilters && envFilters.length > 0) {
+            reqBody.env_filters = envFilters
+          }
           const response = await fetch(`${API_BASE}/eval-step-metrics`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              run_path: runPath,
-              eval_name: evalName,
-              metric_names: metricNames,
-              limit: 100000,
-            }),
+            body: JSON.stringify(reqBody),
           })
           if (!response.ok) {
             return { run_path: runPath, metrics: [] }

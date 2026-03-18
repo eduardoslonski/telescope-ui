@@ -120,6 +120,7 @@ export interface MetricsChartFilterState {
   minY: number | null
   maxY: number | null
   tagFilters: Record<string, string[]>
+  envFilters: string[]
 }
 export const metricsChartFiltersAtom = atom<
   Record<string, MetricsChartFilterState>

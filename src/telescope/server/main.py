@@ -315,6 +315,7 @@ class EvalStepMetricsRequest(BaseModel):
     sample_idx: int | None = None
     start_step: int | None = None
     end_step: int | None = None
+    env_filters: list[str] | None = None  # Filter by environment names
     limit: int = 10000
 
 
@@ -392,6 +393,7 @@ class StepMetricsRequest(BaseModel):
     start_step: int | None = None  # Filter steps after this
     end_step: int | None = None  # Filter steps before this
     tag_filters: dict[str, list[str]] | None = None  # Filter rollout metrics by sample tags (tag_name -> [values])
+    env_filters: list[str] | None = None  # Filter rollout metrics by environment names
     limit: int = 10000
 
 
@@ -401,6 +403,7 @@ class StepMetricsMultiRequest(BaseModel):
     start_step: int | None = None  # Filter steps after this
     end_step: int | None = None  # Filter steps before this
     tag_filters: dict[str, list[str]] | None = None  # Filter rollout metrics by sample tags (tag_name -> [values])
+    env_filters: list[str] | None = None  # Filter rollout metrics by environment names
     limit: int = 10000
 
 
@@ -1847,6 +1850,24 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
     ).fetchall()
     available_rollout_metric_names = [r[0] for r in metric_names_result]
 
+    # Build environment filter for eval queries.
+    eval_env_filter_sql = ""
+    eval_env_filter_params: list = []
+    eval_env_filter_rollouts_sql = ""
+    eval_env_filter_rollouts_params: list = []
+    if req.env_filters:
+        placeholders = ", ".join(["?"] * len(req.env_filters))
+        # For tables with env column (prompts_eval, samples_data_eval, rollouts_metrics_eval)
+        eval_env_filter_sql = f" AND env IN ({placeholders})"
+        eval_env_filter_params = list(req.env_filters)
+        # For rollouts_eval (no env column), filter via prompts_eval
+        eval_env_filter_rollouts_sql = (
+            f" AND (step, sample_idx) IN ("
+            f"SELECT step, sample_idx FROM prompts_eval "
+            f"WHERE run_id = ? AND eval_name = ? AND env IN ({placeholders}))"
+        )
+        eval_env_filter_rollouts_params = [req.run_path, req.eval_name] + list(req.env_filters)
+
     metrics_to_include = set(req.metric_names) if req.metric_names else None
     metrics = []
 
@@ -1860,13 +1881,13 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
         FROM (
             SELECT step, sample_idx, completion_idx, SUM(tokens) as completion_tokens
             FROM rollouts_eval
-            WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter}
+            WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
             GROUP BY step, sample_idx, completion_idx
         )
         GROUP BY step
         ORDER BY step ASC
     """
-    completion_rows = con.execute(completion_query, params).fetchall()
+    completion_rows = con.execute(completion_query, params + eval_env_filter_rollouts_params).fetchall()
     completion_columns = ["length_completion_mean", "length_completion_std", "length_completion_min", "length_completion_max"]
     for row in completion_rows:
         step = row[0]
@@ -1884,11 +1905,11 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             MIN(tokens_prompt) as length_prompt_min,
             MAX(tokens_prompt) as length_prompt_max
         FROM prompts_eval
-        WHERE run_id = ? AND eval_name = ? {step_filter}
+        WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    prompt_rows = con.execute(prompt_query, params).fetchall()
+    prompt_rows = con.execute(prompt_query, params + eval_env_filter_params).fetchall()
     prompt_columns = ["length_prompt_mean", "length_prompt_std", "length_prompt_min", "length_prompt_max"]
     for row in prompt_rows:
         step = row[0]
@@ -1908,13 +1929,13 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
         FROM (
             SELECT step, sample_idx, completion_idx, SUM(tokens) as total_tokens
             FROM rollouts_eval
-            WHERE run_id = ? AND eval_name = ? {step_filter}
+            WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
             GROUP BY step, sample_idx, completion_idx
         )
         GROUP BY step
         ORDER BY step ASC
     """
-    length_sum_rows = con.execute(length_sum_query, params).fetchall()
+    length_sum_rows = con.execute(length_sum_query, params + eval_env_filter_rollouts_params).fetchall()
     length_sum_columns = ["length_sum_mean", "length_sum_std", "length_sum_min", "length_sum_max"]
     for row in length_sum_rows:
         step = row[0]
@@ -1930,11 +1951,11 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx * 10000 + completion_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx * 10000 + completion_idx), 0) as stop_reason_length_pct
         FROM rollouts_eval
-        WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter}
+        WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    stop_reason_rows = con.execute(stop_reason_query, params).fetchall()
+    stop_reason_rows = con.execute(stop_reason_query, params + eval_env_filter_rollouts_params).fetchall()
     for row in stop_reason_rows:
         step = row[0]
         if metrics_to_include is None or "stop_reason_length_pct" in metrics_to_include:
@@ -1947,11 +1968,11 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             COUNT(DISTINCT sample_idx) as num_samples,
             COUNT(DISTINCT sample_idx * 10000 + completion_idx) as num_completions
         FROM rollouts_eval
-        WHERE run_id = ? AND eval_name = ? {step_filter}
+        WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
         GROUP BY step
         ORDER BY step ASC
     """
-    count_rows = con.execute(count_query, params).fetchall()
+    count_rows = con.execute(count_query, params + eval_env_filter_rollouts_params).fetchall()
     for row in count_rows:
         step = row[0]
         if metrics_to_include is None or "num_samples" in metrics_to_include:
@@ -1969,11 +1990,11 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
                 MIN(value) as min_val,
                 MAX(value) as max_val
             FROM rollouts_metrics_eval
-            WHERE run_id = ? AND eval_name = ? {step_filter}
+            WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_sql}
             GROUP BY step, metric_name
             ORDER BY step ASC, metric_name ASC
         """
-        rollout_metric_rows = con.execute(rollout_metric_query, params).fetchall()
+        rollout_metric_rows = con.execute(rollout_metric_query, params + eval_env_filter_params).fetchall()
         for row in rollout_metric_rows:
             step = row[0]
             metric_base_name = row[1]
@@ -4345,6 +4366,32 @@ def get_step_metrics(req: StepMetricsRequest):
 
     tag_filter_sql_group, tag_filter_params_group = _build_tag_filter_group()
 
+    # Build environment filter SQL.
+    # For tables with group_id (samples_data, rollouts): filter via prompts table.
+    # For tables with env column (rollouts_metrics, prompts): filter directly.
+    def _build_env_filter(prefix: str = "") -> tuple[str, list]:
+        """Env filter for tables with (step, group_id) — samples_data, rollouts."""
+        if not req.env_filters:
+            return "", []
+        step_col = f"{prefix}step" if prefix else "step"
+        gid_col = f"{prefix}group_id" if prefix else "group_id"
+        placeholders = ", ".join(["?"] * len(req.env_filters))
+        subquery = f"SELECT step, group_id FROM prompts WHERE run_id = ? AND env IN ({placeholders})"
+        return f" AND ({step_col}, {gid_col}) IN ({subquery})", [req.run_path] + list(req.env_filters)
+
+    def _build_env_filter_direct(prefix: str = "") -> tuple[str, list]:
+        """Env filter for tables with env column — rollouts_metrics, prompts."""
+        if not req.env_filters:
+            return "", []
+        env_col = f"{prefix}env" if prefix else "env"
+        placeholders = ", ".join(["?"] * len(req.env_filters))
+        return f" AND {env_col} IN ({placeholders})", list(req.env_filters)
+
+    env_filter_sql, env_filter_params = _build_env_filter()
+    env_filter_sql_group, env_filter_params_group = _build_env_filter_direct()  # for prompts
+    env_filter_sql_rm, env_filter_params_rm = _build_env_filter_direct()  # for rollouts_metrics
+    env_filter_sql_gm, env_filter_params_gm = _build_env_filter_direct("gm.")  # for rollouts_metrics Gini (prefixed)
+
     # Compute base metrics from samples_data table (reward_sum, advantage)
     base_query = f"""
         SELECT
@@ -4360,13 +4407,13 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(advantage) as advantage_min,
             MAX(advantage) as advantage_max
         FROM samples_data
-        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
+        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql} {env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
 
-    base_rows = con.execute(base_query, params + tag_filter_params).fetchall()
-    
+    base_rows = con.execute(base_query, params + tag_filter_params + env_filter_params).fetchall()
+
     # Compute completion tokens from rollouts table (only model turns)
     # First sum tokens per sample where turn_type = 'model', then aggregate per step
     completion_query = f"""
@@ -4379,16 +4426,16 @@ def get_step_metrics(req: StepMetricsRequest):
         FROM (
             SELECT step, sample_idx, SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
+            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
             GROUP BY step, sample_idx
         )
         GROUP BY step
         ORDER BY step ASC
     """
 
-    completion_rows = con.execute(completion_query, params + tag_filter_params).fetchall()
+    completion_rows = con.execute(completion_query, params + tag_filter_params + env_filter_params).fetchall()
     completion_by_step = {row[0]: row[1:] for row in completion_rows}
-    
+
     # Compute prompt token metrics from prompts table
     prompt_query = f"""
         SELECT
@@ -4398,12 +4445,12 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(tokens_prompt) as length_prompt_min,
             MAX(tokens_prompt) as length_prompt_max
         FROM prompts
-        WHERE run_id = ? {step_filter} {tag_filter_sql_group}
+        WHERE run_id = ? {step_filter} {tag_filter_sql_group} {env_filter_sql_group}
         GROUP BY step
         ORDER BY step ASC
     """
 
-    prompt_rows = con.execute(prompt_query, params + tag_filter_params_group).fetchall()
+    prompt_rows = con.execute(prompt_query, params + tag_filter_params_group + env_filter_params_group).fetchall()
     prompt_metrics_by_step = {row[0]: row[1:] for row in prompt_rows}
     
     # Compute total token stats from samples_data (total_tokens includes everything)
@@ -4415,14 +4462,14 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(total_tokens) as length_sum_min,
             MAX(total_tokens) as length_sum_max
         FROM samples_data
-        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
+        WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql} {env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
 
-    length_sum_rows = con.execute(length_sum_query, params + tag_filter_params).fetchall()
+    length_sum_rows = con.execute(length_sum_query, params + tag_filter_params + env_filter_params).fetchall()
     length_sum_by_step = {row[0]: row[1:] for row in length_sum_rows}
-    
+
     # Compute stop_reason = 'length' percentage per step
     # Count samples where at least one model rollout has stop_reason = 'length'
     stop_reason_length_query = f"""
@@ -4431,12 +4478,12 @@ def get_step_metrics(req: StepMetricsRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx), 0) as stop_reason_length_pct
         FROM rollouts
-        WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
+        WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
 
-    stop_reason_length_rows = con.execute(stop_reason_length_query, params + tag_filter_params).fetchall()
+    stop_reason_length_rows = con.execute(stop_reason_length_query, params + tag_filter_params + env_filter_params).fetchall()
     stop_reason_length_by_step = {row[0]: row[1] for row in stop_reason_length_rows}
 
     # Compute within-group completion-length heterogeneity metrics, averaged per step.
@@ -4452,7 +4499,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 sample_idx,
                 SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql}
+            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
             GROUP BY step, group_id, sample_idx
         ),
         group_stats AS (
@@ -4518,7 +4565,7 @@ def get_step_metrics(req: StepMetricsRequest):
         ORDER BY step ASC
     """
 
-    group_homogeneity_rows = con.execute(group_homogeneity_query, params + tag_filter_params).fetchall()
+    group_homogeneity_rows = con.execute(group_homogeneity_query, params + tag_filter_params + env_filter_params).fetchall()
     group_homogeneity_by_step = {
         row[0]: {
             "group_length_cv_mean": row[1],
@@ -4540,12 +4587,12 @@ def get_step_metrics(req: StepMetricsRequest):
                 COUNT(*) OVER (PARTITION BY step, group_id) as n,
                 SUM(reward) OVER (PARTITION BY step, group_id) as sum_reward
             FROM samples_data
-            WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql}
+            WHERE run_id = ? AND reward IS NOT NULL {step_filter} {tag_filter_sql} {env_filter_sql}
         ),
         gini_per_group AS (
-            SELECT 
+            SELECT
                 step, group_id,
-                CASE 
+                CASE
                     WHEN MAX(sum_reward) > 0 AND MAX(n) > 1 THEN
                         (2.0 * SUM(rnk * reward)) / (MAX(n) * MAX(sum_reward)) - (MAX(n) + 1.0) / MAX(n)
                     ELSE 0
@@ -4553,15 +4600,15 @@ def get_step_metrics(req: StepMetricsRequest):
             FROM ranked
             GROUP BY step, group_id
         )
-        SELECT 
+        SELECT
             step,
             AVG(gini) as reward_gini_mean
         FROM gini_per_group
         GROUP BY step
         ORDER BY step ASC
     """
-    
-    gini_rows = con.execute(gini_query, params + tag_filter_params).fetchall()
+
+    gini_rows = con.execute(gini_query, params + tag_filter_params + env_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
     
     # Base column names for samples_data-based metrics
@@ -4698,13 +4745,13 @@ def get_step_metrics(req: StepMetricsRequest):
                 MIN(value) as min,
                 MAX(value) as max
             FROM rollouts_metrics
-            WHERE run_id = ? {metric_step_filter} {tag_filter_sql}
+            WHERE run_id = ? {metric_step_filter} {tag_filter_sql} {env_filter_sql_rm}
             GROUP BY step, metric_name
             ORDER BY step ASC, metric_name ASC
         """
 
         metrics_rows = con.execute(
-            metrics_query, metric_params + tag_filter_params
+            metrics_query, metric_params + tag_filter_params + env_filter_params_rm
         ).fetchall()
         
         for row in metrics_rows:
@@ -4744,12 +4791,12 @@ def get_step_metrics(req: StepMetricsRequest):
                     SUM(gm.value) OVER (PARTITION BY gm.step, gm.metric_name, sd.group_id) as sum_value
                 FROM rollouts_metrics gm
                 JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
-                WHERE gm.run_id = ? AND gm.value IS NOT NULL {metric_step_filter} {tag_filter_sql_gm}
+                WHERE gm.run_id = ? AND gm.value IS NOT NULL {metric_step_filter} {tag_filter_sql_gm} {env_filter_sql_gm}
             ),
             gini_per_group AS (
-                SELECT 
+                SELECT
                     step, metric_name, group_id,
-                    CASE 
+                    CASE
                         WHEN MAX(sum_value) > 0 AND MAX(n) > 1 THEN
                             (2.0 * SUM(rnk * value)) / (MAX(n) * MAX(sum_value)) - (MAX(n) + 1.0) / MAX(n)
                         ELSE 0
@@ -4757,15 +4804,15 @@ def get_step_metrics(req: StepMetricsRequest):
                 FROM ranked
                 GROUP BY step, metric_name, group_id
             )
-            SELECT 
+            SELECT
                 step, metric_name, AVG(gini) as gini_mean
             FROM gini_per_group
             GROUP BY step, metric_name
             ORDER BY step ASC, metric_name ASC
         """
-        
+
         gen_gini_rows = con.execute(
-            gen_metric_gini_query, metric_params + tag_filter_params_gm
+            gen_metric_gini_query, metric_params + tag_filter_params_gm + env_filter_params_gm
         ).fetchall()
         for row in gen_gini_rows:
             step, base_name, gini_val = row[0], row[1], row[2]
@@ -6154,6 +6201,31 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
 
     multi_tag_sql_group, multi_tag_params_group = _build_multi_tag_filter_group()
 
+    # Build environment filter for multi-run queries.
+    def _build_multi_env_filter(prefix: str = "") -> tuple[str, list]:
+        """Env filter for tables with (run_id, step, group_id) — samples_data, rollouts."""
+        if not req.env_filters:
+            return "", []
+        rid_col = f"{prefix}run_id" if prefix else "run_id"
+        step_col = f"{prefix}step" if prefix else "step"
+        gid_col = f"{prefix}group_id" if prefix else "group_id"
+        placeholders = ", ".join(["?"] * len(req.env_filters))
+        subquery = f"SELECT run_id, step, group_id FROM prompts WHERE env IN ({placeholders})"
+        return f" AND ({rid_col}, {step_col}, {gid_col}) IN ({subquery})", list(req.env_filters)
+
+    def _build_multi_env_filter_direct(prefix: str = "") -> tuple[str, list]:
+        """Env filter for tables with env column — rollouts_metrics, prompts."""
+        if not req.env_filters:
+            return "", []
+        env_col = f"{prefix}env" if prefix else "env"
+        placeholders = ", ".join(["?"] * len(req.env_filters))
+        return f" AND {env_col} IN ({placeholders})", list(req.env_filters)
+
+    multi_env_sql, multi_env_params = _build_multi_env_filter()
+    multi_env_sql_group, multi_env_params_group = _build_multi_env_filter_direct()  # prompts
+    multi_env_sql_rm, multi_env_params_rm = _build_multi_env_filter_direct()  # rollouts_metrics
+    multi_env_sql_gm, multi_env_params_gm = _build_multi_env_filter_direct("gm.")  # rollouts_metrics Gini
+
     # =====================================================================
     # 2. Available rollout metric names per run
     # =====================================================================
@@ -6173,10 +6245,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(reward), STDDEV_SAMP(reward), MIN(reward), MAX(reward),
             AVG(advantage), STDDEV_SAMP(advantage), MIN(advantage), MAX(advantage)
         FROM samples_data
-        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
+        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql} {multi_env_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall()
+    """, a_params + multi_tag_params + multi_env_params).fetchall()
 
     # Track (run_id, step) pairs from base rows for joining other tables
     base_keys: set[tuple[str, int]] = set()
@@ -6198,12 +6270,12 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM (
             SELECT run_id, step, sample_idx, SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
+            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
             GROUP BY run_id, step, sample_idx
         )
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
         completion_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -6216,10 +6288,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(tokens_prompt), STDDEV_SAMP(tokens_prompt),
             MIN(tokens_prompt), MAX(tokens_prompt)
         FROM prompts
-        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql_group}
+        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql_group} {multi_env_sql_group}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params_group).fetchall():
+    """, a_params + multi_tag_params_group + multi_env_params_group).fetchall():
         prompt_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -6232,10 +6304,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(total_tokens), STDDEV_SAMP(total_tokens),
             MIN(total_tokens), MAX(total_tokens)
         FROM samples_data
-        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
+        WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql} {multi_env_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
         length_sum_map[(row[0], row[1])] = row[2:]
 
     # =====================================================================
@@ -6248,10 +6320,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx), 0)
         FROM rollouts
-        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
+        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
         stop_reason_map[(row[0], row[1])] = row[2]
 
     # =====================================================================
@@ -6267,7 +6339,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 sample_idx,
                 SUM(tokens) as completion_tokens
             FROM rollouts
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql}
+            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
             GROUP BY run_id, step, group_id, sample_idx
         ),
         group_stats AS (
@@ -6336,7 +6408,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM group_metrics
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
         group_homogeneity_map[(row[0], row[1])] = (row[2], row[3], row[4])
 
     # =====================================================================
@@ -6351,7 +6423,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 COUNT(*) OVER (PARTITION BY run_id, step, group_id) as n,
                 SUM(reward) OVER (PARTITION BY run_id, step, group_id) as sum_reward
             FROM samples_data
-            WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql}
+            WHERE run_id IN ({a_in_ph}) AND reward IS NOT NULL {step_filter} {multi_tag_sql} {multi_env_sql}
         ),
         gini_per_group AS (
             SELECT
@@ -6369,7 +6441,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM gini_per_group
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
         gini_map[(row[0], row[1])] = row[2]
 
     # Emit joined metrics for each base-row step
@@ -6402,10 +6474,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             run_id, step, metric_name,
             AVG(value), STDDEV_SAMP(value), MIN(value), MAX(value)
         FROM rollouts_metrics
-        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql}
+        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql} {multi_env_sql_rm}
         GROUP BY run_id, step, metric_name
         ORDER BY run_id, step ASC, metric_name ASC
-    """, a_params + multi_tag_params).fetchall():
+    """, a_params + multi_tag_params + multi_env_params_rm).fetchall():
         rid, step, base_name = row[0], row[1], row[2]
         for suffix, val in [("_mean", row[3]), ("_std", row[4]),
                             ("_min", row[5]), ("_max", row[6])]:
@@ -6423,7 +6495,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 SUM(gm.value) OVER (PARTITION BY gm.run_id, gm.step, gm.metric_name, sd.group_id) as sum_value
             FROM rollouts_metrics gm
             JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
-            WHERE gm.run_id IN ({a_in_ph}) AND gm.value IS NOT NULL {step_filter} {multi_tag_sql_gm}
+            WHERE gm.run_id IN ({a_in_ph}) AND gm.value IS NOT NULL {step_filter} {multi_tag_sql_gm} {multi_env_sql_gm}
         ),
         gini_per_group AS (
             SELECT
@@ -6441,7 +6513,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM gini_per_group
         GROUP BY run_id, step, metric_name
         ORDER BY run_id, step ASC, metric_name ASC
-    """, a_params + multi_tag_params_gm).fetchall():
+    """, a_params + multi_tag_params_gm + multi_env_params_gm).fetchall():
         _add(row[0], row[1], f"reward_{row[2]}_gini_mean", row[3])
 
     # =====================================================================
