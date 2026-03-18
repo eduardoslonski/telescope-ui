@@ -52,7 +52,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCustomMetricsLayout, useCustomMetricsTemplate, useStepTimes } from "@/hooks/use-run-data"
-import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard } from "@/components/step-metrics-charts"
+import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard, TrainerPerformanceChartCard, TrainerPerformanceAreaChartCard, TRAINER_PERF_AREA_VARIANTS } from "@/components/step-metrics-charts"
 import type {
   CustomMetricsLayout,
   CustomSection,
@@ -92,11 +92,13 @@ export interface PlotCatalogItem {
   group?: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   histogramMetricType?: string
   inferenceMetricType?: string
+  trainerMetricType?: string
+  trainerAreaCategories?: string[]
   simple?: boolean
 }
 
@@ -552,6 +554,60 @@ export function buildPlotCatalog(
     })
   }
 
+  // Trainer Performance - Area Charts (first, matching Metrics page order)
+  for (const variant of TRAINER_PERF_AREA_VARIANTS) {
+    catalog.push({
+      section: "Trainer Performance",
+      group: "Time Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      plotType: "trainer_performance_area",
+      trainerAreaCategories: [...variant.categories],
+    })
+  }
+
+  // Trainer Performance - Summary
+  for (const m of [
+    { key: "trainer_perf_idle", label: "Idle", trainerMetricType: "idle" },
+    { key: "trainer_perf_working", label: "Working", trainerMetricType: "working" },
+    { key: "trainer_perf_working_except_weight_sync", label: "Working (excl. Weight Sync)", trainerMetricType: "working_except_weight_sync" },
+  ]) {
+    catalog.push({
+      section: "Trainer Performance",
+      group: "% Time per Category",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "trainer_performance",
+      trainerMetricType: m.trainerMetricType,
+    })
+  }
+
+  // Trainer Performance - Event Types
+  for (const m of [
+    { key: "trainer_perf_forward", label: "Forward", trainerMetricType: "forward" },
+    { key: "trainer_perf_backward", label: "Backward", trainerMetricType: "backward" },
+    { key: "trainer_perf_optimizer", label: "Optimizer", trainerMetricType: "optimizer" },
+    { key: "trainer_perf_loss_computation", label: "Loss Computation", trainerMetricType: "loss_computation" },
+    { key: "trainer_perf_weight_broadcast", label: "Weight Sync", trainerMetricType: "weight_broadcast" },
+    { key: "trainer_perf_data_wait", label: "Data Wait", trainerMetricType: "data_wait" },
+    { key: "trainer_perf_grad_clip", label: "Grad Clip", trainerMetricType: "grad_clip" },
+    { key: "trainer_perf_grad_norm", label: "Grad Norm", trainerMetricType: "grad_norm" },
+    { key: "trainer_perf_data_to_device", label: "Data to Device", trainerMetricType: "data_to_device" },
+    { key: "trainer_perf_prepare_tensors", label: "Prepare Tensors", trainerMetricType: "prepare_tensors" },
+    { key: "trainer_perf_compute_entropy", label: "Compute Entropy", trainerMetricType: "compute_entropy" },
+    { key: "trainer_perf_compute_kl", label: "Compute KL", trainerMetricType: "compute_kl" },
+    { key: "trainer_perf_checkpoint", label: "Checkpoint", trainerMetricType: "checkpoint" },
+  ]) {
+    catalog.push({
+      section: "Trainer Performance",
+      group: "% Time per Category",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "trainer_performance",
+      trainerMetricType: m.trainerMetricType,
+    })
+  }
+
   return catalog
 }
 
@@ -951,6 +1007,27 @@ export function SortablePlotCard({
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
         />
+      ) : plot.plotType === "trainer_performance" && plot.trainerMetricType ? (
+        <TrainerPerformanceChartCard
+          runs={chartProps.runs}
+          shouldPoll={chartProps.shouldPoll}
+          hoveredRunId={chartProps.hoveredRunId}
+          scrollRoot={chartProps.scrollRoot}
+          trainerMetricType={plot.trainerMetricType!}
+          label={label}
+          headerPrefix={dragHandle}
+          headerSuffix={deleteButton}
+        />
+      ) : plot.plotType === "trainer_performance_area" && plot.trainerAreaCategories ? (
+        <TrainerPerformanceAreaChartCard
+          runs={chartProps.runs}
+          shouldPoll={chartProps.shouldPoll}
+          scrollRoot={chartProps.scrollRoot}
+          label={label}
+          categories={plot.trainerAreaCategories}
+          headerPrefix={dragHandle}
+          headerSuffix={deleteButton}
+        />
       ) : plot.plotType === "eval_metric" && plot.evalName ? (
         <EvalMetricChart
           runs={chartProps.runs}
@@ -1049,6 +1126,8 @@ function SortableGroup({
       evalName: item.evalName,
       distMetricType: item.distMetricType,
       inferenceMetricType: item.inferenceMetricType,
+      trainerMetricType: item.trainerMetricType,
+      trainerAreaCategories: item.trainerAreaCategories,
     }
     onUpdate({ ...group, plots: [...group.plots, newPlot] })
   }
@@ -1265,6 +1344,8 @@ function SortableSection({
       evalName: item.evalName,
       distMetricType: item.distMetricType,
       inferenceMetricType: item.inferenceMetricType,
+      trainerMetricType: item.trainerMetricType,
+      trainerAreaCategories: item.trainerAreaCategories,
     }
     onUpdate({ ...section, plots: [...section.plots, newPlot] })
   }

@@ -694,6 +694,7 @@ export default function HomePage() {
                       <PlotSelectPopover
                         catalog={plotCatalog}
                         existingPlots={overviewPlots}
+                        allowDuplicates
                         onSelect={(item) => {
                           const id = Math.random().toString(36).slice(2, 10)
                           setOverviewPlots((prev) => [
@@ -706,6 +707,8 @@ export default function HomePage() {
                               evalName: item.evalName,
                               distMetricType: item.distMetricType,
                               inferenceMetricType: item.inferenceMetricType,
+                              trainerMetricType: item.trainerMetricType,
+                              trainerAreaCategories: item.trainerAreaCategories,
                             },
                           ])
                         }}

@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import shutil
 import time
@@ -412,6 +413,11 @@ class StepTimesRequest(BaseModel):
 
 
 class InferencePerformanceRequest(BaseModel):
+    run_path: str
+    bucket_seconds: int = 60
+
+
+class TrainerPerformanceRequest(BaseModel):
     run_path: str
     bucket_seconds: int = 60
 
@@ -7801,6 +7807,116 @@ def get_inference_performance(req: InferencePerformanceRequest):
             if row[1] is not None
         ],
         "first_time": first_time,
+    }
+
+
+@app.post("/trainer-performance")
+def get_trainer_performance(req: TrainerPerformanceRequest):
+    """Get trainer performance metrics bucketed by time intervals.
+
+    For each time bucket, computes the percentage of time spent on each
+    trainer event type (forward, backward, optimizer, etc.), averaged
+    across all ranks.  Also returns derived metrics: idle, working, and
+    working_except_weight_sync.
+    """
+    log.info(f"[API] Getting trainer performance for {req.run_path}")
+    con = connect()
+    bucket = req.bucket_seconds
+
+    # Fetch all top-level trainer events (exclude sub-events like loss/shift)
+    events = con.execute(
+        """
+        SELECT event_type, rank, start_time, end_time
+        FROM events_trainer
+        WHERE run_id = ?
+            AND start_time IS NOT NULL AND end_time IS NOT NULL
+            AND event_type NOT LIKE '%/%'
+        ORDER BY start_time ASC
+        """,
+        [req.run_path],
+    ).fetchall()
+
+    # Step times (for vertical lines / first_time)
+    step_rows = con.execute(
+        """
+        SELECT step, MAX(end_time) as last_time
+        FROM events_trainer
+        WHERE run_id = ? AND step >= 0
+        GROUP BY step
+        ORDER BY step ASC
+        """,
+        [req.run_path],
+    ).fetchall()
+
+    con.close()
+
+    if not events:
+        return {"buckets": [], "first_time": None, "step_times": [], "event_types": []}
+
+    # Collect unique ranks and event types
+    all_ranks = set()
+    all_event_types = set()
+    for evt_type, rank, _start, _end in events:
+        all_ranks.add(rank)
+        all_event_types.add(evt_type)
+    num_ranks = len(all_ranks)
+
+    # Accumulate overlap seconds: bucket_data[bucket_start][(rank, event_type)] = seconds
+    bucket_data: dict[float, dict[tuple, float]] = defaultdict(lambda: defaultdict(float))
+
+    for evt_type, rank, start_time, end_time in events:
+        first_b = math.floor(start_time / bucket) * bucket
+        last_b = math.floor(end_time / bucket) * bucket
+
+        b = first_b
+        while b <= last_b:
+            b_end = b + bucket
+            overlap = min(end_time, b_end) - max(start_time, b)
+            if overlap > 0:
+                bucket_data[b][(rank, evt_type)] += overlap
+            b += bucket
+
+    # Build result: average across ranks, convert to percentages
+    result_buckets = []
+    for b_start in sorted(bucket_data.keys()):
+        entry: dict = {"time": b_start}
+
+        type_totals: dict[str, float] = defaultdict(float)
+        for (rank, evt_type), seconds in bucket_data[b_start].items():
+            type_totals[evt_type] += seconds / num_ranks
+
+        total_busy = 0.0
+        weight_sync_pct = 0.0
+        for evt_type, avg_seconds in type_totals.items():
+            pct = avg_seconds / bucket * 100
+            entry[evt_type] = round(pct, 4)
+            total_busy += pct
+            if evt_type == "weight_broadcast":
+                weight_sync_pct = pct
+
+        entry["working"] = round(min(100, total_busy), 4)
+        entry["idle"] = round(max(0, 100 - total_busy), 4)
+        entry["working_except_weight_sync"] = round(max(0, total_busy - weight_sync_pct), 4)
+        entry["training"] = round(max(0, total_busy - weight_sync_pct), 4)
+
+        result_buckets.append(entry)
+
+    # First time
+    first_time = sorted(bucket_data.keys())[0] if bucket_data else None
+    if step_rows:
+        t = step_rows[0][1]
+        if t is not None and (first_time is None or t < first_time):
+            first_time = t
+
+    return {
+        "buckets": result_buckets,
+        "first_time": first_time,
+        "step_times": [
+            {"step": row[0], "time": row[1]}
+            for row in step_rows
+            if row[1] is not None
+        ],
+        "event_types": sorted(all_event_types),
     }
 
 

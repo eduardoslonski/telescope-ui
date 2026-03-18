@@ -667,6 +667,25 @@ export interface InferencePerformanceResponse {
 }
 
 // ============================================================================
+// Trainer Performance Types
+// ============================================================================
+
+export interface TrainerPerformanceBucket {
+  time: number
+  idle: number
+  working: number
+  working_except_weight_sync: number
+  [event_type: string]: number
+}
+
+export interface TrainerPerformanceResponse {
+  buckets: TrainerPerformanceBucket[]
+  event_types: string[]
+  first_time: number | null
+  step_times: StepTime[]
+}
+
+// ============================================================================
 // Step Histogram Types
 // ============================================================================
 
@@ -746,10 +765,12 @@ export interface CustomPlotItem {
   id: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   inferenceMetricType?: string
+  trainerMetricType?: string
+  trainerAreaCategories?: string[]
 }
 
 export interface CustomGroup {
