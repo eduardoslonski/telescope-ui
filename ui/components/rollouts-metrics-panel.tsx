@@ -1212,12 +1212,12 @@ export function RolloutsMetricsPanel({
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
                             <InferencePerformanceChartCard
-                              runPath={selectedRunPath}
+                              runs={runsToDisplay}
                               shouldPoll={shouldPoll}
+                              hoveredRunId={hoveredRunId}
                               scrollRoot={scrollRoot}
                               inferenceMetricType={config.inferenceMetricType!}
                               label={chartLabel}
-                              onRemove={() => handleRemoveMetricAt(originalIndex)}
                               headerPrefix={dragHandle}
                             />
                           )}

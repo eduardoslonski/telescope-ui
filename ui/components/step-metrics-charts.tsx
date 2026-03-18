@@ -1209,6 +1209,46 @@ export function StepMetricsCharts({
                 />
               </div>
             </div>
+            {/* Off-Policy Steps */}
+            <div>
+              <h4 className="text-sm font-semibold text-muted-foreground mb-3">
+                Off-Policy Steps
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="off_policy_steps_mean"
+                  label="Off-Policy Steps (Mean)"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="off_policy_steps_std"
+                  label="Off-Policy Steps (Std)"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                {(() => {
+                  const selectedRun = runs.find((r) => r.isSelected) ?? runs[0]
+                  return selectedRun ? (
+                    <DistributionOverTimeChart
+                      runPath={selectedRun.runPath}
+                      metricType="off_policy_steps"
+                      label="Off-Policy Steps (Dist. Over Time)"
+                      shouldPoll={shouldPoll}
+                      scrollRoot={scrollRoot}
+                    />
+                  ) : null
+                })()}
+              </div>
+            </div>
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -1356,6 +1396,47 @@ export function StepMetricsCharts({
                   hoveredRunId={hoveredRunId}
                   {...axisProps}
                 />
+              </div>
+            </div>
+
+            {/* Discarded Off-Policy Steps */}
+            <div>
+              <h4 className="text-sm font-semibold text-muted-foreground mb-3">
+                Off-Policy Steps
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="discarded_off_policy_steps_mean"
+                  label="Off-Policy Steps (Mean)"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                <MetricChart
+                  runs={runs}
+                  shouldPoll={shouldPoll}
+                  metricName="discarded_off_policy_steps_std"
+                  label="Off-Policy Steps (Std)"
+                  showEma={showEma}
+                  emaSpan={emaSpan}
+                  hoveredRunId={hoveredRunId}
+                  {...axisProps}
+                />
+                {(() => {
+                  const selectedRun = runs.find((r) => r.isSelected) ?? runs[0]
+                  return selectedRun ? (
+                    <DistributionOverTimeChart
+                      runPath={selectedRun.runPath}
+                      metricType="discarded_off_policy_steps"
+                      label="Off-Policy Steps (Dist. Over Time)"
+                      shouldPoll={shouldPoll}
+                      scrollRoot={scrollRoot}
+                    />
+                  ) : null
+                })()}
               </div>
             </div>
 
@@ -1821,8 +1902,9 @@ export function StepMetricsCharts({
           <div className="mt-3 mb-4">
             {runs[0] && (
               <InferencePerformanceSection
-                runPath={runs.find((r) => r.isSelected)?.runPath ?? runs[0].runPath}
+                runs={runs}
                 shouldPoll={shouldPoll}
+                hoveredRunId={hoveredRunId}
                 scrollRoot={scrollRoot}
               />
             )}
@@ -4832,7 +4914,7 @@ export function MetricChart({
 }
 
 // ============================================================================
-// Inference Performance Bar Chart - time-based bar chart with step lines
+// Inference Performance Metric Chart - multi-run line chart matching MetricChart style
 // ============================================================================
 
 /**
@@ -4859,97 +4941,210 @@ function parseDuration(input: string): number | null {
   return null
 }
 
-interface InferencePerformanceBarChartProps {
-  data: { time: number; count: number }[]
-  stepTimes: { step: number; time: number }[]
-  firstTime: number | null
-  bucketSeconds: number
-  label: string
-  color: string
-  showSteps: boolean
-  scrollRoot?: Element | null
+const INFERENCE_AVG_METRICS = new Set([
+  "avg_time_prefill",
+  "avg_time_decode",
+  "avg_time_compute_reward",
+  "avg_time_queue",
+  "avg_time_ttft",
+  "avg_time_inference",
+  "avg_time_e2e",
+  "avg_time_generation",
+])
+
+interface InferencePerformanceMetricChartProps {
+  runs: RunInfo[]
   shouldPoll: boolean
-  isFetching: boolean
-  isRefetching: boolean
-  onShowStepsChange: (v: boolean) => void
-  intervalInput: string
-  onIntervalInputChange: (v: string) => void
-  onIntervalCommit: (v: string) => void
+  inferenceMetricType: string
+  label: string
+  hoveredRunId?: string | null
+  scrollRoot?: Element | null
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
-  onRemove?: () => void
 }
 
-function InferencePerformanceBarChart({
-  data,
-  stepTimes,
-  firstTime,
-  bucketSeconds,
+function InferencePerformanceMetricChart({
+  runs,
+  shouldPoll,
+  inferenceMetricType,
   label,
-  color,
-  showSteps,
+  hoveredRunId = null,
   scrollRoot = null,
-  isFetching,
-  isRefetching,
-  onShowStepsChange,
-  intervalInput,
-  onIntervalInputChange,
-  onIntervalCommit,
   headerPrefix,
   headerSuffix,
-  onRemove,
-}: InferencePerformanceBarChartProps) {
+}: InferencePerformanceMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
 
+  const [ignoreOutliers, setIgnoreOutliers] = useState(false)
+  const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+
+  const [bucketSeconds, setBucketSeconds] = useState(60)
+  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+
+  const handleIntervalCommit = useCallback(
+    (value: string) => {
+      const parsed = parseDuration(value)
+      if (parsed !== null && parsed >= 1) {
+        setBucketSeconds(parsed)
+        setIntervalInput(formatDurationHms(parsed))
+      } else {
+        setIntervalInput(formatDurationHms(bucketSeconds))
+      }
+    },
+    [bucketSeconds],
+  )
+
   const isVisible = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
 
-  const hasData = data.length > 0 && firstTime !== null
+  const isAvgMetric = INFERENCE_AVG_METRICS.has(inferenceMetricType)
 
-  // Build uPlot data with relative time, filling in zero-count buckets
-  const { uplotData, relativeStepTimes } = useMemo(() => {
-    if (!hasData || firstTime === null) {
-      return { uplotData: null, relativeStepTimes: [] }
+  // Sort runs: non-selected first, selected last (drawn on top)
+  const sortedRuns = useMemo(() => {
+    const nonSelected = runs.filter((r) => !r.isSelected)
+    const selected = runs.filter((r) => r.isSelected)
+    return [...nonSelected, ...selected]
+  }, [runs])
+  const plottedRuns = useMemo(() => sortedRuns.slice(0, 20), [sortedRuns])
+
+  // Fetch data for each run individually (each keyed by runPath+bucketSeconds so react-query caches them)
+  const infPerf0 = useInferencePerformance(plottedRuns[0]?.runPath ?? "", isVisible && !!plottedRuns[0], shouldPoll, bucketSeconds)
+  const infPerf1 = useInferencePerformance(plottedRuns[1]?.runPath ?? "", isVisible && !!plottedRuns[1], shouldPoll, bucketSeconds)
+  const infPerf2 = useInferencePerformance(plottedRuns[2]?.runPath ?? "", isVisible && !!plottedRuns[2], shouldPoll, bucketSeconds)
+  const infPerf3 = useInferencePerformance(plottedRuns[3]?.runPath ?? "", isVisible && !!plottedRuns[3], shouldPoll, bucketSeconds)
+  const infPerf4 = useInferencePerformance(plottedRuns[4]?.runPath ?? "", isVisible && !!plottedRuns[4], shouldPoll, bucketSeconds)
+  const infPerf5 = useInferencePerformance(plottedRuns[5]?.runPath ?? "", isVisible && !!plottedRuns[5], shouldPoll, bucketSeconds)
+  const infPerf6 = useInferencePerformance(plottedRuns[6]?.runPath ?? "", isVisible && !!plottedRuns[6], shouldPoll, bucketSeconds)
+  const infPerf7 = useInferencePerformance(plottedRuns[7]?.runPath ?? "", isVisible && !!plottedRuns[7], shouldPoll, bucketSeconds)
+  const infPerf8 = useInferencePerformance(plottedRuns[8]?.runPath ?? "", isVisible && !!plottedRuns[8], shouldPoll, bucketSeconds)
+  const infPerf9 = useInferencePerformance(plottedRuns[9]?.runPath ?? "", isVisible && !!plottedRuns[9], shouldPoll, bucketSeconds)
+
+  const queries = useMemo(
+    () => [infPerf0, infPerf1, infPerf2, infPerf3, infPerf4, infPerf5, infPerf6, infPerf7, infPerf8, infPerf9],
+    [infPerf0, infPerf1, infPerf2, infPerf3, infPerf4, infPerf5, infPerf6, infPerf7, infPerf8, infPerf9],
+  )
+
+  const isFetching = queries.some((q, i) => i < plottedRuns.length && q.isFetching)
+  const isRefetching = isFetching && queries.filter((q, i) => i < plottedRuns.length && q.isFetching).every((q) => !!q.data)
+
+  // Build uPlot data with one series per run
+  // Each run's times are made relative to that run's own first_time so runs align by elapsed time
+  const { uplotData, seriesConfig, hasData, outlierBounds } = useMemo(() => {
+    // For each run, compute relative-time -> value map using the run's own first_time
+    const runRelData: Map<number, Map<number, number>> = new Map()
+    const relTimeSet = new Set<number>()
+    let anyData = false
+
+    plottedRuns.forEach((_, idx) => {
+      if (idx >= 10) return
+      const data = queries[idx].data
+      if (!data || data.first_time === null) return
+      const runFirstTime = data.first_time
+      const buckets = (data as unknown as Record<string, unknown>)[inferenceMetricType] as
+        | Array<{ time: number; count?: number; value?: number }>
+        | undefined
+      if (!buckets || buckets.length === 0) return
+
+      // Compute the first step completion time (relative) for this run
+      let firstStepRelTime: number | null = null
+      if (ignoreFirstStep) {
+        const stepTimes = data.step_times ?? []
+        if (stepTimes.length > 0) {
+          // First step_time entry is the earliest step completion
+          firstStepRelTime = stepTimes[0].time - runFirstTime
+        }
+      }
+
+      anyData = true
+      const valueByRelTime = new Map<number, number>()
+      buckets.forEach((b) => {
+        const val = isAvgMetric ? b.value : b.count
+        if (val !== undefined && val !== null) {
+          const relTime = b.time - runFirstTime
+          // Skip buckets before first step completes
+          if (ignoreFirstStep && firstStepRelTime !== null && relTime < firstStepRelTime) return
+          valueByRelTime.set(relTime, val)
+          relTimeSet.add(relTime)
+        }
+      })
+      runRelData.set(idx, valueByRelTime)
+    })
+
+    if (!anyData || relTimeSet.size === 0) {
+      return { uplotData: null, seriesConfig: [], hasData: false, outlierBounds: null }
     }
 
-    // Build a map of relative-time -> count from the sparse data
-    const countByTime = new Map<number, number>()
-    let maxRelTime = 0
-    for (let i = 0; i < data.length; i++) {
-      const rel = data[i].time - firstTime
-      countByTime.set(rel, data[i].count)
-      if (rel > maxRelTime) maxRelTime = rel
+    // Compute outlier bounds across all runs if enabled
+    let bounds: { lower: number; upper: number } | null = null
+    if (ignoreOutliers) {
+      const allValues: number[] = []
+      runRelData.forEach((valueMap) => {
+        valueMap.forEach((v) => allValues.push(v))
+      })
+      bounds = computeIQRBounds(allValues)
     }
 
-    // Generate all buckets from 0 to maxRelTime, filling gaps with 0
-    const numBuckets = Math.floor(maxRelTime / bucketSeconds) + 1
-    const xValues = new Float64Array(numBuckets)
-    const yValues = new Float64Array(numBuckets)
+    const sortedRelTimes = Array.from(relTimeSet).sort((a, b) => a - b)
+    const xData = new Float64Array(sortedRelTimes)
 
-    for (let i = 0; i < numBuckets; i++) {
-      const t = i * bucketSeconds
-      xValues[i] = t
-      yValues[i] = countByTime.get(t) ?? 0
-    }
+    const series: uPlot.Series[] = [{ label: "Time (s)" }]
+    const dataArrays: (Float64Array | (number | null)[])[] = [xData]
 
-    const relStepTimes = stepTimes
-      .filter((st) => st.time !== null)
-      .map((st) => ({
-        step: st.step,
-        relativeTime: st.time - firstTime,
-      }))
+    plottedRuns.forEach((run, idx) => {
+      if (idx >= 10) return
+      const valueByRelTime = runRelData.get(idx)
+
+      const values: (number | null)[] = sortedRelTimes.map((t) =>
+        valueByRelTime?.get(t) ?? null,
+      )
+
+      const isHovered = hoveredRunId === run.runPath
+      const someRunIsHovered = hoveredRunId !== null
+      const valueAlpha = someRunIsHovered && !isHovered ? 0.1 : 1
+
+      dataArrays.push(values)
+      series.push({
+        label: getRunDisplayName(run),
+        stroke: run.color,
+        width: 1,
+        alpha: valueAlpha,
+        spanGaps: true,
+        points: { show: false },
+      })
+    })
 
     return {
-      uplotData: [xValues, yValues] as uPlot.AlignedData,
-      relativeStepTimes: relStepTimes,
+      uplotData: dataArrays as uPlot.AlignedData,
+      seriesConfig: series,
+      hasData: true,
+      outlierBounds: bounds,
     }
-  }, [data, stepTimes, firstTime, hasData, bucketSeconds])
+  }, [plottedRuns, queries, inferenceMetricType, hoveredRunId, isAvgMetric, ignoreOutliers, ignoreFirstStep])
+
+  const formatValue = useCallback(
+    (v: number | null | undefined): string => {
+      if (v === undefined || v === null) return "N/A"
+      if (isAvgMetric) return formatSecondsTooltipHtml(v)
+      return formatValueSmart(v)
+    },
+    [isAvgMetric],
+  )
+
+  const formatYAxisTick = useCallback(
+    (v: number): string => {
+      if (isAvgMetric) return formatSecondsCompact(v)
+      if (Math.abs(v) >= 1000) return `${parseFloat((v / 1000).toFixed(1))}k`
+      if (Number.isInteger(v)) return v.toLocaleString()
+      return String(parseFloat(v.toFixed(2)))
+    },
+    [isAvgMetric],
+  )
 
   useEffect(() => {
     if (!containerRef.current || !uplotData || !hasData || !isVisible) return
@@ -4958,26 +5153,40 @@ function InferencePerformanceBarChart({
     const width = container.clientWidth
     const height = container.clientHeight || 192
 
-    let maxVal = 0
-    const yData = uplotData[1]
-    for (let i = 0; i < yData.length; i++) {
-      const v = yData[i]
-      if (v !== null && v !== undefined && v > maxVal) maxVal = v
+    let minVal = Infinity
+    let maxVal = -Infinity
+    for (let i = 1; i < uplotData.length; i++) {
+      const arr = uplotData[i]
+      for (let j = 0; j < arr.length; j++) {
+        const v = arr[j]
+        if (v !== null && v !== undefined && Number.isFinite(v)) {
+          if (ignoreOutliers && outlierBounds) {
+            if (v >= outlierBounds.lower && v <= outlierBounds.upper) {
+              if (v < minVal) minVal = v
+              if (v > maxVal) maxVal = v
+            }
+          } else {
+            if (v < minVal) minVal = v
+            if (v > maxVal) maxVal = v
+          }
+        }
+      }
     }
+    if (minVal === Infinity && outlierBounds) {
+      minVal = outlierBounds.lower
+      maxVal = outlierBounds.upper
+    }
+    if (minVal === Infinity) { minVal = 0; maxVal = 1 }
 
-    const padding = Math.max(maxVal * 0.1, 1)
-    const yMin = 0
+    const range = maxVal - minVal
+    const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal))
+    const minPadding = Math.max(absMax * 0.05, 1e-10)
+    const padding = Math.max(range * 0.1, minPadding)
+    const yMin = minVal - padding
     const yMax = maxVal + padding
 
-    const gridColor = darkMode
-      ? "rgba(255, 255, 255, 0.1)"
-      : "rgba(128, 128, 128, 0.15)"
-    const tickLabelColor = darkMode
-      ? "rgba(255, 255, 255, 0.65)"
-      : "rgba(100, 100, 100, 0.9)"
-    const stepLineColor = darkMode
-      ? "rgba(255, 255, 255, 0.25)"
-      : "rgba(0, 0, 0, 0.2)"
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
 
     const calcYAxisSize = (_u: uPlot, values: string[]) => {
       if (!values || values.length === 0) return 40
@@ -4985,21 +5194,13 @@ function InferencePerformanceBarChart({
       return Math.max(40, maxLen * 7 + 14)
     }
 
-    const drawStepLines = showSteps
-
     const opts: uPlot.Options = {
       width,
       height,
       padding: [4, 8, 0, 0],
       cursor: { show: true, x: true, y: false, points: { show: false } },
       legend: { show: false },
-      scales: {
-        x: {
-          time: false,
-          range: (u, dataMin, dataMax) => [dataMin, dataMax + bucketSeconds],
-        },
-        y: { range: [yMin, yMax] },
-      },
+      scales: { x: { time: false }, y: { range: [yMin, yMax] } },
       axes: [
         {
           stroke: tickLabelColor,
@@ -5017,209 +5218,93 @@ function InferencePerformanceBarChart({
           font: "10px system-ui, sans-serif",
           labelFont: "10px system-ui, sans-serif",
           size: calcYAxisSize,
-          values: (_u, vals) =>
-            vals.map((v) => {
-              if (Math.abs(v) >= 1000)
-                return `${parseFloat((v / 1000).toFixed(1))}k`
-              if (Number.isInteger(v)) return v.toLocaleString()
-              return String(parseFloat(v.toFixed(1)))
-            }),
+          values: (_u, vals) => vals.map(formatYAxisTick),
         },
       ],
-      series: [
-        { label: "Time" },
-        {
-          label: label,
-          stroke: darkMode ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.2)",
-          fill: color,
-          width: 1,
-          points: { show: false },
-          paths: (u, seriesIdx, idx0, idx1) => {
-            const xData = u.data[0]
-            const yData = u.data[seriesIdx]
-            const yScale = u.scales.y
-
-            const stroke = new Path2D()
-            const fill = new Path2D()
-
-            for (let i = idx0; i <= idx1; i++) {
-              const xVal = Number(xData[i])
-              const yVal = Number(yData[i])
-              if (
-                yVal === null ||
-                yVal === undefined ||
-                !Number.isFinite(yVal)
-              )
-                continue
-
-              // Bar spans [xVal, xVal + bucketSeconds] in data coords
-              const leftPx = u.valToPos(xVal, "x", true)
-              const rightPx = u.valToPos(xVal + bucketSeconds, "x", true)
-              const cy = u.valToPos(yVal, "y", true)
-              const base = u.valToPos(
-                Math.max(0, yScale.min!),
-                "y",
-                true,
-              )
-              const barH = base - cy
-              const barW = rightPx - leftPx
-
-              fill.rect(leftPx, cy, barW, barH)
-              stroke.rect(leftPx, cy, barW, barH)
-            }
-
-            return { stroke, fill }
-          },
-        },
-      ],
+      series: seriesConfig,
       hooks: {
-        // drawAxes fires before series are drawn, so step lines render behind bars
-        drawAxes: [
+        draw: [
           (u) => {
-            if (!drawStepLines) return
+            if (!uplotData) return
             const ctx = u.ctx
             ctx.save()
-            ctx.strokeStyle = stepLineColor
-            ctx.lineWidth = 1 * devicePixelRatio
-
-            const xScale = u.scales.x
-            const plotTop = u.bbox.top
-            const plotBottom = u.bbox.top + u.bbox.height
-
-            for (const st of relativeStepTimes) {
-              if (
-                st.relativeTime < xScale.min! ||
-                st.relativeTime > xScale.max!
-              )
-                continue
-              const x = u.valToPos(st.relativeTime, "x", true)
+            for (let seriesIdx = 1; seriesIdx < u.series.length; seriesIdx++) {
+              const yData = uplotData[seriesIdx] as (number | null | undefined)[] | undefined
+              if (!yData) continue
+              let lastIndex = -1
+              for (let i = yData.length - 1; i >= 0; i--) {
+                if (yData[i] !== null && yData[i] !== undefined) { lastIndex = i; break }
+              }
+              if (lastIndex === -1) continue
+              const xVal = uplotData[0][lastIndex]
+              const yVal = yData[lastIndex]
+              if (xVal === undefined || yVal === undefined || yVal === null) continue
+              const x = u.valToPos(Number(xVal), "x", true)
+              const y = u.valToPos(Number(yVal), "y", true)
+              if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+              const series = u.series[seriesIdx]
+              const alpha = typeof series?.alpha === "number" ? series.alpha : 1
+              const stroke = typeof series?.stroke === "string" ? series.stroke : sortedRuns[seriesIdx - 1]?.color
+              if (!stroke) continue
+              ctx.globalAlpha = alpha
+              ctx.fillStyle = stroke
               ctx.beginPath()
-              ctx.moveTo(x, plotTop)
-              ctx.lineTo(x, plotBottom)
-              ctx.stroke()
+              ctx.arc(x, y, 4, 0, Math.PI * 2)
+              ctx.fill()
             }
-
             ctx.restore()
           },
         ],
         setCursor: [
           (u) => {
             if (!tooltipRef.current || !uplotData) return
-            const { left, top } = u.cursor
-
-            if (
-              left === undefined ||
-              top === undefined ||
-              left < 0
-            ) {
+            const { left, top, idx } = u.cursor
+            if (idx === null || idx === undefined || left === undefined || top === undefined || left < 0) {
               tooltipRef.current.style.display = "none"
               return
             }
+            const xValue = uplotData[0][idx]
+            if (xValue === undefined) { tooltipRef.current.style.display = "none"; return }
 
-            // Find which bar the cursor's x-position falls within
-            const cursorDataX = u.posToVal(left, "x")
-            let hoveredBarIdx: number | null = null
-            for (let i = 0; i < uplotData[0].length; i++) {
-              const xVal = Number(uplotData[0][i])
-              if (cursorDataX >= xVal && cursorDataX < xVal + bucketSeconds) {
-                hoveredBarIdx = i
-                break
-              }
-            }
+            const headerLabel = `Time ${formatDurationHms(Number(xValue))}`
+            let html = `<div class="font-medium mb-1">${headerLabel}</div>`
 
-            // Check if cursor is visually inside any bar (by x AND y position)
-            let isInsideBar = false
-            if (hoveredBarIdx !== null) {
-              const yVal = Number(uplotData[1][hoveredBarIdx])
-              if (Number.isFinite(yVal) && yVal > 0) {
-                const barTopPx = u.valToPos(yVal, "y", true)
-                const basePx = u.valToPos(0, "y", true)
-                const cursorCanvasY = u.bbox.top + top * devicePixelRatio
-                if (cursorCanvasY >= barTopPx && cursorCanvasY <= basePx) {
-                  isInsideBar = true
-                }
-              }
-            }
+            runs.forEach((run) => {
+              const runIdx = plottedRuns.findIndex((r) => r.runPath === run.runPath)
+              if (runIdx === -1) return
+              const valueIdx = runIdx + 1
+              const valueSeries = uplotData[valueIdx] as (number | null | undefined)[] | undefined
+              if (!valueSeries) return
+              const value = valueSeries[idx]
+              if (value === null || value === undefined) return
 
-            // Only check step lines if cursor is above the bar (or no bar)
-            let hoveredStepLine: { step: number; relativeTime: number } | null = null
-            if (drawStepLines && !isInsideBar) {
-              const STEP_LINE_HIT_PX = 6
-              for (const st of relativeStepTimes) {
-                const xScale = u.scales.x
-                if (
-                  st.relativeTime < xScale.min! ||
-                  st.relativeTime > xScale.max!
-                )
-                  continue
-                const lineX = u.valToPos(st.relativeTime, "x")
-                if (Math.abs(lineX - left) <= STEP_LINE_HIT_PX) {
-                  hoveredStepLine = st
-                  break
-                }
-              }
-            }
-
-            if (hoveredStepLine) {
-              // Show step tooltip when hovering on a step line
-              const timeLabel = formatSecondsCompact(hoveredStepLine.relativeTime)
-              tooltipRef.current.innerHTML = `
-                <div class="font-medium">Step ${hoveredStepLine.step.toLocaleString()}</div>
-                <div class="text-muted-foreground">${timeLabel}</div>
-              `
-              tooltipRef.current.style.display = "block"
-            } else if (hoveredBarIdx !== null) {
-              // Show bar data tooltip with interval range
-              const xValue = uplotData[0][hoveredBarIdx]
-              const yValue = uplotData[1][hoveredBarIdx]
-
-              const bucketStart = Number(xValue)
-              const bucketEnd = bucketStart + bucketSeconds
-              const rangeLabel = `${formatSecondsCompact(bucketStart)} — ${formatSecondsCompact(bucketEnd)}`
-              const countStr =
-                yValue !== null && yValue !== undefined
-                  ? Math.round(Number(yValue)).toLocaleString()
-                  : "N/A"
-
-              tooltipRef.current.innerHTML = `
-                <div class="font-medium mb-1">${rangeLabel}</div>
-                <div class="flex items-center gap-2">
-                  <div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${color}"></div>
-                  <span>${escapeHtml(label)}: <span class="font-medium">${countStr}</span></span>
+              html += `
+                <div class="mt-1">
+                  <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${run.color}"></div>
+                    <span>${formatRunLabelHtml(run)}</span>
+                  </div>
+                  <div class="ml-4 flex items-center gap-2">
+                    <span class="font-medium">${formatValue(value)}</span>
+                  </div>
                 </div>
               `
-              tooltipRef.current.style.display = "block"
-            } else {
-              tooltipRef.current.style.display = "none"
-              return
-            }
+            })
 
-            // Detect fixed positioning offset (backdrop-filter ancestors shift the coordinate system)
-            tooltipRef.current.style.left = "0px"
-            tooltipRef.current.style.top = "0px"
-            const fixedOrigin = tooltipRef.current.getBoundingClientRect()
+            tooltipRef.current.innerHTML = html
+            tooltipRef.current.style.display = "block"
 
-            const containerRect =
-              containerRef.current!.getBoundingClientRect()
-
+            const containerRect = containerRef.current!.getBoundingClientRect()
+            const tooltipRect = tooltipRef.current.getBoundingClientRect()
             let tooltipX = containerRect.left + left + 15
-            if (tooltipX + fixedOrigin.width + 20 > window.innerWidth) {
-              tooltipX =
-                containerRect.left +
-                left -
-                fixedOrigin.width -
-                15 +
-                u.bbox.left
+            if (tooltipX + tooltipRect.width + 20 > window.innerWidth) {
+              tooltipX = containerRect.left + left - tooltipRect.width - 15 + u.bbox.left
             }
             tooltipX = Math.max(4, tooltipX)
-
-            let tooltipY = containerRect.top - fixedOrigin.height + 20
-            if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
-            }
-
-            tooltipRef.current.style.left = `${tooltipX - fixedOrigin.left}px`
-            tooltipRef.current.style.top = `${tooltipY - fixedOrigin.top}px`
+            let tooltipY = containerRect.top - tooltipRect.height + 20
+            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            tooltipRef.current.style.left = `${tooltipX}px`
+            tooltipRef.current.style.top = `${tooltipY}px`
           },
         ],
       },
@@ -5246,14 +5331,19 @@ function InferencePerformanceBarChart({
     }
   }, [
     uplotData,
+    seriesConfig,
     hasData,
     isVisible,
-    relativeStepTimes,
-    showSteps,
-    bucketSeconds,
-    label,
-    color,
+    ignoreOutliers,
+    outlierBounds,
     darkMode,
+    sortedRuns,
+    runs,
+    plottedRuns,
+    hoveredRunId,
+    formatValue,
+    formatYAxisTick,
+    bucketSeconds,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -5272,10 +5362,10 @@ function InferencePerformanceBarChart({
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1 min-w-0">
+          <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words min-w-0"
+              className="text-xs font-medium leading-snug line-clamp-2 break-words"
               title={label}
             >
               {label}
@@ -5290,10 +5380,16 @@ function InferencePerformanceBarChart({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[160px]">
                 <DropdownMenuCheckboxItem
-                  checked={showSteps}
-                  onCheckedChange={onShowStepsChange}
+                  checked={ignoreOutliers}
+                  onCheckedChange={setIgnoreOutliers}
                 >
-                  Show Steps
+                  Ignore Outliers
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={ignoreFirstStep}
+                  onCheckedChange={setIgnoreFirstStep}
+                >
+                  Ignore First Step
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
@@ -5303,11 +5399,11 @@ function InferencePerformanceBarChart({
                     className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
                     placeholder="1m"
                     value={intervalInput}
-                    onChange={(e) => onIntervalInputChange(e.target.value)}
-                    onBlur={(e) => onIntervalCommit(e.target.value)}
+                    onChange={(e) => setIntervalInput(e.target.value)}
+                    onBlur={(e) => handleIntervalCommit(e.target.value)}
                     onKeyDown={(e) => {
                       e.stopPropagation()
-                      if (e.key === "Enter") onIntervalCommit(e.currentTarget.value)
+                      if (e.key === "Enter") handleIntervalCommit(e.currentTarget.value)
                     }}
                     onClick={(e) => e.stopPropagation()}
                   />
@@ -5315,22 +5411,20 @@ function InferencePerformanceBarChart({
               </DropdownMenuContent>
             </DropdownMenu>
             {headerSuffix}
-            {onRemove && (
-              <button
-                onClick={onRemove}
-                className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/chart:opacity-100 transition-opacity"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
           </div>
         </div>
-        {(!showSteps) && (
+        {(ignoreOutliers || ignoreFirstStep) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {!showSteps && (
+            {ignoreOutliers && (
               <FilterBadge
-                label="Steps Hidden"
-                onRemove={() => onShowStepsChange(true)}
+                label="Ignoring Outliers"
+                onRemove={() => setIgnoreOutliers(false)}
+              />
+            )}
+            {ignoreFirstStep && (
+              <FilterBadge
+                label="Ignoring First Step"
+                onRemove={() => setIgnoreFirstStep(false)}
               />
             )}
           </div>
@@ -5365,113 +5459,41 @@ function InferencePerformanceBarChart({
 // ============================================================================
 
 interface InferencePerformanceSectionProps {
-  runPath: string
+  runs: RunInfo[]
   shouldPoll: boolean
+  hoveredRunId?: string | null
   scrollRoot?: Element | null
 }
 
 export function InferencePerformanceSection({
-  runPath,
+  runs,
   shouldPoll,
+  hoveredRunId = null,
   scrollRoot = null,
 }: InferencePerformanceSectionProps) {
-  const visibilityRef = useRef<HTMLDivElement>(null)
-  const isVisible = useOnScreen(visibilityRef, {
-    root: scrollRoot,
-    threshold: 0,
-  })
-
-  const [showSteps, setShowSteps] = useState(true)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(
-    formatDurationHms(60),
-  )
-
-  const handleIntervalCommit = useCallback(
-    (value: string) => {
-      const parsed = parseDuration(value)
-      if (parsed !== null && parsed >= 1) {
-        setBucketSeconds(parsed)
-        setIntervalInput(formatDurationHms(parsed))
-      } else {
-        setIntervalInput(formatDurationHms(bucketSeconds))
-      }
-    },
-    [bucketSeconds],
-  )
-
-  const { data, isFetching } = useInferencePerformance(
-    runPath,
-    isVisible && !!runPath,
-    shouldPoll,
-    bucketSeconds,
-  )
-
-  const inferenceCallsData = data?.inference_calls ?? []
-  const requestsDoneData = data?.requests_done ?? []
-  const rolloutsGroupDoneData = data?.rollouts_group_done ?? []
-  const rolloutsGroupDoneKeptData = data?.rollouts_group_done_kept ?? []
-  const rolloutsGroupDoneDiscardedData = data?.rollouts_group_done_discarded ?? []
-  const rolloutsGroupDoneCanceledData = data?.rollouts_group_done_canceled ?? []
-  const stepTimes = data?.step_times ?? []
-  const firstTime = data?.first_time ?? null
-  // Show loading if query is fetching OR if we haven't received data yet (query not started)
-  const isLoading = isFetching || !data
-
-  const sharedProps = {
-    stepTimes,
-    firstTime,
-    bucketSeconds,
-    showSteps,
-    scrollRoot,
-    shouldPoll,
-    isFetching: isLoading,
-    isRefetching: isFetching && !!data,
-    onShowStepsChange: setShowSteps,
-    intervalInput,
-    onIntervalInputChange: setIntervalInput,
-    onIntervalCommit: handleIntervalCommit,
-  }
+  const sharedProps = { runs, shouldPoll, hoveredRunId, scrollRoot }
 
   return (
-    <div ref={visibilityRef}>
+    <div>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-1">Requests Count</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <InferencePerformanceBarChart
-          data={inferenceCallsData}
-          label="Inference Calls"
-          color="#0284c7"
-          {...sharedProps}
-        />
-        <InferencePerformanceBarChart
-          data={requestsDoneData}
-          label="Requests Done"
-          color="#22c55e"
-          {...sharedProps}
-        />
-        <InferencePerformanceBarChart
-          data={rolloutsGroupDoneData}
-          label="Rollouts Group Done"
-          color="#f59e0b"
-          {...sharedProps}
-        />
-        <InferencePerformanceBarChart
-          data={rolloutsGroupDoneKeptData}
-          label="Rollouts Group Done Kept"
-          color="#10b981"
-          {...sharedProps}
-        />
-        <InferencePerformanceBarChart
-          data={rolloutsGroupDoneDiscardedData}
-          label="Rollouts Group Done Discarded"
-          color="#ef4444"
-          {...sharedProps}
-        />
-        <InferencePerformanceBarChart
-          data={rolloutsGroupDoneCanceledData}
-          label="Rollouts Group Done Canceled"
-          color="#8b5cf6"
-          {...sharedProps}
-        />
+        <InferencePerformanceMetricChart inferenceMetricType="inference_calls" label="Inference Calls" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="requests_done" label="Requests Done" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done" label="Rollouts Group Done" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_kept" label="Rollouts Group Done Kept" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_discarded" label="Rollouts Group Done Discarded" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_canceled" label="Rollouts Group Done Canceled" {...sharedProps} />
+      </div>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">Latency</h4>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_queue" label="Avg Queue Time" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_ttft" label="Avg Time to First Token" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_prefill" label="Avg Prefill Time" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_decode" label="Avg Decode Time" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_inference" label="Avg Inference Time" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_e2e" label="Avg E2E Latency" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_generation" label="Avg Generation Duration" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="avg_time_compute_reward" label="Avg Compute Reward Time" {...sharedProps} />
       </div>
     </div>
   )
@@ -5481,98 +5503,37 @@ export function InferencePerformanceSection({
 // Inference Performance Chart Card (standalone, for custom metrics view)
 // ============================================================================
 
-const INFERENCE_METRIC_COLORS: Record<string, string> = {
-  inference_calls: "#0284c7",
-  requests_done: "#22c55e",
-  rollouts_group_done: "#f59e0b",
-  rollouts_group_done_kept: "#10b981",
-  rollouts_group_done_discarded: "#ef4444",
-  rollouts_group_done_canceled: "#8b5cf6",
-}
-
 interface InferencePerformanceChartCardProps {
-  runPath: string
+  runs: RunInfo[]
   shouldPoll: boolean
+  hoveredRunId?: string | null
   scrollRoot?: Element | null
   inferenceMetricType: string
   label: string
   headerPrefix?: React.ReactNode
   headerSuffix?: React.ReactNode
-  onRemove?: () => void
 }
 
 export function InferencePerformanceChartCard({
-  runPath,
+  runs,
   shouldPoll,
+  hoveredRunId = null,
   scrollRoot = null,
   inferenceMetricType,
   label,
   headerPrefix,
   headerSuffix,
-  onRemove,
 }: InferencePerformanceChartCardProps) {
-  const visibilityRef = useRef<HTMLDivElement>(null)
-  const isVisible = useOnScreen(visibilityRef, {
-    root: scrollRoot,
-    threshold: 0,
-  })
-
-  const [showSteps, setShowSteps] = useState(true)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(
-    formatDurationHms(60),
-  )
-
-  const handleIntervalCommit = useCallback(
-    (value: string) => {
-      const parsed = parseDuration(value)
-      if (parsed !== null && parsed >= 1) {
-        setBucketSeconds(parsed)
-        setIntervalInput(formatDurationHms(parsed))
-      } else {
-        setIntervalInput(formatDurationHms(bucketSeconds))
-      }
-    },
-    [bucketSeconds],
-  )
-
-  const { data, isFetching } = useInferencePerformance(
-    runPath,
-    isVisible && !!runPath,
-    shouldPoll,
-    bucketSeconds,
-  )
-
-  const metricData = data
-    ? (data as unknown as Record<string, unknown>)[inferenceMetricType] as { time: number; count: number }[] ?? []
-    : []
-  const stepTimes = data?.step_times ?? []
-  const firstTime = data?.first_time ?? null
-  const isLoading = isFetching || !data
-  const color = INFERENCE_METRIC_COLORS[inferenceMetricType] ?? "#0284c7"
-
   return (
-    <div ref={visibilityRef}>
-      <InferencePerformanceBarChart
-        data={metricData}
-        stepTimes={stepTimes}
-        firstTime={firstTime}
-        bucketSeconds={bucketSeconds}
-        label={label}
-        color={color}
-        showSteps={showSteps}
-        scrollRoot={scrollRoot}
-        shouldPoll={shouldPoll}
-        isFetching={isLoading}
-        isRefetching={isFetching && !!data}
-        onShowStepsChange={setShowSteps}
-        intervalInput={intervalInput}
-        onIntervalInputChange={setIntervalInput}
-        onIntervalCommit={handleIntervalCommit}
-        headerPrefix={headerPrefix}
-        headerSuffix={headerSuffix}
-        onRemove={onRemove}
-      />
-    </div>
+    <InferencePerformanceMetricChart
+      runs={runs}
+      shouldPoll={shouldPoll}
+      hoveredRunId={hoveredRunId}
+      scrollRoot={scrollRoot}
+      inferenceMetricType={inferenceMetricType}
+      label={label}
+      headerPrefix={headerPrefix}
+      headerSuffix={headerSuffix}
+    />
   )
 }

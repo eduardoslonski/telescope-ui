@@ -281,6 +281,30 @@ export function buildPlotCatalog(
       simple: true,
     })
   }
+  catalog.push({
+    section: "Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "off_policy_steps_mean",
+    label: "Off-Policy Steps (Mean)",
+    plotType: "step_metric",
+    simple: true,
+  })
+  catalog.push({
+    section: "Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "off_policy_steps_std",
+    label: "Off-Policy Steps (Std)",
+    plotType: "step_metric",
+    simple: true,
+  })
+  catalog.push({
+    section: "Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "off_policy_steps_distribution_over_time",
+    label: "Off-Policy Steps Dist. Over Time",
+    plotType: "distribution_over_time",
+    distMetricType: "off_policy_steps",
+  })
 
   for (const m of [
     { key: "discarded_count", label: "Discarded Count" },
@@ -320,6 +344,30 @@ export function buildPlotCatalog(
       simple: true,
     })
   }
+  catalog.push({
+    section: "Discarded Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "discarded_off_policy_steps_mean",
+    label: "Off-Policy Steps (Mean)",
+    plotType: "step_metric",
+    simple: true,
+  })
+  catalog.push({
+    section: "Discarded Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "discarded_off_policy_steps_std",
+    label: "Off-Policy Steps (Std)",
+    plotType: "step_metric",
+    simple: true,
+  })
+  catalog.push({
+    section: "Discarded Rollouts",
+    group: "Off-Policy Steps",
+    metricKey: "discarded_off_policy_steps_distribution_over_time",
+    label: "Off-Policy Steps Dist. Over Time",
+    plotType: "distribution_over_time",
+    distMetricType: "discarded_off_policy_steps",
+  })
   catalog.push({
     section: "Discarded Rollouts",
     group: "Canceled",
@@ -464,7 +512,7 @@ export function buildPlotCatalog(
     })
   }
 
-  // Inference Performance
+  // Inference Performance - Requests Count
   for (const m of [
     { key: "inference_calls", label: "Inference Calls", inferenceMetricType: "inference_calls" },
     { key: "requests_done", label: "Requests Done", inferenceMetricType: "requests_done" },
@@ -475,6 +523,28 @@ export function buildPlotCatalog(
   ]) {
     catalog.push({
       section: "Inference Performance",
+      group: "Requests Count",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "inference_performance",
+      inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Inference Performance - Latency
+  for (const m of [
+    { key: "avg_time_queue", label: "Avg Queue Time", inferenceMetricType: "avg_time_queue" },
+    { key: "avg_time_ttft", label: "Avg Time to First Token", inferenceMetricType: "avg_time_ttft" },
+    { key: "avg_time_prefill", label: "Avg Prefill Time", inferenceMetricType: "avg_time_prefill" },
+    { key: "avg_time_decode", label: "Avg Decode Time", inferenceMetricType: "avg_time_decode" },
+    { key: "avg_time_inference", label: "Avg Inference Time", inferenceMetricType: "avg_time_inference" },
+    { key: "avg_time_e2e", label: "Avg E2E Latency", inferenceMetricType: "avg_time_e2e" },
+    { key: "avg_time_generation", label: "Avg Generation Duration", inferenceMetricType: "avg_time_generation" },
+    { key: "avg_time_compute_reward", label: "Avg Compute Reward Time", inferenceMetricType: "avg_time_compute_reward" },
+  ]) {
+    catalog.push({
+      section: "Inference Performance",
+      group: "Latency",
       metricKey: m.key,
       label: m.label,
       plotType: "inference_performance",
@@ -871,20 +941,16 @@ export function SortablePlotCard({
           ) : null
         })()
       ) : plot.plotType === "inference_performance" && plot.inferenceMetricType ? (
-        (() => {
-          const selectedRun = chartProps.runs.find((r) => r.isSelected) ?? chartProps.runs[0]
-          return selectedRun ? (
-            <InferencePerformanceChartCard
-              runPath={selectedRun.runPath}
-              shouldPoll={chartProps.shouldPoll}
-              scrollRoot={chartProps.scrollRoot}
-              inferenceMetricType={plot.inferenceMetricType!}
-              label={label}
-              headerPrefix={dragHandle}
-              headerSuffix={deleteButton}
-            />
-          ) : null
-        })()
+        <InferencePerformanceChartCard
+          runs={chartProps.runs}
+          shouldPoll={chartProps.shouldPoll}
+          hoveredRunId={chartProps.hoveredRunId}
+          scrollRoot={chartProps.scrollRoot}
+          inferenceMetricType={plot.inferenceMetricType!}
+          label={label}
+          headerPrefix={dragHandle}
+          headerSuffix={deleteButton}
+        />
       ) : plot.plotType === "eval_metric" && plot.evalName ? (
         <EvalMetricChart
           runs={chartProps.runs}
