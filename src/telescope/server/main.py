@@ -4610,7 +4610,25 @@ def get_step_metrics(req: StepMetricsRequest):
 
     gini_rows = con.execute(gini_query, params + tag_filter_params + env_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
-    
+
+    # Compute off-policy steps stats from events_inference table
+    # off_policy_steps = number of weight updates while rollout was in-flight
+    # Join with prompts to get the training step (events_inference.step may be NULL)
+    off_policy_query = f"""
+        SELECT
+            p.step,
+            AVG(ei.off_policy_steps) as off_policy_steps_mean,
+            STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
+        FROM events_inference ei
+        JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
+        WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
+            {step_filter.replace("step", "p.step")}
+        GROUP BY p.step
+        ORDER BY p.step ASC
+    """
+    off_policy_rows = con.execute(off_policy_query, params).fetchall()
+    off_policy_by_step = {row[0]: (row[1], row[2]) for row in off_policy_rows}
+
     # Base column names for samples_data-based metrics
     base_columns = [
         "step",
@@ -4721,7 +4739,24 @@ def get_step_metrics(req: StepMetricsRequest):
                         "metric_name": "reward_gini_mean",
                         "value": float(value),
                     })
-    
+
+    # Add off-policy steps metrics (from events_inference, independent of samples_data steps)
+    for step, (off_policy_mean, off_policy_std) in off_policy_by_step.items():
+        if metrics_to_include is None or "off_policy_steps_mean" in metrics_to_include:
+            if off_policy_mean is not None:
+                metrics.append({
+                    "step": step,
+                    "metric_name": "off_policy_steps_mean",
+                    "value": float(off_policy_mean),
+                })
+        if metrics_to_include is None or "off_policy_steps_std" in metrics_to_include:
+            if off_policy_std is not None:
+                metrics.append({
+                    "step": step,
+                    "metric_name": "off_policy_steps_std",
+                    "value": float(off_policy_std),
+                })
+
     # Compute metrics from rollouts_metrics table for each metric_name
     if available_rollout_metric_names:
         # Build step filter for rollout metrics
@@ -4835,6 +4870,7 @@ def get_step_metrics(req: StepMetricsRequest):
         "group_length_gini_mean",
     ])
     available_metrics.append("reward_gini_mean")  # Add reward Gini coefficient (sparsity)
+    available_metrics.extend(["off_policy_steps_mean", "off_policy_steps_std"])
     for metric_name in available_rollout_metric_names:
         available_metrics.extend([
             f"reward_{metric_name}_mean",
@@ -5297,6 +5333,32 @@ def get_step_metrics(req: StepMetricsRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
         discarded_gen_metric_names = set()
     
+    # Compute discarded off-policy steps (join events_inference with prompts_discarded)
+    try:
+        discarded_off_policy_query = f"""
+            SELECT
+                pd.trainer_step,
+                AVG(ei.off_policy_steps) as off_policy_steps_mean,
+                STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
+            FROM events_inference ei
+            JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
+            WHERE ei.run_id = ? AND ei.event_type = 'request'
+                AND ei.off_policy_steps IS NOT NULL {discarded_step_filter}
+            GROUP BY pd.trainer_step
+            ORDER BY pd.trainer_step ASC
+        """
+        discarded_off_policy_rows = con.execute(discarded_off_policy_query, discarded_params).fetchall()
+        for row in discarded_off_policy_rows:
+            step = row[0]
+            if metrics_to_include is None or "discarded_off_policy_steps_mean" in metrics_to_include:
+                if row[1] is not None:
+                    metrics.append({"step": step, "metric_name": "discarded_off_policy_steps_mean", "value": float(row[1])})
+            if metrics_to_include is None or "discarded_off_policy_steps_std" in metrics_to_include:
+                if row[2] is not None:
+                    metrics.append({"step": step, "metric_name": "discarded_off_policy_steps_std", "value": float(row[2])})
+    except Exception as e:
+        log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
+
     # Add discarded metrics to available metrics list
     discarded_metrics_list = [
         "discarded_count", "discarded_zero_advantage_pct", "discarded_max_async_pct",
@@ -5307,6 +5369,7 @@ def get_step_metrics(req: StepMetricsRequest):
         "discarded_length_prompt_mean", "discarded_length_prompt_std", "discarded_length_prompt_min", "discarded_length_prompt_max",
         "discarded_length_completion_mean", "discarded_length_completion_std", "discarded_length_completion_min", "discarded_length_completion_max",
         "discarded_length_sum_mean", "discarded_length_sum_std", "discarded_length_sum_min", "discarded_length_sum_max",
+        "discarded_off_policy_steps_mean", "discarded_off_policy_steps_std",
     ]
     for gen_name in discarded_gen_metric_names:
         discarded_metrics_list.extend([
@@ -6444,6 +6507,29 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     """, a_params + multi_tag_params + multi_env_params).fetchall():
         gini_map[(row[0], row[1])] = row[2]
 
+    # =====================================================================
+    # 7c. Off-policy steps (from events_inference)
+    # =====================================================================
+    off_policy_map: dict[tuple[str, int], tuple[float | None, float | None]] = {}
+    for row in con.execute(f"""
+        SELECT
+            p.run_id, p.step,
+            AVG(ei.off_policy_steps),
+            STDDEV_SAMP(ei.off_policy_steps)
+        FROM events_inference ei
+        JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
+        WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
+            AND ei.off_policy_steps IS NOT NULL {step_filter.replace("step", "p.step")}
+        GROUP BY p.run_id, p.step
+        ORDER BY p.run_id, p.step ASC
+    """, a_params).fetchall():
+        off_policy_map[(row[0], row[1])] = (row[2], row[3])
+
+    # Emit off-policy metrics (independent of base_keys since they come from events_inference)
+    for (rid, step), (op_mean, op_std) in off_policy_map.items():
+        _add(rid, step, "off_policy_steps_mean", op_mean)
+        _add(rid, step, "off_policy_steps_std", op_std)
+
     # Emit joined metrics for each base-row step
     for key in base_keys:
         rid, step = key
@@ -6780,6 +6866,27 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 _add(rid, step, f"discarded_reward_{base_name}{suffix}", val)
     except Exception as e:
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
+
+    # =====================================================================
+    # 17a. Discarded off-policy steps (join events_inference with prompts_discarded)
+    # =====================================================================
+    try:
+        for row in con.execute(f"""
+            SELECT
+                pd.run_id, pd.trainer_step,
+                AVG(ei.off_policy_steps),
+                STDDEV_SAMP(ei.off_policy_steps)
+            FROM events_inference ei
+            JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
+            WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
+                AND ei.off_policy_steps IS NOT NULL {discarded_step_filter.replace("trainer_step", "pd.trainer_step")}
+            GROUP BY pd.run_id, pd.trainer_step
+            ORDER BY pd.run_id, pd.trainer_step ASC
+        """, active_runs + discarded_step_params).fetchall():
+            _add(row[0], row[1], "discarded_off_policy_steps_mean", row[2])
+            _add(row[0], row[1], "discarded_off_policy_steps_std", row[3])
+    except Exception as e:
+        log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
 
     # =====================================================================
     # 17b. Canceled count per step (from events_inference)
@@ -7263,6 +7370,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             "group_length_gini_mean",
         ])
         avail.append("reward_gini_mean")
+        avail.extend(["off_policy_steps_mean", "off_policy_steps_std"])
         for gn in run_gen_metric_names[rp]:
             avail.extend([f"reward_{gn}_mean", f"reward_{gn}_std",
                           f"reward_{gn}_min", f"reward_{gn}_max",
@@ -7284,6 +7392,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             "discarded_length_completion_min", "discarded_length_completion_max",
             "discarded_length_sum_mean", "discarded_length_sum_std",
             "discarded_length_sum_min", "discarded_length_sum_max",
+            "discarded_off_policy_steps_mean", "discarded_off_policy_steps_std",
         ]
         for dgn in run_discarded_gen_names[rp]:
             discarded_static.extend([
@@ -7499,6 +7608,140 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [req.run_path, bucket, bucket],
     ).fetchall()
 
+    # Average prefill time per bucket (non-canceled requests with prefill_time)
+    avg_time_prefill = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(prefill_time) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND prefill_time IS NOT NULL AND prefill_time > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average decode time per bucket (non-canceled requests with decode_time)
+    avg_time_decode = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(decode_time) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND decode_time IS NOT NULL AND decode_time > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average compute reward time per bucket
+    # compute_reward_time lives in samples_data / samples_data_discarded,
+    # keyed by group_id. We join with group completion time from events_inference
+    # to bucket it by time.
+    avg_time_compute_reward = con.execute(
+        """
+        WITH group_completion AS (
+            SELECT group_id, MAX(end_time) as completion_time
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+              AND (is_canceled = false OR is_canceled IS NULL)
+            GROUP BY group_id
+        ),
+        sample_cr AS (
+            SELECT sd.group_id, sd.compute_reward_time
+            FROM samples_data sd
+            WHERE sd.run_id = ? AND sd.compute_reward_time IS NOT NULL AND sd.compute_reward_time > 0
+            UNION ALL
+            SELECT sdd.group_id, sdd.compute_reward_time
+            FROM samples_data_discarded sdd
+            WHERE sdd.run_id = ? AND sdd.compute_reward_time IS NOT NULL AND sdd.compute_reward_time > 0
+        ),
+        group_avg_cr AS (
+            SELECT group_id, AVG(compute_reward_time) as avg_cr
+            FROM sample_cr
+            GROUP BY group_id
+        )
+        SELECT FLOOR(gc.completion_time / ?) * ? as bucket_time, AVG(gacr.avg_cr) as avg_val
+        FROM group_avg_cr gacr
+        JOIN group_completion gc ON gc.group_id = gacr.group_id
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [req.run_path, req.run_path, req.run_path, bucket, bucket],
+    ).fetchall()
+
+    # Average queue time per bucket
+    avg_time_queue = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(queue_time) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND queue_time IS NOT NULL AND queue_time > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average time to first token per bucket
+    avg_time_ttft = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(time_to_first_token) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND time_to_first_token IS NOT NULL AND time_to_first_token > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average inference time per bucket
+    avg_time_inference = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(inference_time) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND inference_time IS NOT NULL AND inference_time > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average e2e latency per bucket
+    avg_time_e2e = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(e2e_latency) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND e2e_latency IS NOT NULL AND e2e_latency > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Average full generation duration per bucket (end_time - start_time)
+    avg_time_generation = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(end_time - start_time) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND (end_time - start_time) > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
     # Step times (for vertical lines)
     step_rows = con.execute(
         """
@@ -7517,6 +7760,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
     all_bucket_rows = [
         inference_calls, requests_done, rollouts_group_done,
         rollouts_group_done_kept, rollouts_group_done_discarded, rollouts_group_done_canceled,
+        avg_time_prefill, avg_time_decode, avg_time_compute_reward,
+        avg_time_queue, avg_time_ttft, avg_time_inference, avg_time_e2e, avg_time_generation,
     ]
     first_time = None
     for rows in all_bucket_rows:
@@ -7532,6 +7777,9 @@ def get_inference_performance(req: InferencePerformanceRequest):
     def format_buckets(rows):
         return [{"time": row[0], "count": row[1]} for row in rows if row[0] is not None]
 
+    def format_avg_buckets(rows):
+        return [{"time": row[0], "value": row[1]} for row in rows if row[0] is not None and row[1] is not None]
+
     return {
         "inference_calls": format_buckets(inference_calls),
         "requests_done": format_buckets(requests_done),
@@ -7539,6 +7787,14 @@ def get_inference_performance(req: InferencePerformanceRequest):
         "rollouts_group_done_kept": format_buckets(rollouts_group_done_kept),
         "rollouts_group_done_discarded": format_buckets(rollouts_group_done_discarded),
         "rollouts_group_done_canceled": format_buckets(rollouts_group_done_canceled),
+        "avg_time_prefill": format_avg_buckets(avg_time_prefill),
+        "avg_time_decode": format_avg_buckets(avg_time_decode),
+        "avg_time_compute_reward": format_avg_buckets(avg_time_compute_reward),
+        "avg_time_queue": format_avg_buckets(avg_time_queue),
+        "avg_time_ttft": format_avg_buckets(avg_time_ttft),
+        "avg_time_inference": format_avg_buckets(avg_time_inference),
+        "avg_time_e2e": format_avg_buckets(avg_time_e2e),
+        "avg_time_generation": format_avg_buckets(avg_time_generation),
         "step_times": [
             {"step": row[0], "time": row[1]}
             for row in step_rows
@@ -7868,6 +8124,15 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
             SELECT {step_col} as step, total_tokens as value FROM {samples_table}
             WHERE run_id = ? AND total_tokens IS NOT NULL
             ORDER BY {step_col}, sample_idx
+        """
+        params = [req.run_path]
+    elif metric_type == "off_policy_steps":
+        all_values_query = f"""
+            SELECT p.{step_col} as step, ei.off_policy_steps as value
+            FROM events_inference ei
+            JOIN {prompts_table} p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
+            WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
+            ORDER BY p.{step_col}
         """
         params = [req.run_path]
     elif metric_type.startswith("reward_"):

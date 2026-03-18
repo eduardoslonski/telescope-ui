@@ -642,6 +642,11 @@ export interface InferencePerformanceBucket {
   count: number
 }
 
+export interface InferencePerformanceAvgBucket {
+  time: number
+  value: number
+}
+
 export interface InferencePerformanceResponse {
   inference_calls: InferencePerformanceBucket[]
   requests_done: InferencePerformanceBucket[]
@@ -649,6 +654,14 @@ export interface InferencePerformanceResponse {
   rollouts_group_done_kept: InferencePerformanceBucket[]
   rollouts_group_done_discarded: InferencePerformanceBucket[]
   rollouts_group_done_canceled: InferencePerformanceBucket[]
+  avg_time_prefill: InferencePerformanceAvgBucket[]
+  avg_time_decode: InferencePerformanceAvgBucket[]
+  avg_time_compute_reward: InferencePerformanceAvgBucket[]
+  avg_time_queue: InferencePerformanceAvgBucket[]
+  avg_time_ttft: InferencePerformanceAvgBucket[]
+  avg_time_inference: InferencePerformanceAvgBucket[]
+  avg_time_e2e: InferencePerformanceAvgBucket[]
+  avg_time_generation: InferencePerformanceAvgBucket[]
   step_times: StepTime[]
   first_time: number | null
 }
