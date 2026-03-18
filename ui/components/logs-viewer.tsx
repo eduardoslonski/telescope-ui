@@ -23,83 +23,32 @@ const COMPONENT_COLORS: Record<string, string> = {
 }
 
 // ============================================================================
-// Filter pill component
+// Single-select dropdown
 // ============================================================================
 
-function FilterPill({
+function SelectDropdown({
   label,
   options,
-  selected,
+  value,
   onChange,
 }: {
   label: string
   options: string[]
-  selected: string[]
-  onChange: (selected: string[]) => void
+  value: string | null
+  onChange: (value: string | null) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handleClick)
-    return () => document.removeEventListener("mousedown", handleClick)
-  }, [])
-
-  const toggle = (val: string) => {
-    if (selected.includes(val)) {
-      onChange(selected.filter((s) => s !== val))
-    } else {
-      onChange([...selected, val])
-    }
-  }
-
-  const allSelected = selected.length === 0
-  const displayLabel = allSelected ? label : `${label} (${selected.length})`
-
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          "px-2 py-0.5 text-xs rounded border transition-colors",
-          allSelected
-            ? "border-zinc-700 text-zinc-400 hover:border-zinc-500"
-            : "border-blue-600 text-blue-400 bg-blue-950/30"
-        )}
-      >
-        {displayLabel}
-      </button>
-      {open && options.length > 0 && (
-        <div className="absolute top-full left-0 mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded shadow-lg py-1 min-w-[120px]">
-          {options.map((opt) => (
-            <button
-              key={opt}
-              onClick={() => toggle(opt)}
-              className={cn(
-                "block w-full text-left px-3 py-1 text-xs hover:bg-zinc-800 transition-colors",
-                selected.includes(opt) ? "text-blue-400" : "text-zinc-400"
-              )}
-            >
-              {selected.includes(opt) ? "* " : "  "}
-              {opt}
-            </button>
-          ))}
-          {selected.length > 0 && (
-            <button
-              onClick={() => onChange([])}
-              className="block w-full text-left px-3 py-1 text-xs text-zinc-500 hover:bg-zinc-800 border-t border-zinc-700 mt-1 pt-1"
-            >
-              Clear
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+    <select
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-300 focus:outline-none focus:border-zinc-500"
+    >
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </select>
   )
 }
 
@@ -114,31 +63,44 @@ interface LogsViewerProps {
 
 export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
   const [page, setPage] = useState(0)
-  const [selectedComponents, setSelectedComponents] = useState<string[]>([])
+  const [selectedComponent, setSelectedComponent] = useState<string | null>(null)
+  const [selectedSource, setSelectedSource] = useState<string | null>(null)
   const [selectedLevels, setSelectedLevels] = useState<string[]>([])
-  const [selectedSources, setSelectedSources] = useState<string[]>([])
   const [searchInput, setSearchInput] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
 
+  const { data: summaryData } = useLogsSummary(runPath, true)
+
+  // Auto-select first component and source when summary loads
+  useEffect(() => {
+    if (summaryData) {
+      if (selectedComponent === null && summaryData.components.length > 0) {
+        setSelectedComponent(summaryData.components[0])
+      }
+      if (selectedSource === null && summaryData.sources.length > 0) {
+        setSelectedSource(summaryData.sources[0])
+      }
+    }
+  }, [summaryData, selectedComponent, selectedSource])
+
   const filters = useMemo(
     () => ({
-      components: selectedComponents.length > 0 ? selectedComponents : undefined,
+      components: selectedComponent ? [selectedComponent] : undefined,
       levels: selectedLevels.length > 0 ? selectedLevels : undefined,
-      sources: selectedSources.length > 0 ? selectedSources : undefined,
+      sources: selectedSource ? [selectedSource] : undefined,
       search: searchQuery || undefined,
     }),
-    [selectedComponents, selectedLevels, selectedSources, searchQuery]
+    [selectedComponent, selectedLevels, selectedSource, searchQuery]
   )
 
-  const { data: summaryData } = useLogsSummary(runPath, true)
   const { data: logsData, isFetching } = useLogs(runPath, page, filters, true)
 
   // Reset page when filters change
   useEffect(() => {
     setPage(0)
-  }, [selectedComponents, selectedLevels, selectedSources, searchQuery])
+  }, [selectedComponent, selectedLevels, selectedSource, searchQuery])
 
   // Debounced search
   const handleSearchChange = useCallback((value: string) => {
@@ -146,6 +108,12 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => setSearchQuery(value), 300)
   }, [])
+
+  const toggleLevel = (level: string) => {
+    setSelectedLevels((prev) =>
+      prev.includes(level) ? prev.filter((l) => l !== level) : [...prev, level]
+    )
+  }
 
   const formatTimestamp = (ts: number) => {
     const d = new Date(ts * 1000)
@@ -187,25 +155,38 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
       </div>
 
       {/* Filters bar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800 bg-zinc-950/30">
-        <FilterPill
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-950/30">
+        <SelectDropdown
           label="Component"
           options={summaryData?.components ?? []}
-          selected={selectedComponents}
-          onChange={setSelectedComponents}
+          value={selectedComponent}
+          onChange={setSelectedComponent}
         />
-        <FilterPill
-          label="Level"
-          options={summaryData?.levels ?? []}
-          selected={selectedLevels}
-          onChange={setSelectedLevels}
-        />
-        <FilterPill
+        <SelectDropdown
           label="Source"
           options={summaryData?.sources ?? []}
-          selected={selectedSources}
-          onChange={setSelectedSources}
+          value={selectedSource}
+          onChange={setSelectedSource}
         />
+        <div className="flex items-center gap-1">
+          {(summaryData?.levels ?? []).map((level) => (
+            <button
+              key={level}
+              onClick={() => toggleLevel(level)}
+              className={cn(
+                "px-1.5 py-0.5 text-[10px] rounded border transition-colors",
+                selectedLevels.includes(level)
+                  ? "border-blue-600 bg-blue-950/30"
+                  : selectedLevels.length === 0
+                    ? "border-zinc-800 hover:border-zinc-600"
+                    : "border-zinc-800 text-zinc-600 hover:border-zinc-600",
+                LEVEL_COLORS[level] ?? "text-zinc-400"
+              )}
+            >
+              {level}
+            </button>
+          ))}
+        </div>
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-500" />
           <input
@@ -253,17 +234,6 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
                     )}
                   >
                     {entry.level.substring(0, 5).padEnd(5)}
-                  </td>
-                  <td
-                    className={cn(
-                      "px-1 py-px whitespace-nowrap w-[90px] select-none",
-                      COMPONENT_COLORS[entry.component] ?? "text-zinc-400"
-                    )}
-                  >
-                    {entry.component}
-                  </td>
-                  <td className="px-1 py-px text-zinc-500 whitespace-nowrap w-[55px] select-none">
-                    {entry.source}
                   </td>
                   <td className="px-2 py-px text-zinc-300 whitespace-pre-wrap break-all">
                     {entry.message}
