@@ -797,6 +797,7 @@ export interface SharedChartProps {
   isStepTimesFetching?: boolean
   isStepTimesRefetching?: boolean
   availableSampleTags?: Record<string, string[]>
+  availableEnvs?: string[]
 }
 
 // ============================================================================
@@ -902,6 +903,7 @@ export function SortablePlotCard({
           scrollRoot={chartProps.scrollRoot}
           maxStepLimit={chartProps.maxStep}
           maxTimeLimit={chartProps.maxTime}
+          availableEnvs={chartProps.availableEnvs}
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
           filterKey={plot.id}
@@ -924,6 +926,7 @@ export function SortablePlotCard({
           maxStepLimit={chartProps.maxStep}
           maxTimeLimit={chartProps.maxTime}
           availableSampleTags={chartProps.availableSampleTags}
+          availableEnvs={chartProps.availableEnvs}
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
           filterKey={plot.id}
@@ -1439,6 +1442,7 @@ export function CustomMetricsView({
   evalsList,
   newSectionTrigger,
   availableSampleTags,
+  availableEnvs,
   activeTemplateId,
   layoutSnapshotTrigger,
   onLayoutSnapshot,
@@ -1465,6 +1469,7 @@ export function CustomMetricsView({
   }>
   newSectionTrigger: number
   availableSampleTags?: Record<string, string[]>
+  availableEnvs?: string[]
   activeTemplateId: string | null
   layoutSnapshotTrigger: number
   onLayoutSnapshot: (layout: CustomMetricsLayout) => void
@@ -1752,6 +1757,7 @@ export function CustomMetricsView({
       isStepTimesFetching,
       isStepTimesRefetching,
       availableSampleTags,
+      availableEnvs,
     }),
     [
       runs,
@@ -1768,6 +1774,7 @@ export function CustomMetricsView({
       isStepTimesFetching,
       isStepTimesRefetching,
       availableSampleTags,
+      availableEnvs,
     ],
   )
 

@@ -1424,6 +1424,7 @@ function MetricChart({
           minY: null,
           maxY: null,
           tagFilters: {},
+          envFilters: [],
         }
         const current = prev[filterKey] ?? defaults
         const next = updater(current)

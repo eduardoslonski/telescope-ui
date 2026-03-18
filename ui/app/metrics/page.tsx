@@ -280,6 +280,7 @@ export default function MetricsPage() {
   const customMetricSections = stepMetricsInfo?.custom_metric_sections ?? {}
   const evalsList = summaryData?.eval_info?.evals ?? []
   const availableSampleTags = summaryData?.available_sample_tags ?? {}
+  const availableEnvs = summaryData?.available_envs ?? []
 
   // No run selected
   if (!selectedRunPath) {
@@ -474,6 +475,7 @@ export default function MetricsPage() {
               }
               evalsList={evalsList}
               availableSampleTags={availableSampleTags}
+              availableEnvs={availableEnvs}
             />
           ) : (
             <CustomMetricsView
@@ -494,6 +496,7 @@ export default function MetricsPage() {
               }
               evalsList={evalsList}
               availableSampleTags={availableSampleTags}
+              availableEnvs={availableEnvs}
               newSectionTrigger={newSectionTrigger}
               activeTemplateId={activeTemplateId}
               layoutSnapshotTrigger={layoutSnapshotTrigger}
