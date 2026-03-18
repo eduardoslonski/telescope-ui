@@ -532,6 +532,33 @@ export interface RunCodeDiffSummaryResponse {
 }
 
 // ============================================================================
+// Logs Types
+// ============================================================================
+
+export interface LogEntry {
+  timestamp: number
+  level: string
+  component: string
+  source: string
+  message: string
+}
+
+export interface LogsResponse {
+  logs: LogEntry[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export interface LogsSummaryResponse {
+  components: string[]
+  levels: string[]
+  sources: string[]
+  total_count: number
+}
+
+// ============================================================================
 // System Metrics Types
 // ============================================================================
 

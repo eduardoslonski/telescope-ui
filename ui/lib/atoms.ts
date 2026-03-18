@@ -87,6 +87,7 @@ function createPerRunAtom<T>(defaultValue: T) {
 
 // Overview Page
 export const overviewShowCodeViewAtom = atom<boolean>(false)
+export const overviewShowLogsViewAtom = atom<boolean>(false)
 export const overviewShowEmaAtom = atomWithStorage<boolean>("overview-show-ema", false)
 export const overviewEmaSpanAtom = atomWithStorage<number>("overview-ema-span", 10)
 export const overviewShowAllRunsAtom = atomWithStorage<boolean>("overview-show-all-runs", false)

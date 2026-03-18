@@ -33,6 +33,7 @@ from .db import (
     insert_golden_answers,
     insert_sample_tags,
     insert_step_metrics,
+    insert_logs,
     insert_events_orchestrator,
     insert_events_trainer,
     insert_events_inference,
@@ -670,6 +671,8 @@ class EventZipData:
         self.golden_answers_eval: list[dict] | None = None
         self.sample_tags_eval: list[dict] | None = None
         self.info_turns_eval: list[dict] | None = None
+        # Log records (from event zips)
+        self.logs: list[dict] | None = None
         # Metadata from metadata.json inside the zip
         self.metadata: dict | None = None
     
@@ -709,12 +712,13 @@ class EventZipData:
             self.golden_answers_eval,
             self.sample_tags_eval,
             self.info_turns_eval,
+            self.logs,
         ])
 
 
 def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipData]:
     """Download an event zip file and extract all parquet files plus metadata.
-    
+
     Each zip contains:
     - metadata.json (contains min_tail_idx, max_tail_idx)
     - orchestrator.parquet (instant events with tail_idx column)
@@ -723,10 +727,11 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
     - gpu.parquet (GPU metrics with tail_idx column)
     - cpu.parquet (CPU metrics with tail_idx column)
     - vllm.parquet (vLLM inference server metrics with tail_idx column)
+    - logs.parquet (log records with tail_idx column)
     - rollouts_discarded.parquet (discarded rollouts with tail_idx column)
     - rollouts_metrics_discarded.parquet (discarded rollout metrics with tail_idx column)
     - golden_answers_discarded.parquet (discarded golden answers with tail_idx column)
-    
+
     Returns (file_path, EventZipData).
     """
     data = EventZipData()
@@ -907,7 +912,16 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                             log.debug(
                                 f"[WANDB] No {eval_name}.parquet in {file_path}: {e}"
                             )
-                
+
+                    # Read logs.parquet if it exists
+                    logs_path = f"{tmpdir}/logs.parquet"
+                    try:
+                        table = pq.read_table(logs_path)
+                        data.logs = table.to_pylist()
+                        log.info(f"[WANDB] Extracted logs: {len(data.logs)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No logs.parquet in {file_path}: {e}")
+
                 elapsed = time.time() - start
                 log.info(f"[WANDB] Downloaded {file_path} in {elapsed:.2f}s")
                 return (file_path, data)
@@ -1319,6 +1333,7 @@ def _insert_event_zip_data(
         "golden_answers_eval": 0,
         "sample_tags_eval": 0,
         "info_turns_eval": 0,
+        "logs": 0,
     }
     inserted_tails: set[int] = set()
     
@@ -1352,6 +1367,7 @@ def _insert_event_zip_data(
         golden_answers_eval = _filter_events_by_tails(data.golden_answers_eval, missing_tails)
         sample_tags_eval = _filter_events_by_tails(data.sample_tags_eval, missing_tails)
         info_turns_eval = _filter_events_by_tails(data.info_turns_eval, missing_tails)
+        logs_data = _filter_events_by_tails(data.logs, missing_tails)
     else:
         orchestrator = data.orchestrator
         trainer = data.trainer
@@ -1373,7 +1389,8 @@ def _insert_event_zip_data(
         golden_answers_eval = data.golden_answers_eval
         sample_tags_eval = data.sample_tags_eval
         info_turns_eval = data.info_turns_eval
-    
+        logs_data = data.logs
+
     if orchestrator:
         insert_events_orchestrator(con, run_path, orchestrator)
         counts["orchestrator"] = len(orchestrator)
@@ -1409,7 +1426,13 @@ def _insert_event_zip_data(
         counts["vllm"] = len(vllm)
         inserted_tails.update(_get_tail_indices_from_events(vllm))
         log.info(f"[EVENTS] Synced {source_name} vllm: {counts['vllm']} metrics")
-    
+
+    if logs_data:
+        insert_logs(con, run_path, logs_data)
+        counts["logs"] = len(logs_data)
+        inserted_tails.update(_get_tail_indices_from_events(logs_data))
+        log.info(f"[EVENTS] Synced {source_name} logs: {counts['logs']} records")
+
     if prompts_discarded:
         insert_prompts_discarded(con, run_path, prompts_discarded)
         counts["prompts_discarded"] = len(prompts_discarded)
