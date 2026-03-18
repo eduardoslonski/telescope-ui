@@ -1,60 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, ChevronLeft, ChevronRight, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useLogs, useLogsSummary } from "@/hooks/use-run-data"
 import { cn } from "@/lib/utils"
 
-// ============================================================================
-// Level colors
-// ============================================================================
-
 const LEVEL_COLORS: Record<string, string> = {
-  DEBUG: "text-zinc-500",
-  INFO: "text-blue-400",
-  WARNING: "text-yellow-400",
-  ERROR: "text-red-400",
-  CRITICAL: "text-red-500 font-bold",
+  DEBUG: "text-muted-foreground",
+  INFO: "text-blue-600 dark:text-blue-400",
+  WARNING: "text-yellow-600 dark:text-yellow-400",
+  ERROR: "text-red-600 dark:text-red-400",
+  CRITICAL: "text-red-700 dark:text-red-500 font-bold",
 }
-
-const COMPONENT_COLORS: Record<string, string> = {
-  orchestrator: "text-fuchsia-400",
-  trainer: "text-green-400",
-  inference: "text-blue-400",
-}
-
-// ============================================================================
-// Single-select dropdown
-// ============================================================================
-
-function SelectDropdown({
-  label,
-  options,
-  value,
-  onChange,
-}: {
-  label: string
-  options: string[]
-  value: string | null
-  onChange: (value: string | null) => void
-}) {
-  return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value || null)}
-      className="px-2 py-0.5 text-xs rounded border border-zinc-700 bg-zinc-900 text-zinc-300 focus:outline-none focus:border-zinc-500"
-    >
-      {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
-        </option>
-      ))}
-    </select>
-  )
-}
-
-// ============================================================================
-// Main component
-// ============================================================================
 
 interface LogsViewerProps {
   runPath: string
@@ -131,43 +95,65 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
   const total = logsData?.total ?? 0
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-950/50">
+      <div className="flex h-10 items-center gap-2 border-b px-2">
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="h-7 px-2"
+          className="h-7 px-2 text-xs"
           onClick={onBack}
         >
-          <ArrowLeft className="h-4 w-4 mr-1" />
+          <ArrowLeft className="mr-1 h-3.5 w-3.5" />
           Back
         </Button>
-        <span className="text-sm font-medium text-zinc-300">Logs</span>
-        <span className="text-xs text-zinc-500">
+        <span className="text-xs font-medium">Logs</span>
+        <span className="text-xs text-muted-foreground">
           {total.toLocaleString()} records
         </span>
         {isFetching && (
-          <span className="text-xs text-zinc-600 animate-pulse">
+          <span className="text-xs text-muted-foreground animate-pulse">
             loading...
           </span>
         )}
       </div>
 
       {/* Filters bar */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-950/30">
-        <SelectDropdown
-          label="Component"
-          options={summaryData?.components ?? []}
-          value={selectedComponent}
-          onChange={setSelectedComponent}
-        />
-        <SelectDropdown
-          label="Source"
-          options={summaryData?.sources ?? []}
-          value={selectedSource}
-          onChange={setSelectedSource}
-        />
+      <div className="flex h-10 items-center gap-2 border-b px-2">
+        {(summaryData?.components.length ?? 0) > 0 && (
+          <Select
+            value={selectedComponent ?? ""}
+            onValueChange={setSelectedComponent}
+          >
+            <SelectTrigger size="sm" className="text-xs h-7 gap-1">
+              <SelectValue placeholder="Component" />
+            </SelectTrigger>
+            <SelectContent>
+              {(summaryData?.components ?? []).map((c) => (
+                <SelectItem key={c} value={c} className="text-xs">
+                  {c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {(summaryData?.sources.length ?? 0) > 0 && (
+          <Select
+            value={selectedSource ?? ""}
+            onValueChange={setSelectedSource}
+          >
+            <SelectTrigger size="sm" className="text-xs h-7 gap-1">
+              <SelectValue placeholder="Source" />
+            </SelectTrigger>
+            <SelectContent>
+              {(summaryData?.sources ?? []).map((s) => (
+                <SelectItem key={s} value={s} className="text-xs">
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <div className="flex items-center gap-1">
           {(summaryData?.levels ?? []).map((level) => (
             <button
@@ -176,11 +162,11 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
               className={cn(
                 "px-1.5 py-0.5 text-[10px] rounded border transition-colors",
                 selectedLevels.includes(level)
-                  ? "border-blue-600 bg-blue-950/30"
+                  ? "border-blue-600 bg-blue-600/10"
                   : selectedLevels.length === 0
-                    ? "border-zinc-800 hover:border-zinc-600"
-                    : "border-zinc-800 text-zinc-600 hover:border-zinc-600",
-                LEVEL_COLORS[level] ?? "text-zinc-400"
+                    ? "border-border hover:border-ring"
+                    : "border-border text-muted-foreground/50 hover:border-ring",
+                LEVEL_COLORS[level] ?? "text-muted-foreground"
               )}
             >
               {level}
@@ -188,13 +174,13 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
           ))}
         </div>
         <div className="relative flex-1 max-w-xs">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-500" />
-          <input
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
             type="text"
             placeholder="Search messages..."
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
-            className="w-full pl-6 pr-6 py-1 text-xs bg-zinc-900 border border-zinc-700 rounded text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500"
+            className="h-7 pl-7 pr-7 text-xs"
           />
           {searchInput && (
             <button
@@ -204,16 +190,16 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
               }}
               className="absolute right-2 top-1/2 -translate-y-1/2"
             >
-              <X className="h-3 w-3 text-zinc-500 hover:text-zinc-300" />
+              <X className="h-3.5 w-3.5 text-muted-foreground hover:text-foreground" />
             </button>
           )}
         </div>
       </div>
 
       {/* Log content */}
-      <div ref={scrollRef} className="flex-1 overflow-auto font-mono text-[11px] leading-[18px]">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto font-mono text-[11px] leading-[18px]">
         {logs.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-zinc-500 text-sm">
+          <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
             {total === 0 ? "No logs available" : "No logs match filters"}
           </div>
         ) : (
@@ -222,20 +208,20 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
               {logs.map((entry, i) => (
                 <tr
                   key={`${page}-${i}`}
-                  className="hover:bg-zinc-900/50 align-top"
+                  className="hover:bg-muted/50 align-top"
                 >
-                  <td className="px-2 py-px text-zinc-600 whitespace-nowrap select-none">
+                  <td className="px-2 py-px text-muted-foreground whitespace-nowrap select-none">
                     {formatTimestamp(entry.timestamp)}
                   </td>
                   <td
                     className={cn(
                       "px-1 py-px whitespace-nowrap w-[60px] select-none",
-                      LEVEL_COLORS[entry.level] ?? "text-zinc-400"
+                      LEVEL_COLORS[entry.level] ?? "text-muted-foreground"
                     )}
                   >
                     {entry.level.substring(0, 5).padEnd(5)}
                   </td>
-                  <td className="px-2 py-px text-zinc-300 whitespace-pre-wrap break-all">
+                  <td className="px-2 py-px text-foreground whitespace-pre-wrap break-all">
                     {entry.message}
                   </td>
                 </tr>
@@ -247,28 +233,28 @@ export function LogsViewer({ runPath, onBack }: LogsViewerProps) {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-1.5 border-t border-zinc-800 bg-zinc-950/50">
-          <span className="text-xs text-zinc-500">
+        <div className="flex items-center justify-between px-2 border-t h-10">
+          <span className="text-xs text-muted-foreground">
             Page {page + 1} of {totalPages}
           </span>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5">
             <Button
               variant="ghost"
-              size="sm"
-              className="h-6 px-2"
+              size="icon"
+              className="h-7 w-7"
               disabled={page === 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
             >
-              <ChevronLeft className="h-3 w-3" />
+              <ChevronLeft className="h-3.5 w-3.5" />
             </Button>
             <Button
               variant="ghost"
-              size="sm"
-              className="h-6 px-2"
+              size="icon"
+              className="h-7 w-7"
               disabled={page >= totalPages - 1}
               onClick={() => setPage((p) => p + 1)}
             >
-              <ChevronRight className="h-3 w-3" />
+              <ChevronRight className="h-3.5 w-3.5" />
             </Button>
           </div>
         </div>
