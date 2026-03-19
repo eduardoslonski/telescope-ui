@@ -30,6 +30,7 @@ import {
   rolloutsSamplePickerDisplayMetricsAtom,
   rolloutsSamplePickerTooltipsAtom,
   selectedRunPathAtom,
+  darkModeAtom,
 } from "@/lib/atoms"
 import { useRunSummary } from "@/hooks/use-run-data"
 import {
@@ -116,10 +117,18 @@ function tokensToColor(
   tokens: number | null,
   maxTokens: number | null,
   maxLightness: number = 85,
+  darkMode: boolean = false,
 ): string | null {
   if (tokens === null || maxTokens === null || maxTokens <= 0) return null
   const clamped = Math.max(0, Math.min(maxTokens, tokens))
-  // Start from maxLightness down to near-black (5%)
+  if (darkMode) {
+    // Dark mode: higher tokens → lighter (more visible on dark bg)
+    const minLightness = 30
+    const maxDarkLightness = 90
+    const lightness = minLightness + (clamped / maxTokens) * (maxDarkLightness - minLightness)
+    return `hsl(0 0% ${lightness}%)`
+  }
+  // Light mode: higher tokens → darker
   const lightness = maxLightness - (clamped / maxTokens) * (maxLightness - 5)
   return `hsl(0 0% ${lightness}%)`
 }
@@ -219,6 +228,7 @@ export function RolloutsSamplePickerSidebar({
     rolloutsSamplePickerTooltipsAtom,
   )
   const selectedRunPath = useAtomValue(selectedRunPathAtom)
+  const darkMode = useAtomValue(darkModeAtom)
   const { data: summaryData } = useRunSummary(
     selectedRunPath || "",
     !!selectedRunPath,
@@ -852,6 +862,7 @@ export function RolloutsSamplePickerSidebar({
                 displayMetrics={orderedDisplayMetrics}
                 metricsBySampleIdx={metricsBySampleIdx}
                 tooltipsEnabled={tooltipsEnabled}
+                darkMode={darkMode}
               />
             ))}
           </div>
@@ -931,6 +942,7 @@ export function RolloutsSamplePickerSidebar({
                     tokenScaleMax={tokenScaleMax}
                     tokenScaleSumMax={tokenScaleSumMax}
                     tooltipsEnabled={tooltipsEnabled}
+                    darkMode={darkMode}
                   />
                 </div>
               ))}
@@ -955,6 +967,7 @@ function GroupItem({
   displayMetrics,
   metricsBySampleIdx,
   tooltipsEnabled,
+  darkMode,
 }: {
   group: Group
   onClick: () => void
@@ -971,6 +984,7 @@ function GroupItem({
     Map<string, { value: number; env: string | null }>
   >
   tooltipsEnabled: boolean
+  darkMode: boolean
 }) {
   return (
     <Tooltip delayDuration={300} open={tooltipsEnabled ? undefined : false}>
@@ -1015,6 +1029,8 @@ function GroupItem({
                         envRewardRanges,
                         advantageRange,
                         envMetricRanges,
+                        undefined,
+                        darkMode,
                       )
                       return (
                         <div
@@ -1132,6 +1148,7 @@ function getMetricDisplay(
   advantageRange?: { min: number; max: number } | null,
   envMetricRanges?: EnvMetricRanges,
   tokenMaxLightness?: number,
+  darkMode?: boolean,
 ): { value: number | null; color: string | null; label: string } {
   switch (metricKey) {
     case "gen_length":
@@ -1141,6 +1158,7 @@ function getMetricDisplay(
           sample.assistantTokensTotal,
           tokenScaleSumMax,
           tokenMaxLightness,
+          darkMode,
         ),
         label:
           sample.assistantTokensTotal !== null
@@ -1154,6 +1172,7 @@ function getMetricDisplay(
           sample.assistantTokensTotal,
           tokenScaleSumMax,
           tokenMaxLightness,
+          darkMode,
         ),
         label:
           sample.assistantTokensTotal !== null
@@ -1170,6 +1189,7 @@ function getMetricDisplay(
           sample.assistantTokens,
           tokenScaleMax,
           tokenMaxLightness,
+          darkMode,
         ),
         label:
           sample.assistantTokens !== null
@@ -1250,6 +1270,7 @@ function SampleItem({
   tokenScaleMax,
   tokenScaleSumMax,
   tooltipsEnabled,
+  darkMode,
 }: {
   sample: GroupedSample
   isSelected: boolean
@@ -1265,6 +1286,7 @@ function SampleItem({
   tokenScaleMax: number | null
   tokenScaleSumMax: number | null
   tooltipsEnabled: boolean
+  darkMode: boolean
 }) {
   return (
     <Tooltip delayDuration={300} open={tooltipsEnabled ? undefined : false}>
@@ -1299,6 +1321,7 @@ function SampleItem({
                             advantageRange,
                             envMetricRanges,
                             70,
+                            darkMode,
                           )
                           return d.value !== null
                         }).length,
@@ -1323,6 +1346,7 @@ function SampleItem({
                       advantageRange,
                       envMetricRanges,
                       70,
+                      darkMode,
                     )
                     if (display.value === null) return null
                     return (
