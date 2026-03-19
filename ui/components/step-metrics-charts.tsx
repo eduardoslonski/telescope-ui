@@ -53,6 +53,17 @@ import {
   formatDurationHms,
 } from "@/lib/format"
 
+// Metrics where zero values should be excluded (zero means "no data", not "instant")
+const IGNORE_ZERO_VALUE_STEP_METRICS = new Set([
+  "timing_save_batch_total",
+  "timing_avg_inference_time",
+  "timing_avg_compute_reward_time",
+  "timing_compute_reward_normal_pct",
+  "timing_compute_reward_discarded_pct",
+  "timing_compute_reward_canceled_pct",
+  "timing_compute_reward_all_pct",
+])
+
 // Metrics that should have "ignore first step" enabled by default
 export const DEFAULT_IGNORE_FIRST_STEP_METRICS = new Set([
   // Full Step (Total Time)
@@ -4023,7 +4034,9 @@ export function MetricChart({
       const metrics = metricsByRunPath.get(run.runPath) ?? []
       const stepMap = new Map<number, number>()
 
+      const shouldIgnoreZeros = IGNORE_ZERO_VALUE_STEP_METRICS.has(metricName)
       metrics.forEach((m) => {
+        if (shouldIgnoreZeros && m.value === 0) return
         stepSet.add(m.step)
         stepMap.set(m.step, m.value)
       })
@@ -5104,6 +5117,8 @@ function InferencePerformanceMetricChart({
       buckets.forEach((b) => {
         const val = isAvgMetric ? b.value : b.count
         if (val !== undefined && val !== null) {
+          // Skip zero values for average metrics (zero means no data, not instant)
+          if (isAvgMetric && val === 0) return
           const relTime = b.time - runFirstTime
           // Skip buckets before first step completes
           if (ignoreFirstStep && firstStepRelTime !== null && relTime < firstStepRelTime) return
