@@ -5132,6 +5132,20 @@ function InferencePerformanceMetricChart({
           relTimeSet.add(relTime)
         }
       })
+
+      // For count metrics, fill gaps with 0 within the run's time range
+      if (!isAvgMetric && valueByRelTime.size > 0) {
+        const times = Array.from(valueByRelTime.keys())
+        const minT = Math.min(...times)
+        const maxT = Math.max(...times)
+        for (let t = minT + bucketSeconds; t < maxT; t += bucketSeconds) {
+          if (!valueByRelTime.has(t)) {
+            valueByRelTime.set(t, 0)
+            relTimeSet.add(t)
+          }
+        }
+      }
+
       runRelData.set(idx, valueByRelTime)
     })
 
@@ -5184,7 +5198,7 @@ function InferencePerformanceMetricChart({
       hasData: true,
       outlierBounds: bounds,
     }
-  }, [plottedRuns, queries, inferenceMetricType, hoveredRunId, isAvgMetric, ignoreOutliers, ignoreFirstStep])
+  }, [plottedRuns, queries, inferenceMetricType, hoveredRunId, isAvgMetric, ignoreOutliers, ignoreFirstStep, bucketSeconds])
 
   const formatValue = useCallback(
     (v: number | null | undefined): string => {
