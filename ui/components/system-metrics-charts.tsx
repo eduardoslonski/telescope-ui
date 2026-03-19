@@ -666,7 +666,7 @@ function CpuMetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = 192
+    const height = 200
 
     let minVal = Number.POSITIVE_INFINITY
     let maxVal = Number.NEGATIVE_INFINITY
@@ -975,7 +975,7 @@ function CpuMetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-48 relative bg-background rounded"
+          className="h-[200px] relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -989,7 +989,7 @@ function CpuMetricChart({
           />
         </div>
       ) : (
-        <div className="h-48 flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
           {isLoading ? "Loading..." : `No data for ${metricInfo.label}`}
         </div>
       )}
@@ -1289,7 +1289,7 @@ function VllmMetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = 192
+    const height = 200
 
     let minVal = Number.POSITIVE_INFINITY
     let maxVal = Number.NEGATIVE_INFINITY
@@ -1591,7 +1591,7 @@ function VllmMetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-48 relative bg-background rounded"
+          className="h-[200px] relative bg-background rounded"
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -1605,7 +1605,7 @@ function VllmMetricChart({
           />
         </div>
       ) : (
-        <div className="h-48 flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
           {isLoading ? "Loading..." : `No data for ${metricInfo.label}`}
         </div>
       )}

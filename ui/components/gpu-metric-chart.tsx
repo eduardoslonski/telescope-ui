@@ -424,7 +424,7 @@ export function GpuMetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = 192
+    const height = 200
 
     let minVal = Number.POSITIVE_INFINITY
     let maxVal = Number.NEGATIVE_INFINITY
@@ -753,7 +753,7 @@ export function GpuMetricChart({
 
   if (!hasData && isTimeline) {
     return (
-      <div className="h-48 bg-muted/30 rounded-lg border border-border/50 opacity-50 transition-opacity duration-200" />
+      <div className="h-[200px] bg-muted/30 rounded-lg border border-border/50 opacity-50 transition-opacity duration-200" />
     )
   }
 
@@ -834,7 +834,7 @@ export function GpuMetricChart({
         </div>
       )}
       {hasData ? (
-        <div className="h-48 relative bg-background rounded" ref={containerRef} onMouseLeave={handleMouseLeave}>
+        <div className="h-[200px] relative bg-background rounded" ref={containerRef} onMouseLeave={handleMouseLeave}>
         {!isTimeline && isRefetching && (
           <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
         )}
@@ -845,7 +845,7 @@ export function GpuMetricChart({
         />
       </div>
       ) : (
-        <div className="h-48 flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
           {isLoading ? "Loading..." : `No data for ${metricInfo.label}`}
         </div>
       )}

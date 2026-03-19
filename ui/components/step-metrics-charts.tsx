@@ -3051,7 +3051,7 @@ export function EvalMetricChart({
     if (!containerRef.current || !uplotData || !hasData) return
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     let minVal = Infinity
     let maxVal = -Infinity
@@ -3361,7 +3361,7 @@ export function EvalMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -4350,7 +4350,7 @@ export function MetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     let minVal = Infinity
     let maxVal = -Infinity
@@ -4781,7 +4781,7 @@ export function MetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -5210,7 +5210,7 @@ function InferencePerformanceMetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     let minVal = Infinity
     let maxVal = -Infinity
@@ -5415,7 +5415,7 @@ function InferencePerformanceMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -5833,7 +5833,7 @@ function TrainerPerformanceMetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
@@ -5996,7 +5996,7 @@ function TrainerPerformanceMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -6342,7 +6342,7 @@ function InferencePerformanceAreaChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
@@ -6466,7 +6466,7 @@ function InferencePerformanceAreaChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
@@ -6740,7 +6740,7 @@ function TrainerPerformanceAreaChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = container.clientHeight || 192
+    const height = container.clientHeight || 200
 
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
@@ -6865,7 +6865,7 @@ function TrainerPerformanceAreaChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
         showLoadingOpacity && "opacity-50",
       )}
     >
