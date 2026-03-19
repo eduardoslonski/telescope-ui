@@ -707,6 +707,7 @@ export default function HomePage() {
                               evalName: item.evalName,
                               distMetricType: item.distMetricType,
                               inferenceMetricType: item.inferenceMetricType,
+                              inferenceAreaCategories: item.inferenceAreaCategories,
                               trainerMetricType: item.trainerMetricType,
                               trainerAreaCategories: item.trainerAreaCategories,
                             },

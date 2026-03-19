@@ -765,10 +765,11 @@ export interface CustomPlotItem {
   id: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "trainer_performance" | "trainer_performance_area"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   inferenceMetricType?: string
+  inferenceAreaCategories?: string[]
   trainerMetricType?: string
   trainerAreaCategories?: string[]
 }
