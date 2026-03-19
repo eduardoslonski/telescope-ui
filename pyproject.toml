@@ -1,6 +1,6 @@
 [project]
 name = "telescope-ui"
-version = "0.1.19"
+version = "0.1.20"
 description = "Real-time visualization dashboard for LLM training runs"
 readme = "README.md"
 requires-python = ">=3.11"

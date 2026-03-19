@@ -44,6 +44,12 @@ import {
   TRAINER_EVENT_COLORS,
   IDLE_COLOR,
   IDLE_COLOR_DARK,
+  INFERENCE_REQUEST_COLOR,
+  INFERENCE_REQUEST_DISCARDED_COLOR,
+  INFERENCE_REQUEST_DISCARDED_COLOR_DARK,
+  INFERENCE_REQUEST_CANCELED_COLOR,
+  INFERENCE_REQUEST_CANCELED_COLOR_DARK,
+  DEFAULT_EVENT_COLOR,
 } from "@/lib/constants"
 import {
   formatSecondsTooltipHtml,
@@ -5528,7 +5534,17 @@ export function InferencePerformanceSection({
 
   return (
     <div>
-      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-1">Requests Count</h4>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-1">Breakdown (Area)</h4>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <InferencePerformanceAreaChart
+          runs={runs}
+          shouldPoll={shouldPoll}
+          scrollRoot={scrollRoot}
+          label="Kept vs Discarded vs Canceled"
+          categories={["kept", "discarded", "canceled"]}
+        />
+      </div>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">Requests Count</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <InferencePerformanceMetricChart inferenceMetricType="inference_calls" label="Inference Calls" {...sharedProps} />
         <InferencePerformanceMetricChart inferenceMetricType="requests_done" label="Requests Done" {...sharedProps} />
@@ -5585,6 +5601,46 @@ export function InferencePerformanceChartCard({
       scrollRoot={scrollRoot}
       inferenceMetricType={inferenceMetricType}
       label={label}
+      headerPrefix={headerPrefix}
+      headerSuffix={headerSuffix}
+    />
+  )
+}
+
+// ============================================================================
+// Inference Performance Area Chart Card (standalone, for custom metrics view)
+// ============================================================================
+
+export const INFERENCE_PERF_AREA_VARIANTS = [
+  { key: "inference_area_kept_vs_discarded_vs_canceled", label: "Kept vs Discarded vs Canceled", categories: ["kept", "discarded", "canceled"] },
+] as const
+
+interface InferencePerformanceAreaChartCardProps {
+  runs: RunInfo[]
+  shouldPoll: boolean
+  scrollRoot?: Element | null
+  label: string
+  categories: string[]
+  headerPrefix?: React.ReactNode
+  headerSuffix?: React.ReactNode
+}
+
+export function InferencePerformanceAreaChartCard({
+  runs,
+  shouldPoll,
+  scrollRoot = null,
+  label,
+  categories,
+  headerPrefix,
+  headerSuffix,
+}: InferencePerformanceAreaChartCardProps) {
+  return (
+    <InferencePerformanceAreaChart
+      runs={runs}
+      shouldPoll={shouldPoll}
+      scrollRoot={scrollRoot}
+      label={label}
+      categories={categories}
       headerPrefix={headerPrefix}
       headerSuffix={headerSuffix}
     />
@@ -6072,6 +6128,448 @@ function trainerPerfWithAlpha(color: string, alpha: number): string {
     }
   }
   return color
+}
+
+// ============================================================================
+// Inference Performance Area Chart (Breakdown)
+// ============================================================================
+
+const INFERENCE_BREAKDOWN_DISPLAY_NAMES: Record<string, string> = {
+  kept: "Kept",
+  discarded: "Discarded",
+  canceled: "Canceled",
+}
+
+function getInferenceBreakdownDisplayName(key: string): string {
+  return INFERENCE_BREAKDOWN_DISPLAY_NAMES[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function getInferenceBreakdownColor(key: string, darkMode: boolean): string {
+  if (key === "kept") return INFERENCE_REQUEST_COLOR
+  if (key === "discarded") return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
+  if (key === "canceled") return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
+  return DEFAULT_EVENT_COLOR
+}
+
+// Maps breakdown category names to InferencePerformanceResponse fields
+const INFERENCE_BREAKDOWN_FIELDS: Record<string, string> = {
+  kept: "rollouts_group_done_kept",
+  discarded: "rollouts_group_done_discarded",
+  canceled: "rollouts_group_done_canceled",
+}
+
+interface InferencePerformanceAreaChartProps {
+  runs: RunInfo[]
+  shouldPoll: boolean
+  label: string
+  categories: string[]
+  scrollRoot?: Element | null
+  headerPrefix?: React.ReactNode
+  headerSuffix?: React.ReactNode
+}
+
+function InferencePerformanceAreaChart({
+  runs,
+  shouldPoll,
+  label,
+  categories,
+  scrollRoot = null,
+  headerPrefix,
+  headerSuffix,
+}: InferencePerformanceAreaChartProps) {
+  const darkMode = useAtomValue(darkModeAtom)
+  const visibilityRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<uPlot | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+
+  const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [bucketSeconds, setBucketSeconds] = useState(60)
+  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+
+  const [hoveredCat, setHoveredCat] = useState<string | null>(null)
+  const [selectedCats, setSelectedCats] = useState<string[]>([])
+
+  const toggleCatSelection = useCallback(
+    (cat: string) => {
+      setSelectedCats((prev) => {
+        const already = prev.includes(cat)
+        return already ? prev.filter((c) => c !== cat) : [...prev, cat]
+      })
+    },
+    [],
+  )
+
+  const handleIntervalCommit = useCallback(
+    (value: string) => {
+      const parsed = parseDuration(value)
+      if (parsed !== null && parsed >= 1) {
+        setBucketSeconds(parsed)
+        setIntervalInput(formatDurationHms(parsed))
+      } else {
+        setIntervalInput(formatDurationHms(bucketSeconds))
+      }
+    },
+    [bucketSeconds],
+  )
+
+  const isVisible = useOnScreen(visibilityRef, {
+    root: scrollRoot,
+    threshold: 0,
+  })
+
+  const primaryRun = runs.find((r) => r.isSelected) ?? runs[0]
+  const infPerf = useInferencePerformance(primaryRun?.runPath ?? "", isVisible && !!primaryRun, shouldPoll, bucketSeconds)
+
+  const isFetching = infPerf.isFetching
+  const isRefetching = isFetching && !!infPerf.data
+
+  // Merge separate count arrays into percentage buckets
+  const { filteredBuckets, activeCategories, runFirstTime } = useMemo(() => {
+    const data = infPerf.data
+    if (!data || data.first_time === null) {
+      return { filteredBuckets: [] as Record<string, number>[], activeCategories: [] as string[], runFirstTime: 0 }
+    }
+
+    const rft = data.first_time
+
+    // Build time-indexed map from separate arrays
+    const timeMap = new Map<number, Record<string, number>>()
+    for (const cat of categories) {
+      const fieldName = INFERENCE_BREAKDOWN_FIELDS[cat]
+      if (!fieldName) continue
+      const arr = (data as unknown as Record<string, unknown>)[fieldName] as { time: number; count: number }[] | undefined
+      if (!arr) continue
+      for (const bucket of arr) {
+        if (!timeMap.has(bucket.time)) {
+          timeMap.set(bucket.time, { time: bucket.time })
+        }
+        timeMap.get(bucket.time)![cat] = bucket.count
+      }
+    }
+
+    // Convert counts to percentages
+    let buckets = [...timeMap.values()]
+      .sort((a, b) => a.time - b.time)
+      .map((entry) => {
+        const total = categories.reduce((sum, cat) => sum + (entry[cat] ?? 0), 0)
+        const result: Record<string, number> = { time: entry.time }
+        for (const cat of categories) {
+          result[cat] = total > 0 ? ((entry[cat] ?? 0) / total) * 100 : 0
+        }
+        return result
+      })
+
+    if (ignoreFirstStep) {
+      const stepTimes = data.step_times ?? []
+      if (stepTimes.length > 0) {
+        const firstStepRelTime = stepTimes[0].time - rft
+        buckets = buckets.filter((b) => b.time - rft >= firstStepRelTime)
+      }
+    }
+
+    const activeCats = categories.filter((cat) =>
+      buckets.some((b) => b[cat] !== undefined && b[cat] > 0),
+    )
+
+    return { filteredBuckets: buckets, activeCategories: activeCats, runFirstTime: rft }
+  }, [infPerf.data, categories, ignoreFirstStep])
+
+  const highlightedCats = useMemo<Set<string> | null>(() => {
+    const effectiveSelected = selectedCats.filter((c) => activeCategories.includes(c))
+    if (effectiveSelected.length > 0 && effectiveSelected.length < activeCategories.length) {
+      return new Set(effectiveSelected)
+    }
+    if (hoveredCat && activeCategories.includes(hoveredCat)) {
+      return new Set([hoveredCat])
+    }
+    return null
+  }, [selectedCats, hoveredCat, activeCategories])
+
+  const { uplotData, seriesConfig, bandsConfig, hasData } = useMemo(() => {
+    if (filteredBuckets.length === 0 || activeCategories.length === 0) {
+      return { uplotData: null, seriesConfig: [], bandsConfig: [], hasData: false }
+    }
+
+    const xData = new Float64Array(filteredBuckets.map((b) => b.time - runFirstTime))
+
+    const series: uPlot.Series[] = [{ label: "Time (s)" }]
+    const dataArrays: (Float64Array | number[])[] = [xData]
+    const bands: uPlot.Band[] = []
+    const runningSum = new Array(filteredBuckets.length).fill(0)
+
+    activeCategories.forEach((cat, catIdx) => {
+      const catValues = filteredBuckets.map((b, i) => {
+        const val = b[cat] ?? 0
+        runningSum[i] += val
+        return runningSum[i]
+      })
+
+      const isDimmed = highlightedCats !== null && !highlightedCats.has(cat)
+      const color = getInferenceBreakdownColor(cat, darkMode)
+      const fillColor = isDimmed
+        ? trainerPerfWithAlpha(color, 0.15)
+        : trainerPerfWithAlpha(color, 0.6)
+      const strokeColor = isDimmed ? trainerPerfWithAlpha(color, 0.25) : color
+
+      dataArrays.push(catValues)
+      series.push({
+        label: getInferenceBreakdownDisplayName(cat),
+        stroke: strokeColor,
+        width: 0,
+        fill: catIdx === 0 ? fillColor : undefined,
+        points: { show: false },
+      })
+
+      if (catIdx > 0) {
+        bands.push({
+          series: [catIdx + 1, catIdx] as [number, number],
+          fill: fillColor,
+        })
+      }
+    })
+
+    return {
+      uplotData: dataArrays as uPlot.AlignedData,
+      seriesConfig: series,
+      bandsConfig: bands,
+      hasData: true,
+    }
+  }, [filteredBuckets, activeCategories, runFirstTime, highlightedCats, darkMode])
+
+  useEffect(() => {
+    if (!containerRef.current || !uplotData || !hasData || !isVisible) return
+
+    const container = containerRef.current
+    const width = container.clientWidth
+    const height = container.clientHeight || 192
+
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
+
+    const opts: uPlot.Options = {
+      width,
+      height,
+      padding: [4, 8, 0, 0],
+      cursor: { show: true, x: true, y: false, points: { show: false } },
+      legend: { show: false },
+      scales: { x: { time: false }, y: { range: [0, 105] } },
+      axes: [
+        {
+          stroke: tickLabelColor,
+          grid: { stroke: gridColor, width: 1 },
+          ticks: { stroke: gridColor, width: 1 },
+          font: "10px system-ui, sans-serif",
+          labelFont: "10px system-ui, sans-serif",
+          size: 24,
+          values: (_u, vals) => vals.map((v) => formatSecondsCompact(v)),
+        },
+        {
+          stroke: tickLabelColor,
+          grid: { stroke: gridColor, width: 1 },
+          ticks: { stroke: gridColor, width: 1 },
+          font: "10px system-ui, sans-serif",
+          labelFont: "10px system-ui, sans-serif",
+          size: 44,
+          values: (_u, vals) => vals.map((v) => `${parseFloat(v.toFixed(0))}%`),
+        },
+      ],
+      series: seriesConfig,
+      bands: bandsConfig,
+      hooks: {
+        setCursor: [
+          (u) => {
+            if (!tooltipRef.current || !uplotData) return
+            const { left, top, idx } = u.cursor
+            if (idx === null || idx === undefined || left === undefined || top === undefined || left < 0) {
+              tooltipRef.current.style.display = "none"
+              return
+            }
+            const xValue = uplotData[0][idx]
+            if (xValue === undefined) { tooltipRef.current.style.display = "none"; return }
+
+            const headerLabel = `Time ${formatDurationHms(Number(xValue))}`
+            let html = `<div class="font-medium mb-1">${headerLabel}</div>`
+
+            let prevCumulative = 0
+            activeCategories.forEach((cat, catIdx) => {
+              const cumulative = (uplotData[catIdx + 1] as number[])[idx]
+              const individual = cumulative - prevCumulative
+              prevCumulative = cumulative
+              if (individual <= 0) return
+              const color = getInferenceBreakdownColor(cat, darkMode)
+              html += `
+                <div class="flex items-center gap-2 mt-0.5">
+                  <div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${color}"></div>
+                  <span>${getInferenceBreakdownDisplayName(cat)}</span>
+                  <span class="font-medium ml-auto">${parseFloat(individual.toFixed(2))}%</span>
+                </div>
+              `
+            })
+
+            tooltipRef.current.innerHTML = html
+            tooltipRef.current.style.display = "block"
+
+            const containerRect = containerRef.current!.getBoundingClientRect()
+            const tooltipRect = tooltipRef.current.getBoundingClientRect()
+            let tooltipX = containerRect.left + left + 15
+            if (tooltipX + tooltipRect.width + 20 > window.innerWidth) {
+              tooltipX = containerRect.left + left - tooltipRect.width - 15 + u.bbox.left
+            }
+            tooltipX = Math.max(4, tooltipX)
+            let tooltipY = containerRect.top - tooltipRect.height + 20
+            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            tooltipRef.current.style.left = `${tooltipX}px`
+            tooltipRef.current.style.top = `${tooltipY}px`
+          },
+        ],
+      },
+    }
+
+    if (chartRef.current) chartRef.current.destroy()
+    const chart = new uPlot(opts, uplotData, container)
+    chartRef.current = chart
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
+        }
+      }
+    })
+    resizeObserver.observe(container)
+
+    return () => {
+      resizeObserver.disconnect()
+      chart.destroy()
+      chartRef.current = null
+    }
+  }, [
+    uplotData,
+    seriesConfig,
+    bandsConfig,
+    hasData,
+    isVisible,
+    darkMode,
+    activeCategories,
+    bucketSeconds,
+  ])
+
+  const handleMouseLeave = useCallback(() => {
+    if (tooltipRef.current) tooltipRef.current.style.display = "none"
+  }, [])
+
+  const showLoadingOpacity = isFetching && !isRefetching
+
+  return (
+    <div
+      ref={visibilityRef}
+      className={cn(
+        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[246px] flex flex-col",
+        showLoadingOpacity && "opacity-50",
+      )}
+    >
+      <div className="shrink-0 mb-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-0.5 min-w-0">
+            {headerPrefix}
+            <h4 className="text-xs font-medium leading-snug line-clamp-2 break-words" title={label}>
+              {label}
+            </h4>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all opacity-0 group-hover/chart:opacity-100">
+                  <SlidersHorizontal className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[160px]">
+                <DropdownMenuCheckboxItem
+                  checked={ignoreFirstStep}
+                  onCheckedChange={setIgnoreFirstStep}
+                >
+                  Ignore First Step
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuSeparator />
+                <div className="flex items-center gap-2 px-2 py-1.5">
+                  <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
+                  <input
+                    type="text"
+                    className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                    placeholder="1m"
+                    value={intervalInput}
+                    onChange={(e) => setIntervalInput(e.target.value)}
+                    onBlur={(e) => handleIntervalCommit(e.target.value)}
+                    onKeyDown={(e) => {
+                      e.stopPropagation()
+                      if (e.key === "Enter") handleIntervalCommit(e.currentTarget.value)
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {headerSuffix}
+          </div>
+        </div>
+        {ignoreFirstStep && (
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
+            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+          </div>
+        )}
+        {hasData && activeCategories.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
+            {activeCategories.map((cat) => {
+              const isActive = !!highlightedCats?.has(cat)
+              const isDimmed = !!highlightedCats && highlightedCats.size > 0 && !isActive
+              const color = getInferenceBreakdownColor(cat, darkMode)
+              return (
+                <div
+                  key={cat}
+                  className={cn(
+                    "flex items-center gap-1 select-none transition-opacity duration-150 cursor-pointer",
+                    isActive && "ring-1 ring-border rounded-full px-1.5 py-0.5 -mx-1.5 -my-0.5",
+                  )}
+                  style={{ opacity: isDimmed ? 0.3 : 1 }}
+                  onPointerEnter={() => setHoveredCat(cat)}
+                  onPointerLeave={() => setHoveredCat(null)}
+                  onClick={() => toggleCatSelection(cat)}
+                >
+                  <div
+                    className="w-2 h-2 rounded-sm shrink-0"
+                    style={{ backgroundColor: isDimmed ? trainerPerfWithAlpha(color, 0.25) : color }}
+                  />
+                  <span className="text-[10px] text-muted-foreground">{getInferenceBreakdownDisplayName(cat)}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+      {hasData ? (
+        <div
+          className="flex-1 min-h-0 relative bg-background rounded"
+          ref={containerRef}
+          onMouseLeave={handleMouseLeave}
+        >
+          <div
+            ref={tooltipRef}
+            className="fixed z-[9999] max-w-[400px] bg-popover text-popover-foreground text-xs py-2 px-3 rounded-lg shadow-xl border border-border pointer-events-none"
+            style={{ display: "none" }}
+          />
+          {isRefetching && (
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
+          )}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-muted-foreground text-xs rounded">
+          {isFetching ? "Loading..." : "No data"}
+        </div>
+      )}
+    </div>
+  )
 }
 
 interface TrainerPerformanceAreaChartProps {

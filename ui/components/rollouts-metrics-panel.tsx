@@ -72,6 +72,8 @@ import {
   formatTooltipRunNameHtml,
   formatRunLabelHtml,
   InferencePerformanceChartCard,
+  InferencePerformanceAreaChartCard,
+  INFERENCE_PERF_AREA_VARIANTS,
   TrainerPerformanceChartCard,
   TrainerPerformanceAreaChartCard,
   TRAINER_PERF_AREA_VARIANTS,
@@ -323,6 +325,8 @@ type MetricOption = {
   evalName?: string
   isInferencePerformance?: boolean
   inferenceMetricType?: string
+  isInferencePerformanceArea?: boolean
+  inferenceAreaCategories?: string[]
   isTrainerPerformance?: boolean
   trainerMetricType?: string
   isTrainerPerformanceArea?: boolean
@@ -510,6 +514,21 @@ function buildMetricOptions(
       suffix: "",
       isInferencePerformance: true,
       inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Inference Performance - Breakdown (Area)
+  for (const variant of INFERENCE_PERF_AREA_VARIANTS) {
+    options.push({
+      category: "inference_performance_area",
+      categoryLabel: "Inference Performance",
+      group: "Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      prefix: variant.key,
+      suffix: "",
+      isInferencePerformanceArea: true,
+      inferenceAreaCategories: [...variant.categories],
     })
   }
 
@@ -755,20 +774,23 @@ function metricOptionsToCatalog(options: MetricOption[]): PlotCatalogItem[] {
     label: opt.label,
     plotType: opt.isInferencePerformance
       ? ("inference_performance" as const)
-      : opt.isTrainerPerformance
-        ? ("trainer_performance" as const)
-        : opt.isTrainerPerformanceArea
-          ? ("trainer_performance_area" as const)
-          : opt.isHistogram
-            ? ("histogram" as const)
-            : opt.isDistributionOverTime
-              ? ("distribution_over_time" as const)
-              : opt.isEvalMetric
-                ? ("eval_metric" as const)
-                : ("step_metric" as const),
+      : opt.isInferencePerformanceArea
+        ? ("inference_performance_area" as const)
+        : opt.isTrainerPerformance
+          ? ("trainer_performance" as const)
+          : opt.isTrainerPerformanceArea
+            ? ("trainer_performance_area" as const)
+            : opt.isHistogram
+              ? ("histogram" as const)
+              : opt.isDistributionOverTime
+                ? ("distribution_over_time" as const)
+                : opt.isEvalMetric
+                  ? ("eval_metric" as const)
+                  : ("step_metric" as const),
     evalName: opt.evalName,
     histogramMetricType: opt.histogramMetricType,
     inferenceMetricType: opt.inferenceMetricType,
+    inferenceAreaCategories: opt.inferenceAreaCategories,
     trainerMetricType: opt.trainerMetricType,
     trainerAreaCategories: opt.trainerAreaCategories,
     simple: !opt.suffix,
@@ -1030,17 +1052,19 @@ export function RolloutsMetricsPanel({
         label: config?.label || key,
         plotType: (config?.isInferencePerformance
           ? "inference_performance"
-          : config?.isTrainerPerformance
-            ? "trainer_performance"
-            : config?.isTrainerPerformanceArea
-              ? "trainer_performance_area"
-              : config?.isHistogram
-                ? "histogram"
-                : config?.isDistributionOverTime
-                  ? "distribution_over_time"
-                  : config?.isEvalMetric
-                    ? "eval_metric"
-                    : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance" | "trainer_performance" | "trainer_performance_area",
+          : config?.isInferencePerformanceArea
+            ? "inference_performance_area"
+            : config?.isTrainerPerformance
+              ? "trainer_performance"
+              : config?.isTrainerPerformanceArea
+                ? "trainer_performance_area"
+                : config?.isHistogram
+                  ? "histogram"
+                  : config?.isDistributionOverTime
+                    ? "distribution_over_time"
+                    : config?.isEvalMetric
+                      ? "eval_metric"
+                      : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area",
       }
     })
   }, [validSelectedMetrics, allMetricOptions])
@@ -1278,6 +1302,24 @@ export function RolloutsMetricsPanel({
                               scrollRoot={scrollRoot}
                               inferenceMetricType={config.inferenceMetricType!}
                               label={chartLabel}
+                              headerPrefix={dragHandle}
+                            />
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
+
+                    // Render inference performance area chart
+                    if (config?.isInferencePerformanceArea && config.inferenceAreaCategories) {
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
+                            <InferencePerformanceAreaChartCard
+                              runs={runsToDisplay}
+                              shouldPoll={shouldPoll}
+                              scrollRoot={scrollRoot}
+                              label={chartLabel}
+                              categories={config.inferenceAreaCategories!}
                               headerPrefix={dragHandle}
                             />
                           )}

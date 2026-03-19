@@ -52,7 +52,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCustomMetricsLayout, useCustomMetricsTemplate, useStepTimes } from "@/hooks/use-run-data"
-import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard, TrainerPerformanceChartCard, TrainerPerformanceAreaChartCard, TRAINER_PERF_AREA_VARIANTS } from "@/components/step-metrics-charts"
+import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard, InferencePerformanceAreaChartCard, INFERENCE_PERF_AREA_VARIANTS, TrainerPerformanceChartCard, TrainerPerformanceAreaChartCard, TRAINER_PERF_AREA_VARIANTS } from "@/components/step-metrics-charts"
 import type {
   CustomMetricsLayout,
   CustomSection,
@@ -92,11 +92,12 @@ export interface PlotCatalogItem {
   group?: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "trainer_performance" | "trainer_performance_area"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   histogramMetricType?: string
   inferenceMetricType?: string
+  inferenceAreaCategories?: string[]
   trainerMetricType?: string
   trainerAreaCategories?: string[]
   simple?: boolean
@@ -554,6 +555,18 @@ export function buildPlotCatalog(
     })
   }
 
+  // Inference Performance - Breakdown (Area)
+  for (const variant of INFERENCE_PERF_AREA_VARIANTS) {
+    catalog.push({
+      section: "Inference Performance",
+      group: "Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      plotType: "inference_performance_area",
+      inferenceAreaCategories: [...variant.categories],
+    })
+  }
+
   // Trainer Performance - Area Charts (first, matching Metrics page order)
   for (const variant of TRAINER_PERF_AREA_VARIANTS) {
     catalog.push({
@@ -1007,6 +1020,16 @@ export function SortablePlotCard({
           headerPrefix={dragHandle}
           headerSuffix={deleteButton}
         />
+      ) : plot.plotType === "inference_performance_area" && plot.inferenceAreaCategories ? (
+        <InferencePerformanceAreaChartCard
+          runs={chartProps.runs}
+          shouldPoll={chartProps.shouldPoll}
+          scrollRoot={chartProps.scrollRoot}
+          label={label}
+          categories={plot.inferenceAreaCategories}
+          headerPrefix={dragHandle}
+          headerSuffix={deleteButton}
+        />
       ) : plot.plotType === "trainer_performance" && plot.trainerMetricType ? (
         <TrainerPerformanceChartCard
           runs={chartProps.runs}
@@ -1126,6 +1149,7 @@ function SortableGroup({
       evalName: item.evalName,
       distMetricType: item.distMetricType,
       inferenceMetricType: item.inferenceMetricType,
+      inferenceAreaCategories: item.inferenceAreaCategories,
       trainerMetricType: item.trainerMetricType,
       trainerAreaCategories: item.trainerAreaCategories,
     }
@@ -1344,6 +1368,7 @@ function SortableSection({
       evalName: item.evalName,
       distMetricType: item.distMetricType,
       inferenceMetricType: item.inferenceMetricType,
+      inferenceAreaCategories: item.inferenceAreaCategories,
       trainerMetricType: item.trainerMetricType,
       trainerAreaCategories: item.trainerAreaCategories,
     }
