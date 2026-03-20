@@ -61,6 +61,7 @@ import {
   inferenceHighlightDiscardedAtom,
   inferenceShowWeightUpdateAtom,
   inferenceShowComputeRewardAtom,
+  inferenceSeparateComputeRewardAtom,
   inferenceLaneHeightAtom,
   inferenceLanePageAtom,
   inferenceMaxLanesAtom,
@@ -850,6 +851,13 @@ function InferenceSection({
   const [showComputeReward, setShowComputeReward] = useAtom(
     inferenceShowComputeRewardAtom,
   )
+  const [separateComputeReward, setSeparateComputeReward] = useAtom(
+    inferenceSeparateComputeRewardAtom,
+  )
+  const darkMode = useAtomValue(darkModeAtom)
+  const eventBorderMedium = darkMode
+    ? "1px solid rgba(255, 255, 255, 0.15)"
+    : "1px solid rgba(0, 0, 0, 0.2)"
   const [lanePage, setLanePage] = useAtom(inferenceLanePageAtom)
   const [maxLanes, setMaxLanes] = useAtom(inferenceMaxLanesAtom)
   const [serverPage, setServerPage] = useAtom(inferenceServerPageAtom)
@@ -1051,6 +1059,55 @@ function InferenceSection({
     [selectedRequest, setSelectedRequest],
   )
 
+  // Separate compute reward: extract reward items from all servers
+  const computeRewardItems = useMemo(() => {
+    if (!separateComputeReward) return []
+    const items: Array<{
+      startTime: number
+      duration: number
+      sourceEvent: InferenceEvent
+      server: number
+    }> = []
+    for (const [serverStr, events] of Object.entries(eventsByServer)) {
+      const server = Number(serverStr)
+      for (const event of events) {
+        if (event.event_type !== "request") continue
+        const rewardTime = event.compute_reward_time
+        if (rewardTime == null || rewardTime <= 0) continue
+        const envTime = event.environment_response_time
+        const startTime =
+          event.end_time + (envTime != null && envTime > 0 ? envTime : 0)
+        items.push({ startTime, duration: rewardTime, sourceEvent: event, server })
+      }
+    }
+    items.sort((a, b) => a.startTime - b.startTime)
+    return items
+  }, [separateComputeReward, eventsByServer])
+
+  // Greedy lane packing for separate compute reward section
+  const { packedRewardItems, rewardLaneCount } = useMemo(() => {
+    if (computeRewardItems.length === 0)
+      return { packedRewardItems: [] as Array<(typeof computeRewardItems)[number] & { lane: number }>, rewardLaneCount: 0 }
+    const laneEnds: number[] = []
+    const packed: Array<(typeof computeRewardItems)[number] & { lane: number }> = []
+    for (const item of computeRewardItems) {
+      let placed = false
+      for (let i = 0; i < laneEnds.length; i++) {
+        if (laneEnds[i] <= item.startTime) {
+          laneEnds[i] = item.startTime + item.duration
+          packed.push({ ...item, lane: i })
+          placed = true
+          break
+        }
+      }
+      if (!placed) {
+        packed.push({ ...item, lane: laneEnds.length })
+        laneEnds.push(item.startTime + item.duration)
+      }
+    }
+    return { packedRewardItems: packed, rewardLaneCount: laneEnds.length }
+  }, [computeRewardItems])
+
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <div className="flex items-center gap-2 mb-3">
@@ -1187,15 +1244,39 @@ function InferenceSection({
             >
               Show Weight Update
             </Toggle>
-            <Toggle
-              variant="selecting"
-              size="sm"
-              pressed={showComputeReward}
-              onPressedChange={setShowComputeReward}
-              className="text-xs px-2 h-7"
-            >
-              Show Compute Reward
-            </Toggle>
+            <div className="flex items-center">
+              <Toggle
+                variant="selecting"
+                size="sm"
+                pressed={showComputeReward}
+                onPressedChange={setShowComputeReward}
+                className="text-xs px-2 h-7 rounded-r-none"
+              >
+                Show Compute Reward
+              </Toggle>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className={cn(
+                      "flex items-center justify-center h-7 w-6 rounded-r-[min(var(--radius-md),12px)] transition-colors",
+                      showComputeReward
+                        ? "bg-primary text-secondary hover:bg-primary/90"
+                        : "bg-accent text-muted-foreground hover:text-accent-foreground hover:bg-muted",
+                    )}
+                  >
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuCheckboxItem
+                    checked={separateComputeReward}
+                    onCheckedChange={setSeparateComputeReward}
+                  >
+                    Separate
+                  </DropdownMenuCheckboxItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </>
         )}
       </div>
@@ -1237,7 +1318,7 @@ function InferenceSection({
                         discardStatusReady={renderDiscardStatusReady}
                         onEventClick={handleEventClick}
                         showWeightUpdate={showWeightUpdate}
-                        showComputeReward={showComputeReward}
+                        showComputeReward={showComputeReward && !separateComputeReward}
                         laneHeight={laneHeight}
                         laneStart={childLaneStart}
                         maxLanesToShow={childMaxLanesToShow}
@@ -1254,6 +1335,111 @@ function InferenceSection({
             </div>
           )}
         </div>
+
+        {/* Separate compute reward section */}
+        {separateComputeReward && packedRewardItems.length > 0 && (
+          <div className="mt-3">
+            <div className="text-xs font-medium text-muted-foreground mb-0.5">
+              Compute Reward
+            </div>
+            <div
+              className="relative bg-muted/30 rounded-lg border border-border/50"
+              style={{
+                height:
+                  rewardLaneCount * laneHeight +
+                  Math.max(0, rewardLaneCount - 1) * 2,
+              }}
+            >
+              {packedRewardItems.map((item, idx) => {
+                const intervalEnd = intervalStart + intervalDuration
+                const rewardEnd = item.startTime + item.duration
+                if (
+                  item.startTime >= intervalEnd ||
+                  rewardEnd <= intervalStart
+                )
+                  return null
+
+                const visibleStart = Math.max(item.startTime, intervalStart)
+                const visibleEnd = Math.min(rewardEnd, intervalEnd)
+                const leftPct = Math.max(
+                  0,
+                  ((visibleStart - intervalStart) / intervalDuration) * 100,
+                )
+                const widthPct = Math.max(
+                  0.3,
+                  ((visibleEnd - visibleStart) / intervalDuration) * 100,
+                )
+                const laneTop = item.lane * (laneHeight + 2)
+
+                const rewardStyle = getTimingBarStyle(
+                  item.sourceEvent,
+                  "reward",
+                  selectedRequest,
+                  sampleStatusByKey,
+                  highlightDiscarded,
+                  discardStatusReady,
+                  darkMode,
+                )
+
+                return (
+                  <HoverTooltipBlock
+                    key={`cr-${idx}`}
+                    className="absolute group cursor-pointer"
+                    style={{
+                      left: `${leftPct}%`,
+                      width: `${Math.min(widthPct, 100 - leftPct)}%`,
+                      top: laneTop,
+                      height: laneHeight,
+                      backgroundColor: rewardStyle.color,
+                      borderRadius: "1px",
+                      border: eventBorderMedium,
+                      boxSizing: "border-box",
+                      opacity: rewardStyle.opacity,
+                    }}
+                    onClick={() => handleEventClick(item.sourceEvent)}
+                    tooltip={
+                      <EventTooltip
+                        title={
+                          item.sourceEvent.is_eval
+                            ? "Compute Metrics"
+                            : "Compute Reward"
+                        }
+                        titleSecondary={
+                          item.sourceEvent.sample_id !== undefined
+                            ? `Sample ${item.sourceEvent.sample_id}`
+                            : undefined
+                        }
+                        color={rewardStyle.color}
+                        details={[
+                          {
+                            label: "Duration",
+                            value: formatDuration(item.duration * 1000),
+                          },
+                          ...(item.sourceEvent.group_id !== undefined
+                            ? [
+                                {
+                                  label: "Group",
+                                  value: String(item.sourceEvent.group_id),
+                                },
+                              ]
+                            : []),
+                          {
+                            label: "Server",
+                            value: String(item.server),
+                          },
+                          {
+                            label: "Lane",
+                            value: String(item.lane),
+                          },
+                        ]}
+                      />
+                    }
+                  />
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Time axis at bottom */}
         <div className="flex justify-between text-xs text-muted-foreground mt-2">
