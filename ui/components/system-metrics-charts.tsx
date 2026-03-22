@@ -2,7 +2,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { useAtomValue } from "jotai"
 import { darkModeAtom } from "@/lib/atoms"
-import { ChevronDown, X, SlidersHorizontal, Loader2 } from "lucide-react"
+import { ChevronDown, X, SlidersHorizontal, Loader2, Maximize2, Minimize2 } from "lucide-react"
 import uPlot from "uplot"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
@@ -528,6 +528,51 @@ function FilterBadge({
   )
 }
 
+// Fullscreen hook + button for chart cards
+function useChartFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreen(false)
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [isFullscreen])
+
+  const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
+
+  return { isFullscreen, toggleFullscreen }
+}
+
+function FullscreenButton({
+  isFullscreen,
+  onClick,
+}: {
+  isFullscreen: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all",
+        isFullscreen
+          ? "opacity-100"
+          : "opacity-0 group-hover/chart:opacity-100",
+      )}
+      title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+    >
+      {isFullscreen ? (
+        <Minimize2 className="h-3 w-3" />
+      ) : (
+        <Maximize2 className="h-3 w-3" />
+      )}
+    </button>
+  )
+}
+
 // ============================================================================
 // CPU Metric Chart Component (matching MetricChart style from /metrics)
 // ============================================================================
@@ -549,6 +594,7 @@ function CpuMetricChart({
   xOffset?: number
 }) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -905,13 +951,16 @@ function CpuMetricChart({
   return (
     <div
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
-        isLoading && "opacity-60"
+        "group/chart bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && isLoading && "opacity-60"
       )}
     >
-      <div className="flex items-center justify-between mb-2 gap-2">
+      <div className="flex items-center justify-between mb-2 gap-2 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <h4 className="text-xs font-medium truncate" title={metricName}>{metricInfo.label}</h4>
+          <h4 className={cn("font-medium truncate", isFullscreen ? "text-sm" : "text-xs")} title={metricName}>{metricInfo.label}</h4>
           {ignoreOutliers && (
             <FilterBadge label="Ignore Outliers" onRemove={() => setIgnoreOutliers(false)} />
           )}
@@ -971,11 +1020,12 @@ function CpuMetricChart({
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
         </div>
       </div>
       {hasData ? (
         <div
-          className="h-[200px] relative bg-background rounded"
+          className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -989,7 +1039,7 @@ function CpuMetricChart({
           />
         </div>
       ) : (
-        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}>
           {isLoading ? "Loading..." : `No data for ${metricInfo.label}`}
         </div>
       )}
@@ -1177,6 +1227,7 @@ function VllmMetricChart({
   xOffset?: number
 }) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -1521,13 +1572,16 @@ function VllmMetricChart({
   return (
     <div
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
-        isLoading && "opacity-60"
+        "group/chart bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && isLoading && "opacity-60"
       )}
     >
-      <div className="flex items-center justify-between mb-2 gap-2">
+      <div className="flex items-center justify-between mb-2 gap-2 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <h4 className="text-xs font-medium truncate" title={metricName}>{metricInfo.label}</h4>
+          <h4 className={cn("font-medium truncate", isFullscreen ? "text-sm" : "text-xs")} title={metricName}>{metricInfo.label}</h4>
           {ignoreOutliers && (
             <FilterBadge label="Ignore Outliers" onRemove={() => setIgnoreOutliers(false)} />
           )}
@@ -1587,11 +1641,12 @@ function VllmMetricChart({
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
         </div>
       </div>
       {hasData ? (
         <div
-          className="h-[200px] relative bg-background rounded"
+          className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -1605,7 +1660,7 @@ function VllmMetricChart({
           />
         </div>
       ) : (
-        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}>
           {isLoading ? "Loading..." : `No data for ${metricInfo.label}`}
         </div>
       )}

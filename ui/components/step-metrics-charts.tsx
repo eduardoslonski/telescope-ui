@@ -30,7 +30,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { ChevronDown, X, SlidersHorizontal, Loader2 } from "lucide-react"
+import { ChevronDown, X, SlidersHorizontal, Loader2, Maximize2, Minimize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   useStepMetricsMultiRun,
@@ -128,6 +128,51 @@ export function FilterBadge({
       {label}
       <X className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
     </span>
+  )
+}
+
+// Fullscreen hook + button for chart cards
+function useChartFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreen(false)
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [isFullscreen])
+
+  const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
+
+  return { isFullscreen, toggleFullscreen }
+}
+
+function FullscreenButton({
+  isFullscreen,
+  onClick,
+}: {
+  isFullscreen: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all",
+        isFullscreen
+          ? "opacity-100"
+          : "opacity-0 group-hover/chart:opacity-100",
+      )}
+      title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+    >
+      {isFullscreen ? (
+        <Minimize2 className="h-3 w-3" />
+      ) : (
+        <Maximize2 className="h-3 w-3" />
+      )}
+    </button>
   )
 }
 
@@ -2033,6 +2078,7 @@ export function DistributionOverTimeChart({
   headerSuffix,
 }: DistributionOverTimeChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -2447,26 +2493,30 @@ export function DistributionOverTimeChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
-        showLoadingOpacity && "opacity-50",
+        "group/chart bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 shrink-0">
         {headerPrefix}
         <div className="flex-1 min-w-0">
           <h4
-            className="text-xs font-medium leading-snug line-clamp-2 break-words"
+            className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
             title={label}
           >
             {label}
           </h4>
         </div>
-        {headerSuffix && (
-          <div className="flex items-center gap-2 shrink-0">{headerSuffix}</div>
-        )}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+          {headerSuffix}
+        </div>
       </div>
       {hasData ? (
-        <div className="h-[200px] relative bg-background rounded" ref={containerRef}>
+        <div className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")} ref={containerRef}>
           <canvas
             className="block w-full h-full max-w-full"
             ref={canvasRef}
@@ -2488,7 +2538,7 @@ export function DistributionOverTimeChart({
           )}
         </div>
       ) : (
-        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}>
           {isFetching ? "Loading..." : "No data"}
         </div>
       )}
@@ -2595,6 +2645,7 @@ export function EvalMetricChart({
   filterKey: filterKeyProp,
 }: EvalMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -3361,8 +3412,11 @@ export function EvalMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
@@ -3370,7 +3424,7 @@ export function EvalMetricChart({
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={metricName}
             >
               {titleText}
@@ -3446,6 +3500,7 @@ export function EvalMetricChart({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
@@ -3815,6 +3870,7 @@ export function MetricChart({
   filterKey: filterKeyProp,
 }: MetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -4781,8 +4837,11 @@ export function MetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
@@ -4790,7 +4849,7 @@ export function MetricChart({
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={metricName}
             >
               {titleText}
@@ -4897,6 +4956,7 @@ export function MetricChart({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
@@ -5031,6 +5091,7 @@ function InferencePerformanceMetricChart({
   headerSuffix,
 }: InferencePerformanceMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -5429,8 +5490,11 @@ function InferencePerformanceMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
@@ -5438,7 +5502,7 @@ function InferencePerformanceMetricChart({
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={label}
             >
               {label}
@@ -5483,6 +5547,7 @@ function InferencePerformanceMetricChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
@@ -5714,6 +5779,7 @@ function TrainerPerformanceMetricChart({
   headerSuffix,
 }: TrainerPerformanceMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -6010,8 +6076,11 @@ function TrainerPerformanceMetricChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
@@ -6019,7 +6088,7 @@ function TrainerPerformanceMetricChart({
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={label}
             >
               {label}
@@ -6058,6 +6127,7 @@ function TrainerPerformanceMetricChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
@@ -6192,6 +6262,7 @@ function InferencePerformanceAreaChart({
   headerSuffix,
 }: InferencePerformanceAreaChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -6480,15 +6551,18 @@ function InferencePerformanceAreaChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
-            <h4 className="text-xs font-medium leading-snug line-clamp-2 break-words" title={label}>
+            <h4 className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")} title={label}>
               {label}
             </h4>
           </div>
@@ -6525,6 +6599,7 @@ function InferencePerformanceAreaChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
@@ -6606,6 +6681,7 @@ function TrainerPerformanceAreaChart({
   headerSuffix,
 }: TrainerPerformanceAreaChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -6879,15 +6955,18 @@ function TrainerPerformanceAreaChart({
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
             {headerPrefix}
-            <h4 className="text-xs font-medium leading-snug line-clamp-2 break-words" title={label}>
+            <h4 className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")} title={label}>
               {label}
             </h4>
           </div>
@@ -6924,6 +7003,7 @@ function TrainerPerformanceAreaChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
             {headerSuffix}
           </div>
         </div>
