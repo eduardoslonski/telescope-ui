@@ -1,5 +1,6 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+import { createPortal } from "react-dom"
 import { useAtomValue } from "jotai"
 import { darkModeAtom } from "@/lib/atoms"
 import { ChevronDown, X, SlidersHorizontal, Loader2, Maximize2, Minimize2 } from "lucide-react"
@@ -543,7 +544,13 @@ function useChartFullscreen() {
 
   const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
 
-  return { isFullscreen, toggleFullscreen }
+  const fullscreenPortal = useCallback(
+    (content: React.ReactElement) =>
+      isFullscreen ? createPortal(content, document.body) : content,
+    [isFullscreen],
+  )
+
+  return { isFullscreen, toggleFullscreen, fullscreenPortal }
 }
 
 function FullscreenButton({
@@ -594,7 +601,7 @@ function CpuMetricChart({
   xOffset?: number
 }) {
   const darkMode = useAtomValue(darkModeAtom)
-  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -912,7 +919,7 @@ function CpuMetricChart({
 
             let tooltipY = containerRect.top - tooltipRect.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX}px`
@@ -929,9 +936,9 @@ function CpuMetricChart({
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width: newWidth } = entry.contentRect
-        if (chart && newWidth > 0) {
-          chart.setSize({ width: newWidth, height })
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
         }
       }
     })
@@ -942,13 +949,13 @@ function CpuMetricChart({
       chart.destroy()
       chartRef.current = null
     }
-  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, showLegend, metricInfo.unit, nodeIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode])
+  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, showLegend, metricInfo.unit, nodeIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode, isFullscreen])
 
   const handleMouseLeave = useCallback(() => {
     if (tooltipRef.current) tooltipRef.current.style.display = "none"
   }, [])
 
-  return (
+  return fullscreenPortal(
     <div
       className={cn(
         "group/chart bg-background",
@@ -1227,7 +1234,7 @@ function VllmMetricChart({
   xOffset?: number
 }) {
   const darkMode = useAtomValue(darkModeAtom)
-  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -1533,7 +1540,7 @@ function VllmMetricChart({
 
             let tooltipY = containerRect.top - tooltipRect.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX}px`
@@ -1550,9 +1557,9 @@ function VllmMetricChart({
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width: newWidth } = entry.contentRect
-        if (chart && newWidth > 0) {
-          chart.setSize({ width: newWidth, height })
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
         }
       }
     })
@@ -1563,13 +1570,13 @@ function VllmMetricChart({
       chart.destroy()
       chartRef.current = null
     }
-  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, metricInfo.unit, serverIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode])
+  }, [uplotData, hasData, seriesConfig, metricName, timeRange, xOffset, metricInfo.unit, serverIds, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode, isFullscreen])
 
   const handleMouseLeave = useCallback(() => {
     if (tooltipRef.current) tooltipRef.current.style.display = "none"
   }, [])
 
-  return (
+  return fullscreenPortal(
     <div
       className={cn(
         "group/chart bg-background",

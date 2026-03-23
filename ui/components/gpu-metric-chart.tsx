@@ -1,5 +1,6 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
+import { createPortal } from "react-dom"
 import uPlot from "uplot"
 import { useAtomValue } from "jotai"
 import { X, SlidersHorizontal, Loader2, Maximize2, Minimize2 } from "lucide-react"
@@ -211,7 +212,13 @@ function useChartFullscreen() {
 
   const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
 
-  return { isFullscreen, toggleFullscreen }
+  const fullscreenPortal = useCallback(
+    (content: React.ReactElement) =>
+      isFullscreen ? createPortal(content, document.body) : content,
+    [isFullscreen],
+  )
+
+  return { isFullscreen, toggleFullscreen, fullscreenPortal }
 }
 
 function FullscreenButton({
@@ -334,7 +341,7 @@ export function GpuMetricChart({
   isRefetching?: boolean
 }) {
   const darkMode = useAtomValue(darkModeAtom)
-  const { isFullscreen, toggleFullscreen } = useChartFullscreen()
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -739,7 +746,7 @@ export function GpuMetricChart({
 
             let tooltipY = containerRect.top - tooltipRect.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX}px`
@@ -756,9 +763,9 @@ export function GpuMetricChart({
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width: newWidth } = entry.contentRect
-        if (chart && newWidth > 0) {
-          chart.setSize({ width: newWidth, height })
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
         }
       }
     })
@@ -791,6 +798,7 @@ export function GpuMetricChart({
     minY,
     maxY,
     darkMode,
+    isFullscreen,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -803,7 +811,7 @@ export function GpuMetricChart({
     )
   }
 
-  return (
+  return fullscreenPortal(
     <div
       className={cn(
         "rounded-lg border transition-opacity",
