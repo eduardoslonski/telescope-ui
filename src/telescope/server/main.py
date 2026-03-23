@@ -7797,6 +7797,16 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [req.run_path],
     ).fetchall()
 
+    # Last event time (for detecting unfinished intervals)
+    last_time_row = con.execute(
+        """
+        SELECT MAX(end_time) FROM events_inference
+        WHERE run_id = ? AND end_time IS NOT NULL
+        """,
+        [req.run_path],
+    ).fetchone()
+    last_time = last_time_row[0] if last_time_row and last_time_row[0] is not None else None
+
     con.close()
 
     # Compute utilization buckets
@@ -7892,6 +7902,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
             if row[1] is not None
         ],
         "first_time": first_time,
+        "last_time": last_time,
     }
 
 
@@ -7936,7 +7947,7 @@ def get_trainer_performance(req: TrainerPerformanceRequest):
     con.close()
 
     if not events:
-        return {"buckets": [], "first_time": None, "step_times": [], "event_types": []}
+        return {"buckets": [], "first_time": None, "last_time": None, "step_times": [], "event_types": []}
 
     # Collect unique ranks and event types
     all_ranks = set()
@@ -7993,9 +8004,13 @@ def get_trainer_performance(req: TrainerPerformanceRequest):
         if t is not None and (first_time is None or t < first_time):
             first_time = t
 
+    # Last event time (for detecting unfinished intervals)
+    last_time = max(end_time for _, _, _, end_time in events) if events else None
+
     return {
         "buckets": result_buckets,
         "first_time": first_time,
+        "last_time": last_time,
         "step_times": [
             {"step": row[0], "time": row[1]}
             for row in step_rows
