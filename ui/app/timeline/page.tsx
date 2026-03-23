@@ -38,11 +38,12 @@ import {
   useInferenceEventsByGroup,
   useTrainerBreakdownEvents,
   useTimelinePaginated,
+  useInflightGenerations,
   useRunSummary,
   useSampleStatuses,
   useSampleDetails,
 } from "@/hooks/use-run-data"
-import type { GpuMetric, InferenceEvent, TrainerEvent } from "@/lib/types"
+import type { GpuMetric, InferenceEvent, TrainerEvent, InflightSnapshot } from "@/lib/types"
 import { parseSetupJson, asObject, asNumber } from "@/components/topology-viewer"
 
 function parseDeviceList(value: unknown): number[] {
@@ -299,6 +300,12 @@ export default function TimelinePage() {
     selectedRunPath || "",
     page,
     intervalSeconds,
+    !!selectedRunPath,
+    shouldPoll
+  )
+
+  const { data: inflightData } = useInflightGenerations(
+    selectedRunPath || "",
     !!selectedRunPath,
     shouldPoll
   )
@@ -562,6 +569,7 @@ export default function TimelinePage() {
             orchestratorData={timelineData?.orchestrator_events}
             trainerData={timelineData?.trainer_events}
             inferenceData={timelineData?.inference_events}
+            inflightSnapshot={inflightData}
             isLoading={isTimelineTransitionLoading}
             intervalStart={timelineData?.interval_start ?? 0}
             intervalEnd={timelineData?.interval_end ?? intervalSeconds}
@@ -790,6 +798,18 @@ function TimelineFooter({
     )
   }, [groupEventsBySampleId])
 
+  // Check if the selected group is inflight or pending status (not yet kept/discarded)
+  const isInflightOrPendingGroup = useMemo(() => {
+    if (isCanceledGroup || isDiscardedGroup) return false
+    if (!highlightDiscarded) return false
+    // If status not ready yet, it's pending
+    if (!footerDiscardStatusReady) return true
+    // If status is ready but no statuses found for this group, it's pending
+    if (!footerSampleStatuses?.statuses?.length) return true
+    // If none are categorized as kept ("rollouts"), it's pending
+    return !footerSampleStatuses.statuses.some((s) => s.kind === "rollouts")
+  }, [isCanceledGroup, isDiscardedGroup, highlightDiscarded, footerDiscardStatusReady, footerSampleStatuses])
+
   // ---- Sample details for discard reason + advantage summary ----
   const { data: sampleDetails } = useSampleDetails(
     runPath ?? "",
@@ -902,7 +922,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className="w-2.5 h-2.5 rounded-sm"
-                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : selectedRequest.isEval ? "#047857" : "#075985" }}
+                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : isInflightOrPendingGroup ? "rgba(161, 98, 7, 0.9)" : selectedRequest.isEval ? "#047857" : "#075985" }}
               />
               <span className="text-xs font-medium">Sample {selectedRequest.sampleId}</span>
             </div>
@@ -910,13 +930,18 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className={`w-2.5 h-2.5 rounded-sm${!footerDiscardStatusReady ? " animate-pulse bg-muted" : ""}`}
-                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
+                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : isInflightOrPendingGroup ? "rgba(202, 138, 4, 0.8)" : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
               />
               <span className="text-xs font-medium">Group {selectedRequest.groupId}</span>
             </div>
             {isCanceledGroup && (
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border">
                 Canceled due to async policy
+              </span>
+            )}
+            {isInflightOrPendingGroup && !isCanceledGroup && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 border border-yellow-200">
+                Waiting for Group
               </span>
             )}
             {discardReason && (

@@ -83,6 +83,7 @@ log = logging.getLogger(__name__)
 app = FastAPI()
 MAX_CODE_FILE_BYTES = 2 * 1024 * 1024
 
+
 # All tables keyed by run_id (used for bulk deletion)
 _TABLES_WITH_RUN_ID = [
     "events_orchestrator",
@@ -2717,7 +2718,7 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
                decode_time, inference_time, e2e_latency, max_tokens,
                server_lane as lane, is_eval, step, is_canceled, off_policy_steps
         FROM events_inference
-        WHERE run_id = ? AND group_id = ? AND event_type = 'request'
+        WHERE run_id = ? AND group_id = ? AND event_type = 'request' AND (phase IS NULL OR phase != 'start')
         ORDER BY start_time ASC
         """,
         [req.run_path, req.group_id],
@@ -3466,7 +3467,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
                    ROW_NUMBER() OVER (PARTITION BY group_id, sample_id ORDER BY start_time) as turn_pos,
                    COUNT(*) OVER (PARTITION BY group_id, sample_id) as total_turns
             FROM events_inference
-            WHERE run_id = ? AND event_type = 'request'
+            WHERE run_id = ? AND event_type = 'request' AND (phase IS NULL OR phase != 'start')
         ),
         ranked_env AS (
             SELECT group_id, sample_idx,
@@ -3598,6 +3599,20 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         "global_min_time": global_min_time,
         "global_max_time": global_max_time,
     }
+
+
+@app.get("/events/inflight/{run_path:path}")
+def get_inflight_generations(run_path: str):
+    """Get the latest inflight generation snapshot for a run.
+
+    Returns the in-memory snapshot (from the last tail.zip download).
+    This is ephemeral data — not persisted to DB.
+    """
+    from .ingest import inflight_by_run
+    data = inflight_by_run.get(run_path)
+    if data is None:
+        return {"snapshot_time": None, "running": []}
+    return data
 
 
 @app.post("/system-metrics/gpu")

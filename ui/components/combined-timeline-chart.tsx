@@ -80,6 +80,7 @@ import type {
   TrainerEvent,
   InferenceEvent,
   GpuMetric,
+  InflightSnapshot,
 } from "@/lib/types"
 
 // Threshold for considering events as "close" (5ms in seconds for 60s interval)
@@ -352,12 +353,14 @@ interface CombinedTimelineChartProps {
   maxConcurrentPrompts?: number
   groupSize?: number
   freeLaneAfterGeneration?: boolean
+  inflightSnapshot?: InflightSnapshot
 }
 
 export function CombinedTimelineChart({
   orchestratorData,
   trainerData,
   inferenceData,
+  inflightSnapshot,
   isLoading,
   intervalStart,
   intervalEnd,
@@ -412,19 +415,51 @@ export function CombinedTimelineChart({
     )
   }, [trainerData, intervalStart, intervalEnd])
 
+  // Merge inflight generations into inference events as synthetic "in-progress" bars.
+  // For each running generation in the snapshot, if there's no matching end event
+  // (same sample_id), create a synthetic event extending to the snapshot time.
+  const inferenceWithInflight = useMemo(() => {
+    const events = inferenceData ?? []
+    if (!inflightSnapshot?.running?.length || !inflightSnapshot.snapshot_time) {
+      return events
+    }
+    // Collect sample_ids that already have end events
+    const endedSampleIds = new Set(
+      events
+        .filter((e) => e.sample_id != null)
+        .map((e) => e.sample_id!)
+    )
+    // Create synthetic events for inflight generations that have no end event
+    const syntheticEvents: InferenceEvent[] = inflightSnapshot.running
+      .filter((gen) => !endedSampleIds.has(gen.sample_id))
+      .map((gen) => ({
+        event_type: "request",
+        server: gen.server,
+        start_time: gen.start_time,
+        end_time: inflightSnapshot.snapshot_time!,
+        prompt_tokens: gen.prompt_tokens,
+        sample_id: gen.sample_id,
+        group_id: gen.group_id,
+        lane: gen.server_lane,
+        is_eval: gen.is_eval,
+        phase: "inflight",
+      }))
+    return [...events, ...syntheticEvents]
+  }, [inferenceData, inflightSnapshot])
+
   // Page-scoped inference events (for display / discard checks).
   // Use the effective end time (including env response + compute reward)
   // so that events whose reward trace extends into this page are kept.
   const filteredInferenceData = useMemo(() => {
-    if (!inferenceData || inferenceData.length === 0) return []
-    return inferenceData.filter((event) => {
+    if (!inferenceWithInflight || inferenceWithInflight.length === 0) return []
+    return inferenceWithInflight.filter((event) => {
       const effectiveEnd =
         event.end_time +
         (event.environment_response_time ?? 0) +
         (event.compute_reward_time ?? 0)
       return event.start_time < intervalEnd && effectiveEnd > intervalStart
     })
-  }, [inferenceData, intervalStart, intervalEnd])
+  }, [inferenceWithInflight, intervalStart, intervalEnd])
 
   const { eventsByRank, ranks } = useMemo(() => {
     const byRank: Record<number, TrainerEvent[]> = {}
@@ -1562,13 +1597,24 @@ export function GroupSampleTimeline({
     return false
   }, [eventsBySampleId])
 
+  // Check if group is inflight or pending status (not yet kept/discarded)
+  const isInflightOrPendingGroup = useMemo(() => {
+    if (isCanceledGroup || isDiscardedGroup) return false
+    if (!highlightDiscarded) return false
+    if (!discardStatusReady) return true
+    if (!sampleStatuses?.statuses?.length) return true
+    return !sampleStatuses.statuses.some((s) => s.kind === "rollouts")
+  }, [isCanceledGroup, isDiscardedGroup, highlightDiscarded, discardStatusReady, sampleStatuses])
+
   const groupColor = isCanceledGroup
     ? (darkMode ? GROUP_SAMPLE_CANCELED_COLOR_DARK : GROUP_SAMPLE_CANCELED_COLOR_LIGHT)
     : isDiscardedGroup
       ? (darkMode ? GROUP_SAMPLE_DISCARDED_COLOR_DARK : GROUP_SAMPLE_DISCARDED_COLOR_LIGHT)
-      : isEvalGroup
-        ? GROUP_SAMPLE_EVAL_COLOR
-        : GROUP_SAMPLE_COLOR
+      : isInflightOrPendingGroup
+        ? (darkMode ? "rgba(202, 138, 4, 0.7)" : "rgba(202, 138, 4, 0.8)")
+        : isEvalGroup
+          ? GROUP_SAMPLE_EVAL_COLOR
+          : GROUP_SAMPLE_COLOR
 
   const rowHeight = 16
   const rowGap = 3
@@ -1614,16 +1660,20 @@ export function GroupSampleTimeline({
                         ? "text-muted-foreground bg-gray-400/15 hover:bg-gray-400/25"
                         : isDiscardedGroup
                           ? "text-muted-foreground bg-gray-500/15 hover:bg-gray-500/25"
-                          : isEvalGroup
-                            ? "text-emerald-800 bg-emerald-500/15 hover:bg-emerald-500/25"
-                            : "text-sky-900 bg-sky-500/15 hover:bg-sky-500/25"
+                          : isInflightOrPendingGroup
+                            ? "text-yellow-800 bg-yellow-500/15 hover:bg-yellow-500/25"
+                            : isEvalGroup
+                              ? "text-emerald-800 bg-emerald-500/15 hover:bg-emerald-500/25"
+                              : "text-sky-900 bg-sky-500/15 hover:bg-sky-500/25"
                       : isCanceledGroup
                         ? "text-muted-foreground bg-gray-400/10 hover:bg-gray-400/20"
                         : isDiscardedGroup
                           ? "text-muted-foreground bg-gray-500/10 hover:bg-gray-500/20"
-                          : isEvalGroup
-                            ? "text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20"
-                            : "text-sky-700 bg-sky-500/10 hover:bg-sky-500/20"
+                          : isInflightOrPendingGroup
+                            ? "text-yellow-700 bg-yellow-500/10 hover:bg-yellow-500/20"
+                            : isEvalGroup
+                              ? "text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20"
+                              : "text-sky-700 bg-sky-500/10 hover:bg-sky-500/20"
                   }`}
                   style={{ height: rowHeight, width: 34 }}
                 >
@@ -1648,9 +1698,11 @@ export function GroupSampleTimeline({
                 ? (darkMode ? GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK : GROUP_SAMPLE_CANCELED_SELECTED_COLOR_LIGHT)
                 : isDiscardedGroup
                   ? (darkMode ? "#9ca3af" : "#6b7280")
-                  : isEvalGroup
-                    ? GROUP_SAMPLE_EVAL_SELECTED_COLOR
-                    : GROUP_SAMPLE_SELECTED_COLOR
+                  : isInflightOrPendingGroup
+                    ? (darkMode ? "rgba(161, 98, 7, 0.8)" : "rgba(161, 98, 7, 0.9)")
+                    : isEvalGroup
+                      ? GROUP_SAMPLE_EVAL_SELECTED_COLOR
+                      : GROUP_SAMPLE_SELECTED_COLOR
               : groupColor
 
             // Sort events by start_time for env response placement
@@ -2495,6 +2547,10 @@ function getInferenceEventBaseColor(
   if (event.event_type !== "request") {
     return getInferenceEventColor(event.event_type)
   }
+  // Inflight (in-progress) events use yellow to distinguish from completed (blue)
+  if (event.phase === "inflight") {
+    return darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)" // yellow-400/yellow-500 at 50% opacity
+  }
   if (event.is_canceled) {
     return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
   }
@@ -2503,8 +2559,9 @@ function getInferenceEventBaseColor(
       ? INFERENCE_REQUEST_EVAL_COLOR
       : INFERENCE_REQUEST_COLOR
   }
+  // Status not loaded yet — show darker yellow ("done but unknown status")
   if (!discardStatusReady) {
-    return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
+    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)" // yellow-600
   }
   if (!sampleStatusByKey || event.sample_id == null || event.group_id == null) {
     return event.is_eval
@@ -2515,6 +2572,10 @@ function getInferenceEventBaseColor(
   const status = sampleStatusByKey.get(key)
   if (status === "rollouts_discarded") {
     return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
+  }
+  // Done but not yet categorized as kept or discarded — darker yellow
+  if (status == null) {
+    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)" // yellow-600
   }
   return event.is_eval ? INFERENCE_REQUEST_EVAL_COLOR : INFERENCE_REQUEST_COLOR
 }
@@ -2541,6 +2602,7 @@ function getInferenceEventSelectionColor(
 
   const isDiscarded = defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR || defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR_DARK
   const isCanceled = defaultColor === INFERENCE_REQUEST_CANCELED_COLOR || defaultColor === INFERENCE_REQUEST_CANCELED_COLOR_DARK
+  const isInflightOrPending = event.phase === "inflight" || defaultColor.includes("202, 138, 4") || defaultColor.includes("234, 179, 8") || defaultColor.includes("250, 204, 21")
 
   // Selected sample = darker version of base color
   if (event.sample_id === selectedRequest.sampleId) {
@@ -2549,6 +2611,9 @@ function getInferenceEventSelectionColor(
     }
     if (isDiscarded) {
       return { color: darkMode ? "#9ca3af" : "#6b7280", opacity: 1 }
+    }
+    if (isInflightOrPending) {
+      return { color: darkMode ? "rgba(161, 98, 7, 0.8)" : "rgba(161, 98, 7, 0.9)", opacity: 1 } // yellow-700
     }
     const selectedColor = event.is_eval
       ? INFERENCE_REQUEST_EVAL_SELECTED_COLOR
@@ -2563,6 +2628,9 @@ function getInferenceEventSelectionColor(
     }
     if (isDiscarded) {
       return { color: darkMode ? GROUP_SAMPLE_DISCARDED_COLOR_DARK : GROUP_SAMPLE_DISCARDED_COLOR_LIGHT, opacity: 1 }
+    }
+    if (isInflightOrPending) {
+      return { color: darkMode ? "rgba(202, 138, 4, 0.7)" : "rgba(202, 138, 4, 0.8)", opacity: 1 } // yellow-600
     }
     return {
       color: event.is_eval ? GROUP_SAMPLE_EVAL_COLOR : GROUP_SAMPLE_COLOR,
@@ -2699,17 +2767,25 @@ function InferenceEventBlock({
   // Determine status label for tooltip
   const statusLabel = (() => {
     if (event.event_type !== "request") return null
+    if (event.phase === "inflight")
+      return { text: "In Progress", className: "text-yellow-500" }
     if (event.is_canceled)
       return { text: "Canceled", className: "text-muted-foreground" }
     if (
       highlightDiscarded &&
-      discardStatusReady &&
       event.sample_id != null &&
       event.group_id != null
     ) {
+      if (!discardStatusReady) {
+        return { text: "Pending Status", className: "text-yellow-600" }
+      }
       const key = `${event.group_id}:${event.sample_id}`
-      if (sampleStatusByKey.get(key) === "rollouts_discarded") {
+      const status = sampleStatusByKey.get(key)
+      if (status === "rollouts_discarded") {
         return { text: "Discarded", className: "text-red-700" }
+      }
+      if (status == null) {
+        return { text: "Finished (Waiting for Group)", className: "text-yellow-600" }
       }
     }
     return null
@@ -2726,9 +2802,11 @@ function InferenceEventBlock({
         minWidth: "1px",
         backgroundColor: color,
         borderRadius: "1px",
-        border: event.is_canceled
-          ? (darkMode ? "1.5px solid rgba(255, 255, 255, 0.15)" : "1.5px solid rgba(0, 0, 0, 0.2)")
-          : (darkMode ? "1.5px solid rgba(255, 255, 255, 0.2)" : "1.5px solid rgba(0, 0, 0, 0.3)"),
+        border: event.phase === "inflight"
+          ? (darkMode ? "1.5px dashed rgba(250, 204, 21, 0.7)" : "1.5px dashed rgba(234, 179, 8, 0.7)")
+          : event.is_canceled
+            ? (darkMode ? "1.5px solid rgba(255, 255, 255, 0.15)" : "1.5px solid rgba(0, 0, 0, 0.2)")
+            : (darkMode ? "1.5px solid rgba(255, 255, 255, 0.2)" : "1.5px solid rgba(0, 0, 0, 0.3)"),
         boxSizing: "border-box",
         opacity,
       }}
