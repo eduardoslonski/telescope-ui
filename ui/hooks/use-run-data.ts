@@ -37,6 +37,7 @@ import type {
   TrainerPerformanceResponse,
   LogsResponse,
   LogsSummaryResponse,
+  InflightSnapshot,
 } from "@/lib/types"
 
 // ============================================================================
@@ -426,6 +427,28 @@ export function useTimelinePaginated(
     refetchInterval: shouldPoll ? POLL_INTERVAL : false,
     placeholderData: keepPreviousData,
     gcTime: 0,
+  })
+}
+
+export function useInflightGenerations(
+  runPath: string,
+  enabled: boolean,
+  shouldPoll: boolean
+) {
+  return useQuery<InflightSnapshot>({
+    queryKey: ["inflight-generations", runPath],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/events/inflight/${encodeURIComponent(runPath)}`
+      )
+      if (!response.ok) {
+        throw new Error("Failed to fetch inflight generations")
+      }
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    refetchInterval: shouldPoll ? POLL_INTERVAL : false,
+    placeholderData: keepPreviousData,
   })
 }
 

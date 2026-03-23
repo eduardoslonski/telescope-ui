@@ -96,13 +96,17 @@ EMPTY_KNOWN_PROJECTS_DISCOVERY_SECONDS = 60
 # Runs must have a schema_version tag that exactly matches this value.
 # Runs without a schema_version tag or with a different value are skipped
 # during initial discovery and polling (similar to telescope-ignore).
-SCHEMA_VERSION = "0.1.9"
+SCHEMA_VERSION = "0.2.0"
+
+# In-memory store for inflight generation snapshots (per run).
+# Updated on each tail.zip ingest, not persisted to DB.
+inflight_by_run: dict[str, dict] = {}
 
 # Current schema version for each table.
 TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "events_orchestrator": "0.1",
     "events_trainer": "0.2",
-    "events_inference": "0.5",
+    "events_inference": "0.6",
     "prompts": "0.1",
     "rollouts": "0.1",
     "samples_data": "0.2",
@@ -676,7 +680,9 @@ class EventZipData:
         self.logs: list[dict] | None = None
         # Metadata from metadata.json inside the zip
         self.metadata: dict | None = None
-    
+        # Inflight snapshot from inflight.json (only in tail.zip)
+        self.inflight: dict | None = None
+
     @property
     def min_tail_idx(self) -> int | None:
         """Get min_tail_idx from metadata."""
@@ -780,7 +786,16 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted inference: {len(data.inference)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No inference.parquet in {file_path}: {e}")
-                    
+
+                    # Read inflight.json if it exists (snapshot of running generations)
+                    inflight_path = f"{tmpdir}/inflight.json"
+                    try:
+                        with open(inflight_path) as f:
+                            data.inflight = json.load(f)
+                        log.info(f"[WANDB] Extracted inflight: {len(data.inflight.get('running', []))} running")
+                    except Exception:
+                        data.inflight = None
+
                     # Read gpu.parquet if it exists
                     gpu_path = f"{tmpdir}/gpu.parquet"
                     try:
@@ -1634,6 +1649,10 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
         # Prepare list of data sources to process
         data_sources: list[tuple[str, Any, set[int]]] = []  # (name, data, missing_tails)
         
+        # Store inflight snapshot in memory (always, even if no missing tails)
+        if tail_data.inflight is not None:
+            inflight_by_run[run_path] = tail_data.inflight
+
         # Step 3: Queue tail.zip for processing
         if missing_in_tail and tail_data.has_any_data():
             data_sources.append(("tail.zip", tail_data, missing_in_tail))

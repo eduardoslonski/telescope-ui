@@ -171,9 +171,12 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             step INTEGER,
             is_canceled BOOLEAN,
             off_policy_steps INTEGER,
-            server_lane BIGINT
+            server_lane BIGINT,
+            phase TEXT DEFAULT ''
         );
     """)
+    # Migration for existing DBs that don't have the phase column yet
+    con.execute("ALTER TABLE events_inference ADD COLUMN IF NOT EXISTS phase TEXT DEFAULT '';")
 
     # Prompts table - stores prompt information per group (one row per group)
     con.execute("""
@@ -863,6 +866,7 @@ def insert_events_inference(con: duckdb.DuckDBPyConnection, run_id: str, events:
             "is_canceled": event.get("is_canceled"),
             "off_policy_steps": event.get("off_policy_steps"),
             "server_lane": event.get("server_lane"),
+            "phase": event.get("phase", ""),
         }
         for event in events
     ])
@@ -873,13 +877,13 @@ def insert_events_inference(con: duckdb.DuckDBPyConnection, run_id: str, events:
             run_id, event_type, server, node_id, tp_group_id, tp_size,
             start_time, end_time, prompt_tokens, rollout_tokens, sample_id, group_id,
             vllm_request_id, queue_time, time_to_first_token, prefill_time, decode_time, inference_time,
-            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane
+            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane, phase
         )
         SELECT
             run_id, event_type, server, node_id, tp_group_id, tp_size,
             start_time, end_time, prompt_tokens, rollout_tokens, sample_id, group_id,
             vllm_request_id, queue_time, time_to_first_token, prefill_time, decode_time, inference_time,
-            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane
+            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane, phase
         FROM df
     """)
     

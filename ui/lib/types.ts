@@ -56,6 +56,22 @@ export interface InferenceEvent {
   // Timing data from rollouts/samples_data
   environment_response_time?: number | null // env response time after this turn (seconds)
   compute_reward_time?: number | null // compute reward time after the last turn (seconds, only on last request per sample)
+  phase?: string // "start" or "end" (empty for backward compat)
+}
+
+export interface InflightGeneration {
+  sample_id: number
+  group_id: number
+  server: number
+  server_lane: number
+  start_time: number
+  is_eval: boolean
+  prompt_tokens: number
+}
+
+export interface InflightSnapshot {
+  snapshot_time: number | null
+  running: InflightGeneration[]
 }
 
 // ============================================================================
