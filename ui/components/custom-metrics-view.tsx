@@ -311,31 +311,31 @@ export function buildPlotCatalog(
 
   for (const m of [
     { key: "discarded_count", label: "Discarded Count" },
-    { key: "discarded_zero_advantage_pct", label: "Zero Advantage %" },
-    { key: "discarded_max_async_pct", label: "Max Async %" },
+    { key: "discarded_zero_advantage_pct", label: "Discarded Zero Advantage %" },
+    { key: "discarded_max_async_pct", label: "Discarded Max Async %" },
     {
       key: "discarded_stop_reason_length_pct",
-      label: "% Stop Reason = Length",
+      label: "Discarded % Stop Reason = Length",
     },
     {
       key: "discarded_group_length_gini_mean",
-      label: "Group Completion Length Gini",
+      label: "Discarded Group Completion Length Gini",
     },
     {
       key: "discarded_group_length_max_median_ratio_mean",
-      label: "Group Completion Length Max/Median",
+      label: "Discarded Group Completion Length Max/Median",
     },
     {
       key: "discarded_zero_advantage_all_zero_pct",
-      label: "Zero Adv (All Reward = 0) %",
+      label: "Discarded Zero Adv (All Reward = 0) %",
     },
     {
       key: "discarded_zero_advantage_all_positive_pct",
-      label: "Zero Adv (All Reward > 0) %",
+      label: "Discarded Zero Adv (All Reward > 0) %",
     },
     {
       key: "discarded_zero_advantage_mean_reward",
-      label: "Zero Adv Mean Reward",
+      label: "Discarded Zero Adv Mean Reward",
     },
   ]) {
     catalog.push({
@@ -351,7 +351,7 @@ export function buildPlotCatalog(
     section: "Discarded Rollouts",
     group: "Off-Policy Steps",
     metricKey: "discarded_off_policy_steps_mean",
-    label: "Off-Policy Steps (Mean)",
+    label: "Discarded Off-Policy Steps (Mean)",
     plotType: "step_metric",
     simple: true,
   })
@@ -359,7 +359,7 @@ export function buildPlotCatalog(
     section: "Discarded Rollouts",
     group: "Off-Policy Steps",
     metricKey: "discarded_off_policy_steps_std",
-    label: "Off-Policy Steps (Std)",
+    label: "Discarded Off-Policy Steps (Std)",
     plotType: "step_metric",
     simple: true,
   })
@@ -367,7 +367,7 @@ export function buildPlotCatalog(
     section: "Discarded Rollouts",
     group: "Off-Policy Steps",
     metricKey: "discarded_off_policy_steps_distribution_over_time",
-    label: "Off-Policy Steps Dist. Over Time",
+    label: "Discarded Off-Policy Steps Dist. Over Time",
     plotType: "distribution_over_time",
     distMetricType: "discarded_off_policy_steps",
   })
@@ -495,15 +495,15 @@ export function buildPlotCatalog(
     })
   }
   for (const m of [
-    { key: "timing_generation_normal_pct", label: "Generation Normal" },
-    { key: "timing_generation_discarded_pct", label: "Generation Discarded" },
-    { key: "timing_generation_canceled_pct", label: "Generation Canceled" },
-    { key: "timing_generation_all_pct", label: "Generation All" },
-    { key: "timing_compute_reward_normal_pct", label: "Compute Reward Normal" },
-    { key: "timing_compute_reward_discarded_pct", label: "Compute Reward Discarded" },
-    { key: "timing_compute_reward_canceled_pct", label: "Compute Reward Canceled" },
-    { key: "timing_compute_reward_all_pct", label: "Compute Reward All" },
-    { key: "timing_idle_pct", label: "Idle Time" },
+    { key: "timing_generation_normal_pct", label: "Inference % Generation (Normal)" },
+    { key: "timing_generation_discarded_pct", label: "Inference % Generation (Discarded)" },
+    { key: "timing_generation_canceled_pct", label: "Inference % Generation (Canceled)" },
+    { key: "timing_generation_all_pct", label: "Inference % Generation (All)" },
+    { key: "timing_compute_reward_normal_pct", label: "Inference % Compute Reward (Normal)" },
+    { key: "timing_compute_reward_discarded_pct", label: "Inference % Compute Reward (Discarded)" },
+    { key: "timing_compute_reward_canceled_pct", label: "Inference % Compute Reward (Canceled)" },
+    { key: "timing_compute_reward_all_pct", label: "Inference % Compute Reward (All)" },
+    { key: "timing_idle_pct", label: "Inference % Idle Time" },
   ]) {
     catalog.push({
       section: "Timeline Inference",
@@ -593,9 +593,9 @@ export function buildPlotCatalog(
 
   // Trainer Performance - Summary
   for (const m of [
-    { key: "trainer_perf_idle", label: "Idle", trainerMetricType: "idle" },
-    { key: "trainer_perf_working", label: "Working", trainerMetricType: "working" },
-    { key: "trainer_perf_working_except_weight_sync", label: "Working (excl. Weight Sync)", trainerMetricType: "working_except_weight_sync" },
+    { key: "trainer_perf_idle", label: "Trainer % Idle", trainerMetricType: "idle" },
+    { key: "trainer_perf_working", label: "Trainer % Working", trainerMetricType: "working" },
+    { key: "trainer_perf_working_except_weight_sync", label: "Trainer % Working (excl. Weight Sync)", trainerMetricType: "working_except_weight_sync" },
   ]) {
     catalog.push({
       section: "Trainer Performance",
@@ -609,19 +609,19 @@ export function buildPlotCatalog(
 
   // Trainer Performance - Event Types
   for (const m of [
-    { key: "trainer_perf_forward", label: "Forward", trainerMetricType: "forward" },
-    { key: "trainer_perf_backward", label: "Backward", trainerMetricType: "backward" },
-    { key: "trainer_perf_optimizer", label: "Optimizer", trainerMetricType: "optimizer" },
-    { key: "trainer_perf_loss_computation", label: "Loss Computation", trainerMetricType: "loss_computation" },
-    { key: "trainer_perf_weight_broadcast", label: "Weight Sync", trainerMetricType: "weight_broadcast" },
-    { key: "trainer_perf_data_wait", label: "Data Wait", trainerMetricType: "data_wait" },
-    { key: "trainer_perf_grad_clip", label: "Grad Clip", trainerMetricType: "grad_clip" },
-    { key: "trainer_perf_grad_norm", label: "Grad Norm", trainerMetricType: "grad_norm" },
-    { key: "trainer_perf_data_to_device", label: "Data to Device", trainerMetricType: "data_to_device" },
-    { key: "trainer_perf_prepare_tensors", label: "Prepare Tensors", trainerMetricType: "prepare_tensors" },
-    { key: "trainer_perf_compute_entropy", label: "Compute Entropy", trainerMetricType: "compute_entropy" },
-    { key: "trainer_perf_compute_kl", label: "Compute KL", trainerMetricType: "compute_kl" },
-    { key: "trainer_perf_checkpoint", label: "Checkpoint", trainerMetricType: "checkpoint" },
+    { key: "trainer_perf_forward", label: "Trainer % Forward", trainerMetricType: "forward" },
+    { key: "trainer_perf_backward", label: "Trainer % Backward", trainerMetricType: "backward" },
+    { key: "trainer_perf_optimizer", label: "Trainer % Optimizer", trainerMetricType: "optimizer" },
+    { key: "trainer_perf_loss_computation", label: "Trainer % Loss Computation", trainerMetricType: "loss_computation" },
+    { key: "trainer_perf_weight_broadcast", label: "Trainer % Weight Sync", trainerMetricType: "weight_broadcast" },
+    { key: "trainer_perf_data_wait", label: "Trainer % Data Wait", trainerMetricType: "data_wait" },
+    { key: "trainer_perf_grad_clip", label: "Trainer % Grad Clip", trainerMetricType: "grad_clip" },
+    { key: "trainer_perf_grad_norm", label: "Trainer % Grad Norm", trainerMetricType: "grad_norm" },
+    { key: "trainer_perf_data_to_device", label: "Trainer % Data to Device", trainerMetricType: "data_to_device" },
+    { key: "trainer_perf_prepare_tensors", label: "Trainer % Prepare Tensors", trainerMetricType: "prepare_tensors" },
+    { key: "trainer_perf_compute_entropy", label: "Trainer % Compute Entropy", trainerMetricType: "compute_entropy" },
+    { key: "trainer_perf_compute_kl", label: "Trainer % Compute KL", trainerMetricType: "compute_kl" },
+    { key: "trainer_perf_checkpoint", label: "Trainer % Checkpoint", trainerMetricType: "checkpoint" },
   ]) {
     catalog.push({
       section: "Trainer Performance",
