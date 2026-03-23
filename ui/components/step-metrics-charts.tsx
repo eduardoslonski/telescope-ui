@@ -5111,6 +5111,7 @@ function InferencePerformanceMetricChart({
 
   const [ignoreOutliers, setIgnoreOutliers] = useState(false)
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
 
   const [bucketSeconds, setBucketSeconds] = useState(60)
   const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
@@ -5207,6 +5208,19 @@ function InferencePerformanceMetricChart({
         }
       })
 
+      // Remove unfinished last bucket if toggle is off
+      if (!showUnfinishedIntervals && buckets.length > 0) {
+        const runLastTime = data.last_time
+        if (runLastTime !== null && runLastTime !== undefined) {
+          const lastBucketTime = buckets[buckets.length - 1].time
+          if (lastBucketTime + bucketSeconds > runLastTime) {
+            const lastRelTime = lastBucketTime - runFirstTime
+            valueByRelTime.delete(lastRelTime)
+            relTimeSet.delete(lastRelTime)
+          }
+        }
+      }
+
       // For count metrics, fill gaps with 0 within the run's time range
       if (!isAvgMetric && valueByRelTime.size > 0) {
         const times = Array.from(valueByRelTime.keys())
@@ -5272,7 +5286,7 @@ function InferencePerformanceMetricChart({
       hasData: true,
       outlierBounds: bounds,
     }
-  }, [plottedRuns, queries, inferenceMetricType, hoveredRunId, isAvgMetric, ignoreOutliers, ignoreFirstStep, bucketSeconds])
+  }, [plottedRuns, queries, inferenceMetricType, hoveredRunId, isAvgMetric, ignoreOutliers, ignoreFirstStep, showUnfinishedIntervals, bucketSeconds])
 
   const formatValue = useCallback(
     (v: number | null | undefined): string => {
@@ -5541,6 +5555,12 @@ function InferencePerformanceMetricChart({
                 >
                   Ignore First Step
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={showUnfinishedIntervals}
+                  onCheckedChange={setShowUnfinishedIntervals}
+                >
+                  Show Unfinished Intervals
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
                   <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
@@ -5564,7 +5584,7 @@ function InferencePerformanceMetricChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep) && (
+        {(ignoreOutliers || ignoreFirstStep || showUnfinishedIntervals) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
             {ignoreOutliers && (
               <FilterBadge
@@ -5576,6 +5596,12 @@ function InferencePerformanceMetricChart({
               <FilterBadge
                 label="Ignoring First Step"
                 onRemove={() => setIgnoreFirstStep(false)}
+              />
+            )}
+            {showUnfinishedIntervals && (
+              <FilterBadge
+                label="Showing Unfinished Intervals"
+                onRemove={() => setShowUnfinishedIntervals(false)}
               />
             )}
           </div>
@@ -5789,6 +5815,7 @@ function InferenceUtilizationAreaChart({
   const tooltipRef = useRef<HTMLDivElement>(null)
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
   const [bucketSeconds, setBucketSeconds] = useState(60)
   const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
 
@@ -5847,6 +5874,14 @@ function InferenceUtilizationAreaChart({
       }
     }
 
+    // Remove unfinished last bucket if toggle is off
+    if (!showUnfinishedIntervals && filtered.length > 0 && data.last_time !== null && data.last_time !== undefined) {
+      const lastBucketTime = filtered[filtered.length - 1].time
+      if (lastBucketTime + bucketSeconds > data.last_time) {
+        filtered = filtered.slice(0, -1)
+      }
+    }
+
     const activeCats = categories.filter((cat) =>
       filtered.some((b) => {
         const val = b[cat]
@@ -5855,7 +5890,7 @@ function InferenceUtilizationAreaChart({
     )
 
     return { filteredBuckets: filtered, activeCategories: activeCats, runFirstTime: rft }
-  }, [infPerf.data, categories, ignoreFirstStep])
+  }, [infPerf.data, categories, ignoreFirstStep, showUnfinishedIntervals, bucketSeconds])
 
   const highlightedCats = useMemo<Set<string> | null>(() => {
     const effectiveSelected = selectedCats.filter((c) => activeCategories.includes(c))
@@ -6077,6 +6112,12 @@ function InferenceUtilizationAreaChart({
                 >
                   Ignore First Step
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={showUnfinishedIntervals}
+                  onCheckedChange={setShowUnfinishedIntervals}
+                >
+                  Show Unfinished Intervals
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
                   <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
@@ -6100,9 +6141,14 @@ function InferenceUtilizationAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {ignoreFirstStep && (
+        {(ignoreFirstStep || showUnfinishedIntervals) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            {ignoreFirstStep && (
+              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            )}
+            {showUnfinishedIntervals && (
+              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+            )}
           </div>
         )}
         {hasData && activeCategories.length > 0 && (
@@ -6251,6 +6297,7 @@ function TrainerPerformanceMetricChart({
   const tooltipRef = useRef<HTMLDivElement>(null)
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
   const [bucketSeconds, setBucketSeconds] = useState(60)
   const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
 
@@ -6331,6 +6378,20 @@ function TrainerPerformanceMetricChart({
           relTimeSet.add(relTime)
         }
       })
+
+      // Remove unfinished last bucket if toggle is off
+      if (!showUnfinishedIntervals && buckets.length > 0) {
+        const runLastTime = data.last_time
+        if (runLastTime !== null && runLastTime !== undefined) {
+          const lastBucketTime = buckets[buckets.length - 1].time
+          if (lastBucketTime + bucketSeconds > runLastTime) {
+            const lastRelTime = lastBucketTime - runFirstTime
+            valueByRelTime.delete(lastRelTime)
+            relTimeSet.delete(lastRelTime)
+          }
+        }
+      }
+
       runRelData.set(idx, valueByRelTime)
     })
 
@@ -6372,7 +6433,7 @@ function TrainerPerformanceMetricChart({
       seriesConfig: series,
       hasData: true,
     }
-  }, [plottedRuns, queries, trainerMetricType, hoveredRunId, ignoreFirstStep])
+  }, [plottedRuns, queries, trainerMetricType, hoveredRunId, ignoreFirstStep, showUnfinishedIntervals, bucketSeconds])
 
   useEffect(() => {
     if (!containerRef.current || !uplotData || !hasData) return
@@ -6574,6 +6635,12 @@ function TrainerPerformanceMetricChart({
                 >
                   Ignore First Step
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={showUnfinishedIntervals}
+                  onCheckedChange={setShowUnfinishedIntervals}
+                >
+                  Show Unfinished Intervals
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
                   <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
@@ -6597,12 +6664,20 @@ function TrainerPerformanceMetricChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {ignoreFirstStep && (
+        {(ignoreFirstStep || showUnfinishedIntervals) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            <FilterBadge
-              label="Ignoring First Step"
-              onRemove={() => setIgnoreFirstStep(false)}
-            />
+            {ignoreFirstStep && (
+              <FilterBadge
+                label="Ignoring First Step"
+                onRemove={() => setIgnoreFirstStep(false)}
+              />
+            )}
+            {showUnfinishedIntervals && (
+              <FilterBadge
+                label="Showing Unfinished Intervals"
+                onRemove={() => setShowUnfinishedIntervals(false)}
+              />
+            )}
           </div>
         )}
       </div>
@@ -6736,6 +6811,7 @@ function InferencePerformanceAreaChart({
   const tooltipRef = useRef<HTMLDivElement>(null)
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
   const [bucketSeconds, setBucketSeconds] = useState(60)
   const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
 
@@ -6821,12 +6897,20 @@ function InferencePerformanceAreaChart({
       }
     }
 
+    // Remove unfinished last bucket if toggle is off
+    if (!showUnfinishedIntervals && buckets.length > 0 && data.last_time !== null && data.last_time !== undefined) {
+      const lastBucketTime = buckets[buckets.length - 1].time
+      if (lastBucketTime + bucketSeconds > data.last_time) {
+        buckets = buckets.slice(0, -1)
+      }
+    }
+
     const activeCats = categories.filter((cat) =>
       buckets.some((b) => b[cat] !== undefined && b[cat] > 0),
     )
 
     return { filteredBuckets: buckets, activeCategories: activeCats, runFirstTime: rft }
-  }, [infPerf.data, categories, ignoreFirstStep])
+  }, [infPerf.data, categories, ignoreFirstStep, showUnfinishedIntervals, bucketSeconds])
 
   const highlightedCats = useMemo<Set<string> | null>(() => {
     const effectiveSelected = selectedCats.filter((c) => activeCategories.includes(c))
@@ -7048,6 +7132,12 @@ function InferencePerformanceAreaChart({
                 >
                   Ignore First Step
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={showUnfinishedIntervals}
+                  onCheckedChange={setShowUnfinishedIntervals}
+                >
+                  Show Unfinished Intervals
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
                   <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
@@ -7071,9 +7161,14 @@ function InferencePerformanceAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {ignoreFirstStep && (
+        {(ignoreFirstStep || showUnfinishedIntervals) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            {ignoreFirstStep && (
+              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            )}
+            {showUnfinishedIntervals && (
+              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+            )}
           </div>
         )}
         {hasData && activeCategories.length > 0 && (
@@ -7156,6 +7251,7 @@ function TrainerPerformanceAreaChart({
   const tooltipRef = useRef<HTMLDivElement>(null)
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
+  const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
   const [bucketSeconds, setBucketSeconds] = useState(60)
   const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
 
@@ -7218,6 +7314,14 @@ function TrainerPerformanceAreaChart({
       }
     }
 
+    // Remove unfinished last bucket if toggle is off
+    if (!showUnfinishedIntervals && filtered.length > 0 && data.last_time !== null && data.last_time !== undefined) {
+      const lastBucketTime = filtered[filtered.length - 1].time
+      if (lastBucketTime + bucketSeconds > data.last_time) {
+        filtered = filtered.slice(0, -1)
+      }
+    }
+
     const activeCats = categories.filter((cat) =>
       filtered.some((b) => {
         const val = (b as Record<string, number>)[cat]
@@ -7226,7 +7330,7 @@ function TrainerPerformanceAreaChart({
     )
 
     return { filteredBuckets: filtered, activeCategories: activeCats, runFirstTime: rft }
-  }, [trPerf.data, categories, ignoreFirstStep])
+  }, [trPerf.data, categories, ignoreFirstStep, showUnfinishedIntervals, bucketSeconds])
 
   // Compute highlighted set: clicked selection takes priority over hover
   const highlightedCats = useMemo<Set<string> | null>(() => {
@@ -7453,6 +7557,12 @@ function TrainerPerformanceAreaChart({
                 >
                   Ignore First Step
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={showUnfinishedIntervals}
+                  onCheckedChange={setShowUnfinishedIntervals}
+                >
+                  Show Unfinished Intervals
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <div className="flex items-center gap-2 px-2 py-1.5">
                   <span className="text-xs text-muted-foreground font-medium w-14">Interval</span>
@@ -7476,9 +7586,14 @@ function TrainerPerformanceAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {ignoreFirstStep && (
+        {(ignoreFirstStep || showUnfinishedIntervals) && (
           <div className="flex items-center gap-1 mt-1 flex-wrap">
-            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            {ignoreFirstStep && (
+              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+            )}
+            {showUnfinishedIntervals && (
+              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+            )}
           </div>
         )}
         {/* Interactive Legend */}

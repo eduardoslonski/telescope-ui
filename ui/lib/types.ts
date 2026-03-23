@@ -675,6 +675,7 @@ export interface InferencePerformanceResponse {
   num_lanes: number
   step_times: StepTime[]
   first_time: number | null
+  last_time: number | null
 }
 
 // ============================================================================
@@ -693,6 +694,7 @@ export interface TrainerPerformanceResponse {
   buckets: TrainerPerformanceBucket[]
   event_types: string[]
   first_time: number | null
+  last_time: number | null
   step_times: StepTime[]
 }
 
