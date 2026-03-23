@@ -5970,7 +5970,7 @@ function InferenceUtilizationAreaChart({
       padding: [4, 8, 0, 0],
       cursor: { show: true, x: true, y: false, points: { show: false } },
       legend: { show: false },
-      scales: { x: { time: false }, y: { range: [0, 105] } },
+      scales: { x: { time: false }, y: { auto: true } },
       axes: [
         {
           stroke: tickLabelColor,
@@ -6451,7 +6451,7 @@ function TrainerPerformanceMetricChart({
       padding: [4, 8, 0, 0],
       cursor: { show: true, x: true, y: false, points: { show: false } },
       legend: { show: false },
-      scales: { x: { time: false }, y: { range: [0, 105] } },
+      scales: { x: { time: false }, y: { auto: true } },
       axes: [
         {
           stroke: tickLabelColor,
@@ -6990,7 +6990,7 @@ function InferencePerformanceAreaChart({
       padding: [4, 8, 0, 0],
       cursor: { show: true, x: true, y: false, points: { show: false } },
       legend: { show: false },
-      scales: { x: { time: false }, y: { range: [0, 105] } },
+      scales: { x: { time: false }, y: { auto: true } },
       axes: [
         {
           stroke: tickLabelColor,
@@ -7414,7 +7414,7 @@ function TrainerPerformanceAreaChart({
       padding: [4, 8, 0, 0],
       cursor: { show: true, x: true, y: false, points: { show: false } },
       legend: { show: false },
-      scales: { x: { time: false }, y: { range: [0, 105] } },
+      scales: { x: { time: false }, y: { auto: true } },
       axes: [
         {
           stroke: tickLabelColor,
