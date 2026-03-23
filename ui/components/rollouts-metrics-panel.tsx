@@ -7,10 +7,11 @@ import {
   useCallback,
   type RefObject,
 } from "react"
+import { createPortal } from "react-dom"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
 import type { SetStateAction, WritableAtom } from "jotai"
 import uPlot from "uplot"
-import { X, ChevronDown, PanelRightClose, Loader2, SlidersHorizontal, GripVertical } from "lucide-react"
+import { X, ChevronDown, PanelRightClose, Loader2, SlidersHorizontal, GripVertical, Maximize2, Minimize2 } from "lucide-react"
 import {
   DndContext,
   closestCenter,
@@ -137,6 +138,57 @@ function useOnScreen<T extends Element>(
   }, [ref, root, rootMargin, threshold])
 
   return isVisible || isVisibleSticky
+}
+
+// Fullscreen hook + button for chart cards
+function useChartFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreen(false)
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [isFullscreen])
+
+  const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
+
+  const fullscreenPortal = useCallback(
+    (content: React.ReactElement) =>
+      isFullscreen ? createPortal(content, document.body) : content,
+    [isFullscreen],
+  )
+
+  return { isFullscreen, toggleFullscreen, fullscreenPortal }
+}
+
+function FullscreenButton({
+  isFullscreen,
+  onClick,
+}: {
+  isFullscreen: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all",
+        isFullscreen
+          ? "opacity-100"
+          : "opacity-0 group-hover/card:opacity-100",
+      )}
+      title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+    >
+      {isFullscreen ? (
+        <Minimize2 className="h-3 w-3" />
+      ) : (
+        <Maximize2 className="h-3 w-3" />
+      )}
+    </button>
+  )
 }
 
 // Base metric configuration (static metrics)
@@ -845,7 +897,7 @@ function SortableChartWrapper({
     <button
       {...attributes}
       {...listeners}
-      className="-ml-1.5 cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-muted transition-all shrink-0 opacity-0 group-hover/card:opacity-100"
+      className="-ml-1.5 cursor-grab active:cursor-grabbing p-0.5 rounded hover:bg-muted transition-all shrink-0 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100"
     >
       <GripVertical className="h-3 w-3 text-muted-foreground" />
     </button>
@@ -1292,6 +1344,14 @@ export function RolloutsMetricsPanel({
 
                     // Render inference performance chart
                     if (config?.isInferencePerformance && config.inferenceMetricType) {
+                      const removeBtn = (
+                        <button
+                          onClick={() => handleRemoveMetricAt(originalIndex)}
+                          className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )
                       return (
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
@@ -1303,6 +1363,7 @@ export function RolloutsMetricsPanel({
                               inferenceMetricType={config.inferenceMetricType!}
                               label={chartLabel}
                               headerPrefix={dragHandle}
+                              headerSuffix={removeBtn}
                             />
                           )}
                         </SortableChartWrapper>
@@ -1311,6 +1372,14 @@ export function RolloutsMetricsPanel({
 
                     // Render inference performance area chart
                     if (config?.isInferencePerformanceArea && config.inferenceAreaCategories) {
+                      const removeBtn = (
+                        <button
+                          onClick={() => handleRemoveMetricAt(originalIndex)}
+                          className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )
                       return (
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
@@ -1321,6 +1390,7 @@ export function RolloutsMetricsPanel({
                               label={chartLabel}
                               categories={config.inferenceAreaCategories!}
                               headerPrefix={dragHandle}
+                              headerSuffix={removeBtn}
                             />
                           )}
                         </SortableChartWrapper>
@@ -1329,6 +1399,14 @@ export function RolloutsMetricsPanel({
 
                     // Render trainer performance chart
                     if (config?.isTrainerPerformance && config.trainerMetricType) {
+                      const removeBtn = (
+                        <button
+                          onClick={() => handleRemoveMetricAt(originalIndex)}
+                          className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )
                       return (
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
@@ -1340,6 +1418,7 @@ export function RolloutsMetricsPanel({
                               trainerMetricType={config.trainerMetricType!}
                               label={chartLabel}
                               headerPrefix={dragHandle}
+                              headerSuffix={removeBtn}
                             />
                           )}
                         </SortableChartWrapper>
@@ -1348,6 +1427,14 @@ export function RolloutsMetricsPanel({
 
                     // Render trainer performance area chart
                     if (config?.isTrainerPerformanceArea && config.trainerAreaCategories) {
+                      const removeBtn = (
+                        <button
+                          onClick={() => handleRemoveMetricAt(originalIndex)}
+                          className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )
                       return (
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
@@ -1358,6 +1445,7 @@ export function RolloutsMetricsPanel({
                               label={chartLabel}
                               categories={config.trainerAreaCategories!}
                               headerPrefix={dragHandle}
+                              headerSuffix={removeBtn}
                             />
                           )}
                         </SortableChartWrapper>
@@ -1538,6 +1626,7 @@ function MetricChart({
 }: MetricChartProps) {
   const setSelectedStep = useSetAtom(selectedStepAtom)
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -1602,10 +1691,11 @@ function MetricChart({
     [updateMetricFilters],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   // Fetch data for each run (only when visible)
   const run0 = useRunMetricData(
@@ -1908,7 +1998,7 @@ function MetricChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = 160 // h-40 = 160px
+    const height = container.clientHeight || 160
 
     // Compute outlier bounds if needed
     let outlierBounds: { lower: number; upper: number } | null = null
@@ -2164,7 +2254,7 @@ function MetricChart({
             // Vertical: prefer overlapping top of chart, flip to bottom if overflowing viewport
             let tooltipY = containerRect.top - fixedOrigin.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX - fixedOrigin.left}px`
@@ -2202,9 +2292,9 @@ function MetricChart({
     // Handle resize
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width: newWidth } = entry.contentRect
-        if (chart && newWidth > 0) {
-          chart.setSize({ width: newWidth, height })
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
         }
       }
     })
@@ -2240,6 +2330,7 @@ function MetricChart({
     ignoreFirstStep,
     minY,
     maxY,
+    isFullscreen,
   ])
 
   // Handle mouse leave
@@ -2252,21 +2343,23 @@ function MetricChart({
   const showLoadingOpacity = isFetching && (!isRefetching || isPlaceholderData)
   const hasActiveFilters = ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/card rounded-lg border border-border p-3 transition-opacity",
-        "bg-background",
-        showLoadingOpacity && "opacity-50",
+        "group/card bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
-          {headerPrefix}
+          {!isFullscreen && headerPrefix}
           <div className="flex-1 min-w-0">
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={label}
             >
               {label}
@@ -2325,12 +2418,15 @@ function MetricChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
-            <button
-              onClick={onRemove}
-              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && (
+              <button
+                onClick={onRemove}
+                className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
         {hasActiveFilters && (
@@ -2352,7 +2448,7 @@ function MetricChart({
       </div>
       {hasData ? (
         <div
-          className="h-40 cursor-pointer relative bg-background rounded"
+          className={cn("cursor-pointer relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-40")}
           ref={containerRef}
           onMouseLeave={handleMouseLeave}
         >
@@ -2367,7 +2463,7 @@ function MetricChart({
           )}
         </div>
       ) : (
-        <div className="h-40 flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-40")}>
           {isFetching ? "Loading..." : "No data"}
         </div>
       )}
@@ -2506,7 +2602,7 @@ function HistogramChart({
 
     const container = containerRef.current
     const width = container.clientWidth
-    const height = 160 // h-40 = 160px
+    const height = container.clientHeight || 160
 
     // Prepare data for uPlot
     const xData = new Float64Array(histogramData.binCenters)
@@ -2716,7 +2812,7 @@ function HistogramChart({
             // Vertical: prefer overlapping top of chart, flip to bottom if overflowing viewport
             let tooltipY = containerRect.top - fixedOrigin.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX - fixedOrigin.left}px`
@@ -2738,9 +2834,9 @@ function HistogramChart({
     // Handle resize
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width: newWidth } = entry.contentRect
-        if (chart && newWidth > 0) {
-          chart.setSize({ width: newWidth, height })
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
         }
       }
     })
@@ -2889,17 +2985,20 @@ function DistributionOverTimeChart({
   headerPrefix,
 }: DistributionOverTimeChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
   const hoverLineRef = useRef<HTMLDivElement>(null)
   const setSelectedStep = useSetAtom(selectedStepAtom)
+  const [resizeTick, setResizeTick] = useState(0)
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   // Fetch distribution over time data (only when visible)
   const { data, isFetching, isRefetching, isPlaceholderData } =
@@ -2996,7 +3095,7 @@ function DistributionOverTimeChart({
     if (!ctx) return
 
     const width = container.clientWidth
-    const height = 160 // h-40 = 160px
+    const height = container.clientHeight || 160
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const axisFont = "10px system-ui, sans-serif"
@@ -3196,19 +3295,17 @@ function DistributionOverTimeChart({
     formatYAxisLabel,
     getDistributionPadding,
     darkMode,
+    resizeTick,
+    isFullscreen,
   ])
 
-  // Handle resize
+  // Handle resize — trigger full canvas redraw
   useEffect(() => {
     if (!containerRef.current) return
 
     const container = containerRef.current
     const resizeObserver = new ResizeObserver(() => {
-      // Trigger re-render by updating canvas
-      if (canvasRef.current && containerRef.current) {
-        const width = containerRef.current.clientWidth
-        canvasRef.current.style.width = `${width}px`
-      }
+      setResizeTick((t) => t + 1)
     })
     resizeObserver.observe(container)
 
@@ -3269,7 +3366,7 @@ function DistributionOverTimeChart({
       const x = e.clientX - rect.left
       const y = e.clientY - rect.top
       const width = containerRef.current.clientWidth
-      const height = 160
+      const height = containerRef.current.clientHeight || 160
       const padding = getDistributionPadding()
       const chartWidth = width - padding.left - padding.right
       const chartHeight = height - padding.top - padding.bottom
@@ -3360,7 +3457,7 @@ function DistributionOverTimeChart({
       // Vertical: prefer overlapping top of chart, flip to bottom if overflowing viewport
       let tooltipY = containerRect.top - fixedOrigin.height + 20
       if (tooltipY < 4) {
-        tooltipY = containerRect.bottom - 20
+        tooltipY = containerRect.top + 8
       }
 
       tooltipRef.current.style.left = `${tooltipX - fixedOrigin.left}px`
@@ -3380,36 +3477,41 @@ function DistributionOverTimeChart({
 
   const showLoadingOpacity = isFetching && (!isRefetching || isPlaceholderData)
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/card rounded-lg border border-border p-3 transition-opacity",
-        "bg-background",
-        showLoadingOpacity && "opacity-50",
+        "group/card bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
-      <div className="flex items-center justify-between mb-2">
-        {headerPrefix}
+      <div className="flex items-center justify-between mb-2 shrink-0">
+        {!isFullscreen && headerPrefix}
         <div className="flex-1 min-w-0">
           <h4
-            className="text-xs font-medium leading-snug line-clamp-2 break-words"
+            className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
             title={label}
           >
             {label}
           </h4>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={onRemove}
-            className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+          {!isFullscreen && (
+            <button
+              onClick={onRemove}
+              className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 transition-opacity"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
       {hasData ? (
-        <div className="h-40 relative bg-background rounded" ref={containerRef}>
+        <div className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-40")} ref={containerRef}>
           <canvas
             className="block w-full h-full max-w-full cursor-pointer"
             ref={canvasRef}
@@ -3433,7 +3535,7 @@ function DistributionOverTimeChart({
           )}
         </div>
       ) : (
-        <div className="h-40 flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-40")}>
           {isFetching ? "Loading..." : "No data"}
         </div>
       )}

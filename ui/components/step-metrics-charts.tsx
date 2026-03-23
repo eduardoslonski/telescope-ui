@@ -7,6 +7,7 @@ import {
   useCallback,
   RefObject,
 } from "react"
+import { createPortal } from "react-dom"
 import { useAtom, useAtomValue } from "jotai"
 import uPlot from "uplot"
 import { darkModeAtom, metricsChartFiltersAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
@@ -30,7 +31,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { ChevronDown, X, SlidersHorizontal, Loader2 } from "lucide-react"
+import { ChevronDown, X, SlidersHorizontal, Loader2, Maximize2, Minimize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   useStepMetricsMultiRun,
@@ -128,6 +129,57 @@ export function FilterBadge({
       {label}
       <X className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
     </span>
+  )
+}
+
+// Fullscreen hook + button for chart cards
+function useChartFullscreen() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (!isFullscreen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFullscreen(false)
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [isFullscreen])
+
+  const toggleFullscreen = useCallback(() => setIsFullscreen((f) => !f), [])
+
+  const fullscreenPortal = useCallback(
+    (content: React.ReactElement) =>
+      isFullscreen ? createPortal(content, document.body) : content,
+    [isFullscreen],
+  )
+
+  return { isFullscreen, toggleFullscreen, fullscreenPortal }
+}
+
+function FullscreenButton({
+  isFullscreen,
+  onClick,
+}: {
+  isFullscreen: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all",
+        isFullscreen
+          ? "opacity-100"
+          : "opacity-0 group-hover/chart:opacity-100",
+      )}
+      title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+    >
+      {isFullscreen ? (
+        <Minimize2 className="h-3 w-3" />
+      ) : (
+        <Maximize2 className="h-3 w-3" />
+      )}
+    </button>
   )
 }
 
@@ -2033,16 +2085,19 @@ export function DistributionOverTimeChart({
   headerSuffix,
 }: DistributionOverTimeChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
   const hoverLineRef = useRef<HTMLDivElement>(null)
+  const [resizeTick, setResizeTick] = useState(0)
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   const { data, isFetching, isRefetching } = useStepDistributionOverTime(
     runPath,
@@ -2136,7 +2191,7 @@ export function DistributionOverTimeChart({
     if (!ctx) return
 
     const width = container.clientWidth
-    const height = 200
+    const height = container.clientHeight || 200
     const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
     const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
     const axisFont = "10px system-ui, sans-serif"
@@ -2304,18 +2359,17 @@ export function DistributionOverTimeChart({
     formatYAxisLabel,
     getDistributionPadding,
     darkMode,
+    resizeTick,
+    isFullscreen,
   ])
 
-  // Handle resize
+  // Handle resize — trigger full canvas redraw
   useEffect(() => {
     if (!containerRef.current) return
 
     const container = containerRef.current
     const resizeObserver = new ResizeObserver(() => {
-      if (canvasRef.current && containerRef.current) {
-        const width = containerRef.current.clientWidth
-        canvasRef.current.style.width = `${width}px`
-      }
+      setResizeTick((t) => t + 1)
     })
     resizeObserver.observe(container)
 
@@ -2340,7 +2394,7 @@ export function DistributionOverTimeChart({
       const x = e.clientX - rect.left
       const y = e.clientY - rect.top
       const width = containerRef.current.clientWidth
-      const height = 200
+      const height = containerRef.current.clientHeight || 200
       const padding = getDistributionPadding()
       const chartWidth = width - padding.left - padding.right
       const chartHeight = height - padding.top - padding.bottom
@@ -2423,7 +2477,7 @@ export function DistributionOverTimeChart({
 
       let tooltipY = containerRect.top - fixedOrigin.height + 20
       if (tooltipY < 4) {
-        tooltipY = containerRect.bottom - 20
+        tooltipY = containerRect.top + 8
       }
 
       tooltipRef.current.style.left = `${tooltipX - fixedOrigin.left}px`
@@ -2443,30 +2497,34 @@ export function DistributionOverTimeChart({
 
   const showLoadingOpacity = isFetching && !isRefetching
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background",
-        showLoadingOpacity && "opacity-50",
+        "group/chart bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
-      <div className="flex items-center justify-between mb-3">
-        {headerPrefix}
+      <div className="flex items-center justify-between mb-3 shrink-0">
+        {!isFullscreen && headerPrefix}
         <div className="flex-1 min-w-0">
           <h4
-            className="text-xs font-medium leading-snug line-clamp-2 break-words"
+            className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
             title={label}
           >
             {label}
           </h4>
         </div>
-        {headerSuffix && (
-          <div className="flex items-center gap-2 shrink-0">{headerSuffix}</div>
-        )}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+          {!isFullscreen && headerSuffix}
+        </div>
       </div>
       {hasData ? (
-        <div className="h-[200px] relative bg-background rounded" ref={containerRef}>
+        <div className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")} ref={containerRef}>
           <canvas
             className="block w-full h-full max-w-full"
             ref={canvasRef}
@@ -2488,7 +2546,7 @@ export function DistributionOverTimeChart({
           )}
         </div>
       ) : (
-        <div className="h-[200px] flex items-center justify-center text-muted-foreground text-xs rounded">
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}>
           {isFetching ? "Loading..." : "No data"}
         </div>
       )}
@@ -2595,6 +2653,7 @@ export function EvalMetricChart({
   filterKey: filterKeyProp,
 }: EvalMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -2762,10 +2821,11 @@ export function EvalMetricChart({
     [updateMetricFilters],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   const sortedRuns = useMemo(() => {
     const nonSelected = runs.filter((r) => !r.isSelected)
@@ -3260,7 +3320,7 @@ export function EvalMetricChart({
             }
             tooltipX = Math.max(4, tooltipX)
             let tooltipY = containerRect.top - tooltipRect.height + 20
-            if (tooltipY < 4) tooltipY = containerRect.bottom - 20
+            if (tooltipY < 4) tooltipY = containerRect.top + 8
             tooltipRef.current.style.left = `${tooltipX}px`
             tooltipRef.current.style.top = `${tooltipY}px`
           },
@@ -3311,6 +3371,7 @@ export function EvalMetricChart({
     minY,
     maxY,
     darkMode,
+    isFullscreen,
   ])
 
   useEffect(() => {
@@ -3357,20 +3418,23 @@ export function EvalMetricChart({
       ? `${displayStatType.charAt(0).toUpperCase()}${displayStatType.slice(1)}`
       : metricName)
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
+            {!isFullscreen && headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={metricName}
             >
               {titleText}
@@ -3446,7 +3510,8 @@ export function EvalMetricChart({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters || hasActiveEnvFilters) && (
@@ -3815,6 +3880,7 @@ export function MetricChart({
   filterKey: filterKeyProp,
 }: MetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -3991,10 +4057,11 @@ export function MetricChart({
   const hasActiveTagFilters = Object.keys(tagFilters).length > 0
   const hasActiveEnvFilters = envFilters.length > 0
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   // Sort runs so the selected run is last (drawn on top in uPlot)
   const sortedRuns = useMemo(() => {
@@ -4662,7 +4729,7 @@ export function MetricChart({
             // Vertical: prefer overlapping top of chart, flip to bottom if overflowing viewport
             let tooltipY = containerRect.top - tooltipRect.height + 20
             if (tooltipY < 4) {
-              tooltipY = containerRect.bottom - 20
+              tooltipY = containerRect.top + 8
             }
 
             tooltipRef.current.style.left = `${tooltipX}px`
@@ -4717,6 +4784,7 @@ export function MetricChart({
     isTimingMetric,
     setSyncedCursor,
     darkMode,
+    isFullscreen,
   ])
 
   // Sync cursor from other charts when CTRL is held
@@ -4777,20 +4845,23 @@ export function MetricChart({
       ? `${displayStatType.charAt(0).toUpperCase()}${displayStatType.slice(1)}`
       : metricName)
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
+            {!isFullscreen && headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={metricName}
             >
               {titleText}
@@ -4897,7 +4968,8 @@ export function MetricChart({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {(ignoreOutliers || ignoreFirstStep || minY !== null || maxY !== null || hasActiveTagFilters || hasActiveEnvFilters) && (
@@ -5031,6 +5103,7 @@ function InferencePerformanceMetricChart({
   headerSuffix,
 }: InferencePerformanceMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -5055,10 +5128,11 @@ function InferencePerformanceMetricChart({
     [bucketSeconds],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   const isAvgMetric = INFERENCE_AVG_METRICS.has(inferenceMetricType)
 
@@ -5220,7 +5294,7 @@ function InferencePerformanceMetricChart({
   )
 
   useEffect(() => {
-    if (!containerRef.current || !uplotData || !hasData || !isVisible) return
+    if (!containerRef.current || !uplotData || !hasData) return
 
     const container = containerRef.current
     const width = container.clientWidth
@@ -5375,7 +5449,7 @@ function InferencePerformanceMetricChart({
             }
             tooltipX = Math.max(4, tooltipX)
             let tooltipY = containerRect.top - tooltipRect.height + 20
-            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            if (tooltipY < 4) { tooltipY = containerRect.top + 8 }
             tooltipRef.current.style.left = `${tooltipX}px`
             tooltipRef.current.style.top = `${tooltipY}px`
           },
@@ -5406,7 +5480,6 @@ function InferencePerformanceMetricChart({
     uplotData,
     seriesConfig,
     hasData,
-    isVisible,
     ignoreOutliers,
     outlierBounds,
     darkMode,
@@ -5417,6 +5490,7 @@ function InferencePerformanceMetricChart({
     formatValue,
     formatYAxisTick,
     bucketSeconds,
+    isFullscreen,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -5425,20 +5499,23 @@ function InferencePerformanceMetricChart({
 
   const showLoadingOpacity = isFetching && !isRefetching
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
+            {!isFullscreen && headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={label}
             >
               {label}
@@ -5483,7 +5560,8 @@ function InferencePerformanceMetricChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {(ignoreOutliers || ignoreFirstStep) && (
@@ -5714,6 +5792,7 @@ function TrainerPerformanceMetricChart({
   headerSuffix,
 }: TrainerPerformanceMetricChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -5736,10 +5815,11 @@ function TrainerPerformanceMetricChart({
     [bucketSeconds],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   const sortedRuns = useMemo(() => {
     const nonSelected = runs.filter((r) => !r.isSelected)
@@ -5843,7 +5923,7 @@ function TrainerPerformanceMetricChart({
   }, [plottedRuns, queries, trainerMetricType, hoveredRunId, ignoreFirstStep])
 
   useEffect(() => {
-    if (!containerRef.current || !uplotData || !hasData || !isVisible) return
+    if (!containerRef.current || !uplotData || !hasData) return
 
     const container = containerRef.current
     const width = container.clientWidth
@@ -5960,7 +6040,7 @@ function TrainerPerformanceMetricChart({
             }
             tooltipX = Math.max(4, tooltipX)
             let tooltipY = containerRect.top - tooltipRect.height + 20
-            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            if (tooltipY < 4) { tooltipY = containerRect.top + 8 }
             tooltipRef.current.style.left = `${tooltipX}px`
             tooltipRef.current.style.top = `${tooltipY}px`
           },
@@ -5991,13 +6071,13 @@ function TrainerPerformanceMetricChart({
     uplotData,
     seriesConfig,
     hasData,
-    isVisible,
     darkMode,
     sortedRuns,
     runs,
     plottedRuns,
     hoveredRunId,
     bucketSeconds,
+    isFullscreen,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -6006,20 +6086,23 @@ function TrainerPerformanceMetricChart({
 
   const showLoadingOpacity = isFetching && !isRefetching
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
+            {!isFullscreen && headerPrefix}
             <h4
-              className="text-xs font-medium leading-snug line-clamp-2 break-words"
+              className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")}
               title={label}
             >
               {label}
@@ -6058,7 +6141,8 @@ function TrainerPerformanceMetricChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {ignoreFirstStep && (
@@ -6192,6 +6276,7 @@ function InferencePerformanceAreaChart({
   headerSuffix,
 }: InferencePerformanceAreaChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -6227,10 +6312,11 @@ function InferencePerformanceAreaChart({
     [bucketSeconds],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   const primaryRun = runs.find((r) => r.isSelected) ?? runs[0]
   const infPerf = useInferencePerformance(primaryRun?.runPath ?? "", isVisible && !!primaryRun, shouldPoll, bucketSeconds)
@@ -6352,7 +6438,7 @@ function InferencePerformanceAreaChart({
   }, [filteredBuckets, activeCategories, runFirstTime, highlightedCats, darkMode])
 
   useEffect(() => {
-    if (!containerRef.current || !uplotData || !hasData || !isVisible) return
+    if (!containerRef.current || !uplotData || !hasData) return
 
     const container = containerRef.current
     const width = container.clientWidth
@@ -6432,7 +6518,7 @@ function InferencePerformanceAreaChart({
             }
             tooltipX = Math.max(4, tooltipX)
             let tooltipY = containerRect.top - tooltipRect.height + 20
-            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            if (tooltipY < 4) { tooltipY = containerRect.top + 8 }
             tooltipRef.current.style.left = `${tooltipX}px`
             tooltipRef.current.style.top = `${tooltipY}px`
           },
@@ -6464,10 +6550,10 @@ function InferencePerformanceAreaChart({
     seriesConfig,
     bandsConfig,
     hasData,
-    isVisible,
     darkMode,
     activeCategories,
     bucketSeconds,
+    isFullscreen,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -6476,19 +6562,22 @@ function InferencePerformanceAreaChart({
 
   const showLoadingOpacity = isFetching && !isRefetching
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
-            <h4 className="text-xs font-medium leading-snug line-clamp-2 break-words" title={label}>
+            {!isFullscreen && headerPrefix}
+            <h4 className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")} title={label}>
               {label}
             </h4>
           </div>
@@ -6525,7 +6614,8 @@ function InferencePerformanceAreaChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {ignoreFirstStep && (
@@ -6606,6 +6696,7 @@ function TrainerPerformanceAreaChart({
   headerSuffix,
 }: TrainerPerformanceAreaChartProps) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
   const visibilityRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
@@ -6643,10 +6734,11 @@ function TrainerPerformanceAreaChart({
     [bucketSeconds],
   )
 
-  const isVisible = useOnScreen(visibilityRef, {
+  const isOnScreen = useOnScreen(visibilityRef, {
     root: scrollRoot,
     threshold: 0,
   })
+  const isVisible = isOnScreen || isFullscreen
 
   // Use only the primary (selected) run for area charts
   const primaryRun = runs.find((r) => r.isSelected) ?? runs[0]
@@ -6750,7 +6842,7 @@ function TrainerPerformanceAreaChart({
   }, [filteredBuckets, activeCategories, runFirstTime, highlightedCats, darkMode])
 
   useEffect(() => {
-    if (!containerRef.current || !uplotData || !hasData || !isVisible) return
+    if (!containerRef.current || !uplotData || !hasData) return
 
     const container = containerRef.current
     const width = container.clientWidth
@@ -6831,7 +6923,7 @@ function TrainerPerformanceAreaChart({
             }
             tooltipX = Math.max(4, tooltipX)
             let tooltipY = containerRect.top - tooltipRect.height + 20
-            if (tooltipY < 4) { tooltipY = containerRect.bottom - 20 }
+            if (tooltipY < 4) { tooltipY = containerRect.top + 8 }
             tooltipRef.current.style.left = `${tooltipX}px`
             tooltipRef.current.style.top = `${tooltipY}px`
           },
@@ -6863,10 +6955,10 @@ function TrainerPerformanceAreaChart({
     seriesConfig,
     bandsConfig,
     hasData,
-    isVisible,
     darkMode,
     activeCategories,
     bucketSeconds,
+    isFullscreen,
   ])
 
   const handleMouseLeave = useCallback(() => {
@@ -6875,19 +6967,22 @@ function TrainerPerformanceAreaChart({
 
   const showLoadingOpacity = isFetching && !isRefetching
 
-  return (
+  return fullscreenPortal(
     <div
       ref={visibilityRef}
       className={cn(
-        "group/chart rounded-lg border border-border p-3 transition-opacity bg-background h-[254px] flex flex-col",
-        showLoadingOpacity && "opacity-50",
+        "group/chart flex flex-col bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6"
+          : "rounded-lg border border-border p-3 transition-opacity h-[254px]",
+        !isFullscreen && showLoadingOpacity && "opacity-50",
       )}
     >
       <div className="shrink-0 mb-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5 min-w-0">
-            {headerPrefix}
-            <h4 className="text-xs font-medium leading-snug line-clamp-2 break-words" title={label}>
+            {!isFullscreen && headerPrefix}
+            <h4 className={cn("font-medium leading-snug line-clamp-2 break-words", isFullscreen ? "text-sm" : "text-xs")} title={label}>
               {label}
             </h4>
           </div>
@@ -6924,7 +7019,8 @@ function TrainerPerformanceAreaChart({
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
-            {headerSuffix}
+            <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
+            {!isFullscreen && headerSuffix}
           </div>
         </div>
         {ignoreFirstStep && (
