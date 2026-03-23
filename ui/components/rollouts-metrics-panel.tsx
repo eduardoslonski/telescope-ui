@@ -75,6 +75,8 @@ import {
   InferencePerformanceChartCard,
   InferencePerformanceAreaChartCard,
   INFERENCE_PERF_AREA_VARIANTS,
+  InferenceUtilizationAreaChartCard,
+  INFERENCE_UTIL_AREA_VARIANTS,
   TrainerPerformanceChartCard,
   TrainerPerformanceAreaChartCard,
   TRAINER_PERF_AREA_VARIANTS,
@@ -378,6 +380,7 @@ type MetricOption = {
   isInferencePerformance?: boolean
   inferenceMetricType?: string
   isInferencePerformanceArea?: boolean
+  isInferenceUtilizationArea?: boolean
   inferenceAreaCategories?: string[]
   isTrainerPerformance?: boolean
   trainerMetricType?: string
@@ -566,6 +569,21 @@ function buildMetricOptions(
       suffix: "",
       isInferencePerformance: true,
       inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Inference Performance - Utilization (Area)
+  for (const variant of INFERENCE_UTIL_AREA_VARIANTS) {
+    options.push({
+      category: "inference_utilization_area",
+      categoryLabel: "Inference Performance",
+      group: "Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      prefix: variant.key,
+      suffix: "",
+      isInferenceUtilizationArea: true,
+      inferenceAreaCategories: [...variant.categories],
     })
   }
 
@@ -828,17 +846,19 @@ function metricOptionsToCatalog(options: MetricOption[]): PlotCatalogItem[] {
       ? ("inference_performance" as const)
       : opt.isInferencePerformanceArea
         ? ("inference_performance_area" as const)
-        : opt.isTrainerPerformance
-          ? ("trainer_performance" as const)
-          : opt.isTrainerPerformanceArea
-            ? ("trainer_performance_area" as const)
-            : opt.isHistogram
-              ? ("histogram" as const)
-              : opt.isDistributionOverTime
-                ? ("distribution_over_time" as const)
-                : opt.isEvalMetric
-                  ? ("eval_metric" as const)
-                  : ("step_metric" as const),
+        : opt.isInferenceUtilizationArea
+          ? ("inference_utilization_area" as const)
+          : opt.isTrainerPerformance
+            ? ("trainer_performance" as const)
+            : opt.isTrainerPerformanceArea
+              ? ("trainer_performance_area" as const)
+              : opt.isHistogram
+                ? ("histogram" as const)
+                : opt.isDistributionOverTime
+                  ? ("distribution_over_time" as const)
+                  : opt.isEvalMetric
+                    ? ("eval_metric" as const)
+                    : ("step_metric" as const),
     evalName: opt.evalName,
     histogramMetricType: opt.histogramMetricType,
     inferenceMetricType: opt.inferenceMetricType,
@@ -1106,17 +1126,19 @@ export function RolloutsMetricsPanel({
           ? "inference_performance"
           : config?.isInferencePerformanceArea
             ? "inference_performance_area"
-            : config?.isTrainerPerformance
-              ? "trainer_performance"
-              : config?.isTrainerPerformanceArea
-                ? "trainer_performance_area"
-                : config?.isHistogram
-                  ? "histogram"
-                  : config?.isDistributionOverTime
-                    ? "distribution_over_time"
-                    : config?.isEvalMetric
-                      ? "eval_metric"
-                      : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area",
+            : config?.isInferenceUtilizationArea
+              ? "inference_utilization_area"
+              : config?.isTrainerPerformance
+                ? "trainer_performance"
+                : config?.isTrainerPerformanceArea
+                  ? "trainer_performance_area"
+                  : config?.isHistogram
+                    ? "histogram"
+                    : config?.isDistributionOverTime
+                      ? "distribution_over_time"
+                      : config?.isEvalMetric
+                        ? "eval_metric"
+                        : "step_metric") as "step_metric" | "eval_metric" | "histogram" | "distribution_over_time" | "inference_performance" | "inference_performance_area" | "inference_utilization_area" | "trainer_performance" | "trainer_performance_area",
       }
     })
   }, [validSelectedMetrics, allMetricOptions])
@@ -1384,6 +1406,33 @@ export function RolloutsMetricsPanel({
                         <SortableChartWrapper key={sortableId} id={sortableId}>
                           {(dragHandle) => (
                             <InferencePerformanceAreaChartCard
+                              runs={runsToDisplay}
+                              shouldPoll={shouldPoll}
+                              scrollRoot={scrollRoot}
+                              label={chartLabel}
+                              categories={config.inferenceAreaCategories!}
+                              headerPrefix={dragHandle}
+                              headerSuffix={removeBtn}
+                            />
+                          )}
+                        </SortableChartWrapper>
+                      )
+                    }
+
+                    // Render inference utilization area chart
+                    if (config?.isInferenceUtilizationArea && config.inferenceAreaCategories) {
+                      const removeBtn = (
+                        <button
+                          onClick={() => handleRemoveMetricAt(originalIndex)}
+                          className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50 opacity-0 group-hover/card:opacity-100 group-hover/chart:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )
+                      return (
+                        <SortableChartWrapper key={sortableId} id={sortableId}>
+                          {(dragHandle) => (
+                            <InferenceUtilizationAreaChartCard
                               runs={runsToDisplay}
                               shouldPoll={shouldPoll}
                               scrollRoot={scrollRoot}
