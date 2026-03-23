@@ -1368,7 +1368,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_zero_advantage_pct"
-                  label="Zero Advantage %"
+                  label="Discarded Zero Advantage %"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1378,7 +1378,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_max_async_pct"
-                  label="Max Async %"
+                  label="Discarded Max Async %"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1388,7 +1388,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_stop_reason_length_pct"
-                  label="% Stop Reason = Length"
+                  label="Discarded % Stop Reason = Length"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1398,7 +1398,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_group_length_gini_mean"
-                  label="Group Completion Length Gini"
+                  label="Discarded Group Completion Length Gini"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1408,7 +1408,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_group_length_max_median_ratio_mean"
-                  label="Group Completion Length Max/Median"
+                  label="Discarded Group Completion Length Max/Median"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1427,7 +1427,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_zero_advantage_all_zero_pct"
-                  label="Zero Advantage (All Reward = 0) %"
+                  label="Discarded Zero Advantage (All Reward = 0) %"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1437,7 +1437,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_zero_advantage_all_positive_pct"
-                  label="Zero Advantage (All Reward > 0) %"
+                  label="Discarded Zero Advantage (All Reward > 0) %"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1447,7 +1447,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_zero_advantage_mean_reward"
-                  label="Zero Advantage Mean Reward"
+                  label="Discarded Zero Advantage Mean Reward"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1485,7 +1485,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_off_policy_steps_mean"
-                  label="Off-Policy Steps (Mean)"
+                  label="Discarded Off-Policy Steps (Mean)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1495,7 +1495,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="discarded_off_policy_steps_std"
-                  label="Off-Policy Steps (Std)"
+                  label="Discarded Off-Policy Steps (Std)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1507,7 +1507,7 @@ export function StepMetricsCharts({
                     <DistributionOverTimeChart
                       runPath={selectedRun.runPath}
                       metricType="discarded_off_policy_steps"
-                      label="Off-Policy Steps (Dist. Over Time)"
+                      label="Discarded Off-Policy Steps (Dist. Over Time)"
                       shouldPoll={shouldPoll}
                       scrollRoot={scrollRoot}
                     />
@@ -1616,7 +1616,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_forward_total"
-                  label="Forward"
+                  label="Timing Forward"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1626,7 +1626,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_backward_total"
-                  label="Backward"
+                  label="Timing Backward"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1636,7 +1636,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_loss_computation_total"
-                  label="Loss Computation"
+                  label="Timing Loss Computation"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1646,7 +1646,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_kl_total"
-                  label="Compute KL"
+                  label="Timing Compute KL"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1656,7 +1656,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_entropy_total"
-                  label="Compute Entropy"
+                  label="Timing Compute Entropy"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1666,7 +1666,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_data_to_device_total"
-                  label="Data to Device"
+                  label="Timing Data to Device"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1676,7 +1676,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_prepare_tensors_total"
-                  label="Prepare Tensors"
+                  label="Timing Prepare Tensors"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1686,7 +1686,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_waiting_for_data"
-                  label="Waiting for Data"
+                  label="Timing Waiting for Data"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1696,7 +1696,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_weight_sync_trainer_total"
-                  label="Weight Broadcast (Trainer)"
+                  label="Timing Weight Broadcast (Trainer)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1706,7 +1706,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_weight_sync_inference_total"
-                  label="Weight Broadcast (Inference)"
+                  label="Timing Weight Broadcast (Inference)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1725,7 +1725,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_forward_microbatch_mean"
-                  label="Forward"
+                  label="Microbatch Timing Forward"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1735,7 +1735,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_backward_microbatch_mean"
-                  label="Backward"
+                  label="Microbatch Timing Backward"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1745,7 +1745,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_loss_computation_microbatch_mean"
-                  label="Loss Computation"
+                  label="Microbatch Timing Loss Computation"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1755,7 +1755,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_kl_microbatch_mean"
-                  label="Compute KL"
+                  label="Microbatch Timing Compute KL"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1765,7 +1765,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_entropy_microbatch_mean"
-                  label="Compute Entropy"
+                  label="Microbatch Timing Compute Entropy"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1775,7 +1775,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_data_to_device_microbatch_mean"
-                  label="Data to Device"
+                  label="Microbatch Timing Data to Device"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1785,7 +1785,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_prepare_tensors_microbatch_mean"
-                  label="Prepare Tensors"
+                  label="Microbatch Timing Prepare Tensors"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1865,7 +1865,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_generation_normal_pct"
-                  label="Generation Normal"
+                  label="Inference % Generation (Normal)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1875,7 +1875,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_generation_discarded_pct"
-                  label="Generation Discarded"
+                  label="Inference % Generation (Discarded)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1885,7 +1885,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_generation_canceled_pct"
-                  label="Generation Canceled"
+                  label="Inference % Generation (Canceled)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1895,7 +1895,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_generation_all_pct"
-                  label="Generation All"
+                  label="Inference % Generation (All)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1905,7 +1905,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_reward_normal_pct"
-                  label="Compute Reward Normal"
+                  label="Inference % Compute Reward (Normal)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1915,7 +1915,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_reward_discarded_pct"
-                  label="Compute Reward Discarded"
+                  label="Inference % Compute Reward (Discarded)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1925,7 +1925,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_reward_canceled_pct"
-                  label="Compute Reward Canceled"
+                  label="Inference % Compute Reward (Canceled)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1935,7 +1935,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_compute_reward_all_pct"
-                  label="Compute Reward All"
+                  label="Inference % Compute Reward (All)"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -1945,7 +1945,7 @@ export function StepMetricsCharts({
                   runs={runs}
                   shouldPoll={shouldPoll}
                   metricName="timing_idle_pct"
-                  label="Idle Time"
+                  label="Inference % Idle Time"
                   showEma={showEma}
                   emaSpan={emaSpan}
                   hoveredRunId={hoveredRunId}
@@ -5632,21 +5632,21 @@ export function InferencePerformanceSection({
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Idle vs Working"
+          label="Inference Idle vs Working"
           categories={["idle", "working"]}
         />
         <InferenceUtilizationAreaChart
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Idle vs Generating vs Weight Sync"
+          label="Inference Idle vs Generating vs Weight Sync"
           categories={["idle", "generating", "weight_broadcast"]}
         />
         <InferencePerformanceAreaChart
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Kept vs Discarded vs Canceled"
+          label="Inference Kept vs Discarded vs Canceled"
           categories={["kept", "discarded", "canceled"]}
         />
       </div>
@@ -5718,7 +5718,7 @@ export function InferencePerformanceChartCard({
 // ============================================================================
 
 export const INFERENCE_PERF_AREA_VARIANTS = [
-  { key: "inference_area_kept_vs_discarded_vs_canceled", label: "Kept vs Discarded vs Canceled", categories: ["kept", "discarded", "canceled"] },
+  { key: "inference_area_kept_vs_discarded_vs_canceled", label: "Inference Kept vs Discarded vs Canceled", categories: ["kept", "discarded", "canceled"] },
 ] as const
 
 interface InferencePerformanceAreaChartCardProps {
@@ -5758,8 +5758,8 @@ export function InferencePerformanceAreaChartCard({
 // ============================================================================
 
 export const INFERENCE_UTIL_AREA_VARIANTS = [
-  { key: "inference_util_idle_vs_working", label: "Idle vs Working", categories: ["idle", "working"] },
-  { key: "inference_util_idle_vs_generating_vs_weight_sync", label: "Idle vs Generating vs Weight Sync", categories: ["idle", "generating", "weight_broadcast"] },
+  { key: "inference_util_idle_vs_working", label: "Inference Idle vs Working", categories: ["idle", "working"] },
+  { key: "inference_util_idle_vs_generating_vs_weight_sync", label: "Inference Idle vs Generating vs Weight Sync", categories: ["idle", "generating", "weight_broadcast"] },
 ] as const
 
 interface InferenceUtilizationAreaChartProps {
@@ -7577,34 +7577,34 @@ export function TrainerPerformanceSection({
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Idle vs Working"
+          label="Trainer Idle vs Working"
           categories={["idle", "working"]}
         />
         <TrainerPerformanceAreaChart
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Idle vs Training vs Weight Sync"
+          label="Trainer Idle vs Training vs Weight Sync"
           categories={["idle", "training", "weight_broadcast"]}
         />
         <TrainerPerformanceAreaChart
           runs={runs}
           shouldPoll={shouldPoll}
           scrollRoot={scrollRoot}
-          label="Detailed Breakdown"
+          label="Trainer Time Detailed Breakdown"
           categories={detailedCategories}
         />
       </div>
       <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">% Time per Category</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <TrainerPerformanceMetricChart trainerMetricType="idle" label="Idle" {...sharedProps} />
-        <TrainerPerformanceMetricChart trainerMetricType="working" label="Working" {...sharedProps} />
-        <TrainerPerformanceMetricChart trainerMetricType="working_except_weight_sync" label="Working (excl. Weight Sync)" {...sharedProps} />
+        <TrainerPerformanceMetricChart trainerMetricType="idle" label="Trainer % Idle" {...sharedProps} />
+        <TrainerPerformanceMetricChart trainerMetricType="working" label="Trainer % Working" {...sharedProps} />
+        <TrainerPerformanceMetricChart trainerMetricType="working_except_weight_sync" label="Trainer % Working (excl. Weight Sync)" {...sharedProps} />
         {eventTypes.map((et) => (
           <TrainerPerformanceMetricChart
             key={et}
             trainerMetricType={et}
-            label={getTrainerPerfDisplayName(et)}
+            label={`Trainer % ${getTrainerPerfDisplayName(et)}`}
             {...sharedProps}
           />
         ))}
@@ -7658,9 +7658,9 @@ export function TrainerPerformanceChartCard({
 
 // Predefined area chart variants that can be selected from the plot catalog
 export const TRAINER_PERF_AREA_VARIANTS = [
-  { key: "trainer_area_idle_vs_working", label: "Idle vs Working", categories: ["idle", "working"] },
-  { key: "trainer_area_idle_vs_training_vs_weight_sync", label: "Idle vs Training vs Weight Sync", categories: ["idle", "training", "weight_broadcast"] },
-  { key: "trainer_area_detailed", label: "Detailed Breakdown", categories: [...TRAINER_AREA_CATEGORIES] },
+  { key: "trainer_area_idle_vs_working", label: "Trainer Idle vs Working", categories: ["idle", "working"] },
+  { key: "trainer_area_idle_vs_training_vs_weight_sync", label: "Trainer Idle vs Training vs Weight Sync", categories: ["idle", "training", "weight_broadcast"] },
+  { key: "trainer_area_detailed", label: "Trainer Time Detailed Breakdown", categories: [...TRAINER_AREA_CATEGORIES] },
 ] as const
 
 interface TrainerPerformanceAreaChartCardProps {
