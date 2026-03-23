@@ -647,6 +647,15 @@ export interface InferencePerformanceAvgBucket {
   value: number
 }
 
+export interface InferenceUtilizationBucket {
+  time: number
+  idle: number
+  working: number
+  generating: number
+  weight_broadcast: number
+  [key: string]: number
+}
+
 export interface InferencePerformanceResponse {
   inference_calls: InferencePerformanceBucket[]
   requests_done: InferencePerformanceBucket[]
@@ -662,6 +671,8 @@ export interface InferencePerformanceResponse {
   avg_time_inference: InferencePerformanceAvgBucket[]
   avg_time_e2e: InferencePerformanceAvgBucket[]
   avg_time_generation: InferencePerformanceAvgBucket[]
+  utilization_buckets: InferenceUtilizationBucket[]
+  num_lanes: number
   step_times: StepTime[]
   first_time: number | null
 }
@@ -765,7 +776,7 @@ export interface CustomPlotItem {
   id: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "inference_utilization_area" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   inferenceMetricType?: string

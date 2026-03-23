@@ -52,7 +52,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useCustomMetricsLayout, useCustomMetricsTemplate, useStepTimes } from "@/hooks/use-run-data"
-import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard, InferencePerformanceAreaChartCard, INFERENCE_PERF_AREA_VARIANTS, TrainerPerformanceChartCard, TrainerPerformanceAreaChartCard, TRAINER_PERF_AREA_VARIANTS } from "@/components/step-metrics-charts"
+import { MetricChart, EvalMetricChart, DistributionOverTimeChart, InferencePerformanceChartCard, InferencePerformanceAreaChartCard, INFERENCE_PERF_AREA_VARIANTS, InferenceUtilizationAreaChartCard, INFERENCE_UTIL_AREA_VARIANTS, TrainerPerformanceChartCard, TrainerPerformanceAreaChartCard, TRAINER_PERF_AREA_VARIANTS } from "@/components/step-metrics-charts"
 import type {
   CustomMetricsLayout,
   CustomSection,
@@ -92,7 +92,7 @@ export interface PlotCatalogItem {
   group?: string
   metricKey: string
   label: string
-  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "trainer_performance" | "trainer_performance_area"
+  plotType: "step_metric" | "eval_metric" | "distribution_over_time" | "histogram" | "inference_performance" | "inference_performance_area" | "inference_utilization_area" | "trainer_performance" | "trainer_performance_area"
   evalName?: string
   distMetricType?: string
   histogramMetricType?: string
@@ -552,6 +552,18 @@ export function buildPlotCatalog(
       label: m.label,
       plotType: "inference_performance",
       inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Inference Performance - Utilization (Area)
+  for (const variant of INFERENCE_UTIL_AREA_VARIANTS) {
+    catalog.push({
+      section: "Inference Performance",
+      group: "Breakdown (Area)",
+      metricKey: variant.key,
+      label: variant.label,
+      plotType: "inference_utilization_area",
+      inferenceAreaCategories: [...variant.categories],
     })
   }
 
@@ -1022,6 +1034,16 @@ export function SortablePlotCard({
         />
       ) : plot.plotType === "inference_performance_area" && plot.inferenceAreaCategories ? (
         <InferencePerformanceAreaChartCard
+          runs={chartProps.runs}
+          shouldPoll={chartProps.shouldPoll}
+          scrollRoot={chartProps.scrollRoot}
+          label={label}
+          categories={plot.inferenceAreaCategories}
+          headerPrefix={dragHandle}
+          headerSuffix={deleteButton}
+        />
+      ) : plot.plotType === "inference_utilization_area" && plot.inferenceAreaCategories ? (
+        <InferenceUtilizationAreaChartCard
           runs={chartProps.runs}
           shouldPoll={chartProps.shouldPoll}
           scrollRoot={chartProps.scrollRoot}

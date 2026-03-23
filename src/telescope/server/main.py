@@ -7748,6 +7748,43 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [bucket, bucket, req.run_path],
     ).fetchall()
 
+    # --- Inference utilization (idle vs working) ---
+    # Total number of lanes = distinct (server, server_lane) combinations
+    num_lanes_row = con.execute(
+        """
+        SELECT COUNT(DISTINCT (COALESCE(server, 0) * 100000 + COALESCE(server_lane, 0)))
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request'
+            AND start_time IS NOT NULL AND end_time IS NOT NULL
+        """,
+        [req.run_path],
+    ).fetchone()
+    num_lanes = num_lanes_row[0] if num_lanes_row and num_lanes_row[0] else 0
+
+    # Fetch all request events with start/end times for overlap computation
+    inference_events = con.execute(
+        """
+        SELECT start_time, end_time
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request'
+            AND start_time IS NOT NULL AND end_time IS NOT NULL
+        ORDER BY start_time ASC
+        """,
+        [req.run_path],
+    ).fetchall()
+
+    # Fetch weight_broadcast events for generating vs weight sync breakdown
+    weight_broadcast_events = con.execute(
+        """
+        SELECT start_time, end_time
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'weight_broadcast'
+            AND start_time IS NOT NULL AND end_time IS NOT NULL
+        ORDER BY start_time ASC
+        """,
+        [req.run_path],
+    ).fetchall()
+
     # Step times (for vertical lines)
     step_rows = con.execute(
         """
@@ -7761,6 +7798,52 @@ def get_inference_performance(req: InferencePerformanceRequest):
     ).fetchall()
 
     con.close()
+
+    # Compute utilization buckets
+    utilization_buckets = []
+    if num_lanes > 0 and inference_events:
+        capacity = num_lanes * bucket  # total lane-seconds per bucket
+        request_overlap: dict[float, float] = defaultdict(float)
+        wb_overlap: dict[float, float] = defaultdict(float)
+
+        for start_time, end_time in inference_events:
+            first_b = math.floor(start_time / bucket) * bucket
+            last_b = math.floor(end_time / bucket) * bucket
+            b = first_b
+            while b <= last_b:
+                b_end = b + bucket
+                overlap = min(end_time, b_end) - max(start_time, b)
+                if overlap > 0:
+                    request_overlap[b] += overlap
+                b += bucket
+
+        for start_time, end_time in weight_broadcast_events:
+            first_b = math.floor(start_time / bucket) * bucket
+            last_b = math.floor(end_time / bucket) * bucket
+            b = first_b
+            while b <= last_b:
+                b_end = b + bucket
+                overlap = min(end_time, b_end) - max(start_time, b)
+                if overlap > 0:
+                    wb_overlap[b] += overlap
+                b += bucket
+
+        all_bucket_keys = sorted(set(request_overlap.keys()) | set(wb_overlap.keys()))
+        for b_start in all_bucket_keys:
+            raw_generating_pct = min(100.0, request_overlap.get(b_start, 0) / capacity * 100)
+            # Weight sync blocks all lanes at once, so measure against wall-clock time only
+            wb_pct = min(100.0, wb_overlap.get(b_start, 0) / bucket * 100)
+            # Discount weight sync from generating so they don't double-count
+            generating_pct = max(0.0, raw_generating_pct - wb_pct)
+            total_busy = min(100.0, generating_pct + wb_pct)
+            idle_pct = max(0.0, 100.0 - total_busy)
+            utilization_buckets.append({
+                "time": b_start,
+                "working": round(total_busy, 4),
+                "generating": round(generating_pct, 4),
+                "weight_broadcast": round(wb_pct, 4),
+                "idle": round(idle_pct, 4),
+            })
 
     # Find earliest time across all data for relative time calculation
     all_bucket_rows = [
@@ -7801,6 +7884,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
         "avg_time_inference": format_avg_buckets(avg_time_inference),
         "avg_time_e2e": format_avg_buckets(avg_time_e2e),
         "avg_time_generation": format_avg_buckets(avg_time_generation),
+        "utilization_buckets": utilization_buckets,
+        "num_lanes": num_lanes,
         "step_times": [
             {"step": row[0], "time": row[1]}
             for row in step_rows
