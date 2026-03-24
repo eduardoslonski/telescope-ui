@@ -7788,6 +7788,17 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [req.run_path],
     ).fetchall()
 
+    # Include in-flight generations as synthetic events (start_time -> snapshot_time)
+    from .ingest import inflight_by_run
+    inflight_data = inflight_by_run.get(req.run_path)
+    if inflight_data and inflight_data.get("snapshot_time") and inflight_data.get("running"):
+        snap_time = inflight_data["snapshot_time"]
+        inference_events = list(inference_events) + [
+            (g["start_time"], snap_time)
+            for g in inflight_data["running"]
+            if g.get("start_time") is not None
+        ]
+
     # Fetch weight_broadcast events for generating vs weight sync breakdown
     weight_broadcast_events = con.execute(
         """
@@ -7821,6 +7832,12 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [req.run_path],
     ).fetchone()
     last_time = last_time_row[0] if last_time_row and last_time_row[0] is not None else None
+
+    # Extend last_time to include inflight snapshot time
+    if inflight_data and inflight_data.get("snapshot_time") and inflight_data.get("running"):
+        snap_time = inflight_data["snapshot_time"]
+        if last_time is None or snap_time > last_time:
+            last_time = snap_time
 
     con.close()
 
