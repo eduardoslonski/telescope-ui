@@ -416,23 +416,33 @@ export function CombinedTimelineChart({
   }, [trainerData, intervalStart, intervalEnd])
 
   // Merge inflight generations into inference events as synthetic "in-progress" bars.
-  // For each running generation in the snapshot, if there's no matching end event
-  // (same sample_id), create a synthetic event extending to the snapshot time.
+  // For each running generation in the snapshot, if there's no matching completed event
+  // (same sample_id with a real end_time), create a synthetic event extending to the snapshot time.
+  // If the DB event exists but was canceled without an end_time, the synthetic event
+  // inherits the canceled status so it renders as canceled instead of inflight.
   const inferenceWithInflight = useMemo(() => {
     const events = inferenceData ?? []
     if (!inflightSnapshot?.running?.length || !inflightSnapshot.snapshot_time) {
       return events
     }
-    // Collect sample_ids that already have end events
-    const endedSampleIds = new Set(
-      events
-        .filter((e) => e.sample_id != null)
-        .map((e) => e.sample_id!)
-    )
-    // Create synthetic events for inflight generations that have no end event
-    const syntheticEvents: InferenceEvent[] = inflightSnapshot.running
-      .filter((gen) => !endedSampleIds.has(gen.sample_id))
-      .map((gen) => ({
+    // Map sample_ids to their DB events
+    const eventBySampleId = new Map<number, InferenceEvent>()
+    for (const e of events) {
+      if (e.sample_id != null) {
+        eventBySampleId.set(e.sample_id, e)
+      }
+    }
+    // Create synthetic events for inflight generations
+    const syntheticEvents: InferenceEvent[] = []
+    for (const gen of inflightSnapshot.running) {
+      const existing = eventBySampleId.get(gen.sample_id)
+      if (existing && existing.end_time !== existing.start_time) {
+        // Real completed event with proper end_time — skip
+        continue
+      }
+      // Either no DB event, or a canceled event with no real end_time (end_time == start_time fallback).
+      // Create a synthetic event extending to snapshot_time.
+      syntheticEvents.push({
         event_type: "request",
         server: gen.server,
         start_time: gen.start_time,
@@ -442,8 +452,11 @@ export function CombinedTimelineChart({
         group_id: gen.group_id,
         lane: gen.server_lane,
         is_eval: gen.is_eval,
-        phase: "inflight",
-      }))
+        // Inherit canceled status from the DB event if present
+        is_canceled: existing?.is_canceled,
+        phase: existing?.is_canceled ? undefined : "inflight",
+      })
+    }
     return [...events, ...syntheticEvents]
   }, [inferenceData, inflightSnapshot])
 

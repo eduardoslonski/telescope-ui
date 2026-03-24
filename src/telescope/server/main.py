@@ -3523,10 +3523,11 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         LEFT JOIN samples_info si ON si.group_id = rr.group_id AND si.sample_idx = rr.sample_id
         LEFT JOIN ranked_env re ON re.group_id = rr.group_id AND re.sample_idx = rr.sample_id AND re.env_pos = rr.turn_pos
         WHERE rr.start_time < ?
-          AND (rr.end_time
-               + COALESCE(re.environment_response_time, 0)
-               + CASE WHEN rr.turn_pos = rr.total_turns THEN COALESCE(si.compute_reward_time, 0) ELSE 0 END
-              ) > ?
+          AND (rr.end_time IS NULL
+               OR (rr.end_time
+                   + COALESCE(re.environment_response_time, 0)
+                   + CASE WHEN rr.turn_pos = rr.total_turns THEN COALESCE(si.compute_reward_time, 0) ELSE 0 END
+                  ) > ?)
 
         UNION ALL
 
@@ -3562,7 +3563,9 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "tp_group_id": row[3],
             "tp_size": row[4],
             "start_time": row[5],
-            "end_time": row[6],
+            # For events with no end_time (e.g. canceled while in-flight), fall back to start_time
+            # so the event is still renderable and its sample_id blocks synthetic inflight creation.
+            "end_time": row[6] if row[6] is not None else row[5],
             "prompt_tokens": row[7],
             "rollout_tokens": row[8],
             "sample_id": row[9],
