@@ -801,7 +801,7 @@ function TimelineFooter({
   // Check if the selected group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
     if (isCanceledGroup || isDiscardedGroup) return false
-    if (!highlightDiscarded) return false
+    if (!highlightDiscarded || selectedRequest?.isEval) return false
     // If status not ready yet, it's pending
     if (!footerDiscardStatusReady) return true
     // If status is ready but no statuses found for this group, it's pending
