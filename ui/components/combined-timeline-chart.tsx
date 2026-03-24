@@ -1120,7 +1120,7 @@ function InferenceSection({
 
   // Separate compute reward: extract reward items from all servers
   const computeRewardItems = useMemo(() => {
-    if (!separateComputeReward) return []
+    if (!showComputeReward || !separateComputeReward) return []
     const items: Array<{
       startTime: number
       duration: number
@@ -1141,7 +1141,7 @@ function InferenceSection({
     }
     items.sort((a, b) => a.startTime - b.startTime)
     return items
-  }, [separateComputeReward, enrichedEventsByServer])
+  }, [showComputeReward, separateComputeReward, enrichedEventsByServer])
 
   // Greedy lane packing for separate compute reward section
   const { packedRewardItems, rewardLaneCount } = useMemo(() => {
