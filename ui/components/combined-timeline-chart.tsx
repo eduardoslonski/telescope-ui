@@ -1624,11 +1624,11 @@ export function GroupSampleTimeline({
   // Check if group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
     if (isCanceledGroup || isDiscardedGroup) return false
-    if (!highlightDiscarded) return false
+    if (!highlightDiscarded || isEvalGroup) return false
     if (!discardStatusReady) return true
     if (!sampleStatuses?.statuses?.length) return true
     return !sampleStatuses.statuses.some((s) => s.kind === "rollouts")
-  }, [isCanceledGroup, isDiscardedGroup, highlightDiscarded, discardStatusReady, sampleStatuses])
+  }, [isCanceledGroup, isDiscardedGroup, isEvalGroup, highlightDiscarded, discardStatusReady, sampleStatuses])
 
   const groupColor = isCanceledGroup
     ? (darkMode ? GROUP_SAMPLE_CANCELED_COLOR_DARK : GROUP_SAMPLE_CANCELED_COLOR_LIGHT)
@@ -2578,7 +2578,7 @@ function getInferenceEventBaseColor(
   if (event.is_canceled) {
     return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
   }
-  if (!highlightDiscarded) {
+  if (!highlightDiscarded || event.is_eval) {
     return event.is_eval
       ? INFERENCE_REQUEST_EVAL_COLOR
       : INFERENCE_REQUEST_COLOR
@@ -2797,6 +2797,7 @@ function InferenceEventBlock({
       return { text: "Canceled", className: "text-muted-foreground" }
     if (
       highlightDiscarded &&
+      !event.is_eval &&
       event.sample_id != null &&
       event.group_id != null
     ) {
