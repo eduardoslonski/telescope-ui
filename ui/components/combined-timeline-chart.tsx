@@ -416,33 +416,23 @@ export function CombinedTimelineChart({
   }, [trainerData, intervalStart, intervalEnd])
 
   // Merge inflight generations into inference events as synthetic "in-progress" bars.
-  // For each running generation in the snapshot, if there's no matching completed event
-  // (same sample_id with a real end_time), create a synthetic event extending to the snapshot time.
-  // If the DB event exists but was canceled without an end_time, the synthetic event
-  // inherits the canceled status so it renders as canceled instead of inflight.
+  // For each running generation in the snapshot, if there's no matching end event
+  // (same sample_id), create a synthetic event extending to the snapshot time.
   const inferenceWithInflight = useMemo(() => {
     const events = inferenceData ?? []
     if (!inflightSnapshot?.running?.length || !inflightSnapshot.snapshot_time) {
       return events
     }
-    // Map sample_ids to their DB events
-    const eventBySampleId = new Map<number, InferenceEvent>()
-    for (const e of events) {
-      if (e.sample_id != null) {
-        eventBySampleId.set(e.sample_id, e)
-      }
-    }
-    // Create synthetic events for inflight generations
-    const syntheticEvents: InferenceEvent[] = []
-    for (const gen of inflightSnapshot.running) {
-      const existing = eventBySampleId.get(gen.sample_id)
-      if (existing && existing.end_time !== existing.start_time) {
-        // Real completed event with proper end_time — skip
-        continue
-      }
-      // Either no DB event, or a canceled event with no real end_time (end_time == start_time fallback).
-      // Create a synthetic event extending to snapshot_time.
-      syntheticEvents.push({
+    // Collect sample_ids that already have end events
+    const endedSampleIds = new Set(
+      events
+        .filter((e) => e.sample_id != null)
+        .map((e) => e.sample_id!)
+    )
+    // Create synthetic events for inflight generations that have no end event
+    const syntheticEvents: InferenceEvent[] = inflightSnapshot.running
+      .filter((gen) => !endedSampleIds.has(gen.sample_id))
+      .map((gen) => ({
         event_type: "request",
         server: gen.server,
         start_time: gen.start_time,
@@ -452,11 +442,8 @@ export function CombinedTimelineChart({
         group_id: gen.group_id,
         lane: gen.server_lane,
         is_eval: gen.is_eval,
-        // Inherit canceled status from the DB event if present
-        is_canceled: existing?.is_canceled,
-        phase: existing?.is_canceled ? undefined : "inflight",
-      })
-    }
+        phase: "inflight",
+      }))
     return [...events, ...syntheticEvents]
   }, [inferenceData, inflightSnapshot])
 
@@ -955,10 +942,34 @@ function InferenceSection({
     return uniqueNodes.size > 1
   }, [inferenceServerNodeMap, totalSetupNodes])
 
+  // Propagate is_canceled to all events in a group if any event in that group
+  // is canceled. This ensures bars for completed-before-cancellation events in a
+  // canceled group also render as canceled instead of "Waiting for Group".
+  const enrichedEventsByServer = useMemo(() => {
+    const canceledGroupIds = new Set<number>()
+    for (const events of Object.values(eventsByServer)) {
+      for (const event of events) {
+        if (event.is_canceled && event.group_id != null) {
+          canceledGroupIds.add(event.group_id)
+        }
+      }
+    }
+    if (canceledGroupIds.size === 0) return eventsByServer
+    const result: Record<number, InferenceEvent[]> = {}
+    for (const [server, events] of Object.entries(eventsByServer)) {
+      result[Number(server)] = events.map((event) =>
+        !event.is_canceled && event.group_id != null && canceledGroupIds.has(event.group_id)
+          ? { ...event, is_canceled: true }
+          : event
+      )
+    }
+    return result
+  }, [eventsByServer])
+
   const requestSamples = useMemo(() => {
     const seen = new Set<string>()
     const samples: Array<{ group_id: number; sample_idx: number }> = []
-    for (const events of Object.values(eventsByServer)) {
+    for (const events of Object.values(enrichedEventsByServer)) {
       for (const event of events) {
         if (
           event.event_type !== "request" ||
@@ -974,7 +985,7 @@ function InferenceSection({
       }
     }
     return samples
-  }, [eventsByServer])
+  }, [enrichedEventsByServer])
 
   const { data: sampleStatuses } = useSampleStatuses(
     selectedRunPath ?? "",
@@ -996,7 +1007,7 @@ function InferenceSection({
   // Compute actual lane count for pagination
   const actualMaxLanesPerServer = useMemo(() => {
     let maxPerServer = lanesPerServer
-    for (const events of Object.values(eventsByServer)) {
+    for (const events of Object.values(enrichedEventsByServer)) {
       for (const event of events) {
         if (event.event_type !== "request") continue
         if (event.lane != null && event.lane + 1 > maxPerServer) {
@@ -1005,7 +1016,7 @@ function InferenceSection({
       }
     }
     return maxPerServer
-  }, [eventsByServer, lanesPerServer])
+  }, [enrichedEventsByServer, lanesPerServer])
 
   // Lane pagination
   const numServersForCalc = Math.max(1, servers.length)
@@ -1030,19 +1041,19 @@ function InferenceSection({
 
   const totalEventCount = useMemo(() => {
     let count = 0
-    for (const events of Object.values(eventsByServer)) count += events.length
+    for (const events of Object.values(enrichedEventsByServer)) count += events.length
     return count
-  }, [eventsByServer])
+  }, [enrichedEventsByServer])
 
   const currentRenderData = useMemo(
     () => ({
       servers: paginatedServers,
-      eventsByServer,
+      eventsByServer: enrichedEventsByServer,
       intervalStart,
       intervalDuration,
       lanesPerServer,
     }),
-    [paginatedServers, eventsByServer, intervalStart, intervalDuration, lanesPerServer],
+    [paginatedServers, enrichedEventsByServer, intervalStart, intervalDuration, lanesPerServer],
   )
   const renderKey = useMemo(() => {
     return `${intervalStart}:${intervalDuration}:${paginatedServers.join(",")}:${
@@ -1116,7 +1127,7 @@ function InferenceSection({
       sourceEvent: InferenceEvent
       server: number
     }> = []
-    for (const [serverStr, events] of Object.entries(eventsByServer)) {
+    for (const [serverStr, events] of Object.entries(enrichedEventsByServer)) {
       const server = Number(serverStr)
       for (const event of events) {
         if (event.event_type !== "request") continue
@@ -1130,7 +1141,7 @@ function InferenceSection({
     }
     items.sort((a, b) => a.startTime - b.startTime)
     return items
-  }, [separateComputeReward, eventsByServer])
+  }, [separateComputeReward, enrichedEventsByServer])
 
   // Greedy lane packing for separate compute reward section
   const { packedRewardItems, rewardLaneCount } = useMemo(() => {
