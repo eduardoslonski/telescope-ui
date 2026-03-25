@@ -750,6 +750,7 @@ export interface Run {
   is_tracking: boolean
   is_syncing: boolean
   color: string
+  notes: string | null
 }
 
 export interface DiscoveryStatus {

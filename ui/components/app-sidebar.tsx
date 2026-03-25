@@ -66,6 +66,7 @@ import {
   overviewShowCodeViewAtom,
   overviewShowLogsViewAtom,
   darkModeAtom,
+  sidebarProjectFilterAtom,
 } from "@/lib/atoms"
 import { useRemovedRuns, useRuns, useKnownProjects } from "@/hooks/use-run-data"
 import { cn } from "@/lib/utils"
@@ -80,6 +81,13 @@ import {
   RunColorPicker,
   normalizeHexColor,
 } from "@/components/run-color-picker"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { DatabaseDialog } from "@/components/database-dialog"
 import type { RemovedRun, RunsResponse } from "@/lib/types"
 
@@ -162,6 +170,7 @@ export function AppSidebar() {
   const [projectsDialogOpen, setProjectsDialogOpen] = useAtom(
     knownProjectsDialogOpenAtom,
   )
+  const [projectFilter, setProjectFilter] = useAtom(sidebarProjectFilterAtom)
   const [newProjectInput, setNewProjectInput] = useState("")
   const [isAddingProject, setIsAddingProject] = useState(false)
   const [addProjectError, setAddProjectError] = useState<string | null>(null)
@@ -665,6 +674,13 @@ export function AppSidebar() {
   }, [isConfigSearch])
 
   const runs = runsData?.runs || []
+  const uniqueProjects = useMemo(() => {
+    const projects = new Set<string>()
+    for (const run of runs) {
+      if (run.project) projects.add(run.project)
+    }
+    return [...projects].sort((a, b) => a.localeCompare(b))
+  }, [runs])
   const discovery = runsData?.discovery
   const hasWandbKey = runsData?.has_wandb_key ?? apiKey
   const hasNetrcWandbKey = runsData?.has_netrc_wandb_key ?? false
@@ -797,6 +813,27 @@ export function AppSidebar() {
                 </Button>
               )}
             </div>
+            {uniqueProjects.length > 1 && (
+              <Select
+                value={projectFilter ?? "__all__"}
+                onValueChange={(v) => setProjectFilter(v === "__all__" ? null : v)}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-6 text-[11px] min-w-0 max-w-[100px] rounded-md border-input px-1.5 py-0 gap-0.5 [&_svg]:size-3"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__" className="text-xs">All</SelectItem>
+                  {uniqueProjects.map((project) => (
+                    <SelectItem key={project} value={project} className="text-xs">
+                      {project}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -898,6 +935,8 @@ export function AppSidebar() {
                 <div className="flex flex-col">
                   {runs
                     .filter((run) => {
+                      if (projectFilter && run.project !== projectFilter)
+                        return false
                       if (showOnlySelected) {
                         if (
                           selectedRunPath !== run.run_id &&
