@@ -56,7 +56,7 @@ import {
   useStepHistogram,
   useStepDistributionOverTime,
   useRuns,
-  useRunSummary,
+  useRunSummaries,
 } from "@/hooks/use-run-data"
 import { formatValueSmart } from "@/lib/format"
 import {
@@ -960,24 +960,19 @@ export function RolloutsMetricsPanel({
   const isEvalMode = !!evalConfig
 
   const { data: runsData } = useRuns()
-  const { data: summaryData } = useRunSummary(
-    selectedRunPath || "",
-    !!selectedRunPath,
-    shouldPoll,
-  )
 
-  const availableRewardNames = useMemo(
-    () => summaryData?.available_rollout_metric_names ?? [],
-    [summaryData?.available_rollout_metric_names],
-  )
-  const customMetricSections = useMemo(
-    () => summaryData?.step_metrics_info?.custom_metric_sections ?? {},
-    [summaryData?.step_metrics_info?.custom_metric_sections],
-  )
-  const evalsList = useMemo(
-    () => summaryData?.eval_info?.evals ?? [],
-    [summaryData?.eval_info?.evals],
-  )
+  // Merge metric catalogs from all visible runs
+  const allRunPaths = useMemo(() => {
+    const paths = new Set<string>(visibleRuns)
+    if (selectedRunPath) paths.add(selectedRunPath)
+    return Array.from(paths)
+  }, [selectedRunPath, visibleRuns])
+
+  const {
+    customMetricSections,
+    availableRewardNames,
+    evalsList,
+  } = useRunSummaries(allRunPaths, shouldPoll)
 
   // Apply default metrics on first load if none are selected (training mode only)
   const defaultsAppliedRef = useRef(false)
@@ -988,7 +983,7 @@ export function RolloutsMetricsPanel({
       defaultsAppliedRef.current = true
       return
     }
-    if (!summaryData) return
+    if (availableRewardNames.length === 0 && customMetricSections && Object.keys(customMetricSections).length === 0) return
     defaultsAppliedRef.current = true
 
     const defaults = [
@@ -1016,7 +1011,7 @@ export function RolloutsMetricsPanel({
         : []),
     ]
     setSelectedMetrics(defaults)
-  }, [summaryData, availableRewardNames, isEvalMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [availableRewardNames, customMetricSections, isEvalMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-add rollout metric means + distribution over time when new ones become available (training mode only)
   const knownGenMetricsRef = useRef<Set<string>>(new Set())
