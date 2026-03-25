@@ -783,7 +783,7 @@ function CompareCategorySection({
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <CollapsibleTrigger asChild>
         <div className={cn(
-          "py-1.5 px-2 -mx-2 cursor-pointer hover:bg-gray-50 rounded transition-colors",
+          "py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors",
           nested && "ml-4",
           !hasDifferences && "opacity-40"
         )}>
