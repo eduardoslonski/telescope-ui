@@ -601,6 +601,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             table_schema_versions_json TEXT
         );
     """)
+    con.execute("ALTER TABLE runs ADD COLUMN IF NOT EXISTS drained BOOLEAN DEFAULT FALSE;")
 
     # Custom metrics layout (single-row, global config)
     con.execute("""
@@ -2156,6 +2157,17 @@ def set_run_removed(con: duckdb.DuckDBPyConnection, run_id: str, removed: bool):
     con.execute(
         "UPDATE runs SET removed = ?, removed_at = ?, updated_at = ? WHERE run_id = ?",
         [removed, removed_at, updated_at, run_id],
+    )
+
+
+def set_run_drained(con: duckdb.DuckDBPyConnection, run_id: str, drained: bool):
+    """Mark a run as drained (data removed but still visible in sidebar)."""
+    from datetime import datetime
+
+    updated_at = datetime.utcnow().isoformat() + "Z"
+    con.execute(
+        "UPDATE runs SET drained = ?, updated_at = ? WHERE run_id = ?",
+        [drained, updated_at, run_id],
     )
 
 

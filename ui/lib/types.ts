@@ -749,6 +749,7 @@ export interface Run {
   last_rollout_step: number
   is_tracking: boolean
   is_syncing: boolean
+  is_drained: boolean
   color: string
   notes: string | null
 }
