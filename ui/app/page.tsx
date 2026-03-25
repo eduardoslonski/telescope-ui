@@ -48,6 +48,7 @@ import {
 } from "@/lib/atoms"
 import {
   useRunSummary,
+  useRunSummaries,
   useRuns,
   useStepMetricSingle,
 } from "@/hooks/use-run-data"
@@ -392,10 +393,15 @@ export default function HomePage() {
   const { data: runsData } = useRuns()
 
   // Build runs to display (same logic as Metrics)
+  const allRunPaths = useMemo(() => {
+    const paths = new Set<string>(visibleRuns)
+    if (selectedRunPath) paths.add(selectedRunPath)
+    return Array.from(paths)
+  }, [selectedRunPath, visibleRuns])
+
   const runsToDisplay: RunInfo[] = useMemo(() => {
     const allRuns = runsData?.runs || []
-    const runsToShow = new Set<string>(visibleRuns)
-    if (selectedRunPath) runsToShow.add(selectedRunPath)
+    const runsToShow = new Set<string>(allRunPaths)
 
     return allRuns
       .filter((run) => runsToShow.has(run.run_id))
@@ -405,7 +411,7 @@ export default function HomePage() {
         color: run.color,
         isSelected: run.run_id === selectedRunPath,
       }))
-  }, [selectedRunPath, visibleRuns, runsData?.runs])
+  }, [selectedRunPath, allRunPaths, runsData?.runs])
 
   // Update local state from server
   useEffect(() => {
@@ -438,11 +444,15 @@ export default function HomePage() {
     parseNumeric(summaryData?.last_rollout_step) ??
     -1
   const trainerBucket = summaryData?.trainer_bucket_info
-  const totalSteps = summaryData?.step_metrics_info?.local_steps ?? 0
-  const customMetricSections =
-    summaryData?.step_metrics_info?.custom_metric_sections ?? {}
-  const availableRewardNames = summaryData?.available_rollout_metric_names ?? []
-  const evalsList = summaryData?.eval_info?.evals ?? []
+  // Merge metric catalogs from all visible runs
+  const {
+    customMetricSections,
+    availableRewardNames,
+    evalsList,
+    availableSampleTags: mergedSampleTags,
+    availableEnvs: mergedEnvs,
+    totalSteps,
+  } = useRunSummaries(allRunPaths, true)
 
   const plotCatalog = useMemo(
     () => buildPlotCatalog(customMetricSections, availableRewardNames, evalsList),
@@ -477,8 +487,6 @@ export default function HomePage() {
     [setOverviewPlots],
   )
 
-  const availableSampleTags = summaryData?.available_sample_tags ?? {}
-  const availableEnvs = summaryData?.available_envs ?? []
   const chartProps = useMemo(
     () => ({
       runs: plotRuns,
@@ -488,10 +496,10 @@ export default function HomePage() {
       hoveredRunId,
       xAxisMode: "step" as const,
       scrollRoot: null,
-      availableSampleTags,
-      availableEnvs,
+      availableSampleTags: mergedSampleTags,
+      availableEnvs: mergedEnvs,
     }),
-    [plotRuns, showEma, emaSpan, hoveredRunId, availableSampleTags, availableEnvs],
+    [plotRuns, showEma, emaSpan, hoveredRunId, mergedSampleTags, mergedEnvs],
   )
 
   // Find current run info for created_at and state
