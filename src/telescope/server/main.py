@@ -58,6 +58,7 @@ from .db import (
     recover_from_failed_compaction,
     rename_custom_metrics_template,
     set_custom_metrics_layout,
+    set_run_drained,
     set_run_removed,
     set_wandb_api_key,
     set_wandb_key_source,
@@ -284,6 +285,10 @@ class RemoveRunRequest(BaseModel):
     run_path: str
 
 
+class DrainRunRequest(BaseModel):
+    run_path: str
+
+
 class AddProjectRequest(BaseModel):
     project: str
 
@@ -456,6 +461,11 @@ async def sync_run(req: SyncRequest):
     api_key = get_wandb_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="No W&B API key configured")
+
+    # Clear drained flag when syncing starts
+    con = connect()
+    set_run_drained(con, req.run_path, False)
+    con.close()
 
     result = await start_sync(req.run_path, api_key)
     
@@ -688,6 +698,7 @@ async def add_run(req: AddRunRequest):
 
     con = connect()
     set_run_removed(con, run_path, False)
+    set_run_drained(con, run_path, False)
     con.close()
 
     await start_sync(run_path, api_key)
@@ -726,6 +737,41 @@ def remove_run(req: RemoveRunRequest):
     return {
         "ok": True,
         "message": f"Removed run {run_path}",
+        "deleted_counts": deleted_counts,
+    }
+
+
+@app.post("/drain-run")
+def drain_run(req: DrainRunRequest):
+    """Drain a run: delete its data but keep it visible in the sidebar."""
+    run_path = req.run_path
+    log.info(f"[API] Draining run data for: {run_path}")
+
+    clear_active_run(run_path)
+
+    con = connect()
+
+    deleted_counts = {}
+    for table in _TABLES_WITH_RUN_ID:
+        try:
+            count_result = con.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE run_id = ?",
+                [run_path],
+            ).fetchone()
+            count = count_result[0] if count_result else 0
+            con.execute(f"DELETE FROM {table} WHERE run_id = ?", [run_path])
+            deleted_counts[table] = count
+        except Exception as e:
+            log.warning(f"[API] Failed to delete from {table}: {e}")
+            deleted_counts[table] = 0
+
+    set_run_drained(con, run_path, True)
+    con.close()
+    _delete_local_run_artifacts(run_path)
+
+    return {
+        "ok": True,
+        "message": f"Drained run {run_path}",
         "deleted_counts": deleted_counts,
     }
 
@@ -905,7 +951,8 @@ def list_runs():
     rows = con.execute("""
         SELECT r.run_id, r.name, r.created_at, r.state, r.entity, r.project, r.url,
                COALESCE(i.last_rollout_step, -1) as last_rollout_step,
-               r.color, r.trainer_commit, r.schema_version, r.notes
+               r.color, r.trainer_commit, r.schema_version, r.notes,
+               COALESCE(r.drained, FALSE) as drained
         FROM runs r
         LEFT JOIN ingest_state i ON r.run_id = i.run_id
         WHERE COALESCE(r.removed, FALSE) = FALSE
@@ -930,6 +977,7 @@ def list_runs():
             "trainer_commit": row[9],
             "schema_version": row[10],
             "notes": row[11],
+            "is_drained": bool(row[12]),
         })
     
     log.debug(f"[API] Found {len(runs)} runs in database")

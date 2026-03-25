@@ -104,16 +104,41 @@ function RunNameLabel({
   name,
   className: extraClassName,
   maxChars = MAX_RUN_NAME_CHARS,
+  tooltipExtra,
 }: {
   name: string
   className?: string
   maxChars?: number
+  tooltipExtra?: React.ReactNode
 }) {
   const textClass = extraClassName ?? "text-xs font-sans"
   const { isTruncated, prefix, suffix } = getSidebarRunNameParts(name, maxChars)
 
-  if (!isTruncated) {
+  const tooltipContent = (
+    <>
+      {name}
+      {tooltipExtra}
+    </>
+  )
+
+  if (!isTruncated && !tooltipExtra) {
     return <span className={cn("truncate", textClass)}>{prefix}</span>
+  }
+
+  if (!isTruncated) {
+    return (
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <span className={cn("truncate", textClass)}>{prefix}</span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className="max-w-56 break-all text-xs font-sans"
+        >
+          {tooltipContent}
+        </TooltipContent>
+      </Tooltip>
+    )
   }
 
   return (
@@ -147,7 +172,7 @@ function RunNameLabel({
         side="top"
         className="max-w-56 break-all text-xs font-sans"
       >
-        {name}
+        {tooltipContent}
       </TooltipContent>
     </Tooltip>
   )
@@ -180,6 +205,7 @@ export function AppSidebar() {
   const [useNetrcKey, setUseNetrcKey] = useState(false)
   const [isConfiguring, setIsConfiguring] = useState(false)
   const [isRemovingRun, setIsRemovingRun] = useState<string | null>(null)
+  const [isDrainingRun, setIsDrainingRun] = useState<string | null>(null)
   const [removeConfirmRunId, setRemoveConfirmRunId] = useState<string | null>(
     null,
   )
@@ -480,6 +506,50 @@ export function AppSidebar() {
     } finally {
       setIsRemovingRun(null)
       setRemoveConfirmRunId(null)
+    }
+  }
+
+  const handleDrainRun = async (runId: string) => {
+    if (!runId) return
+    setIsDrainingRun(runId)
+    try {
+      const response = await fetch(`${API_BASE}/drain-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_path: runId }),
+      })
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || "Failed to drain run")
+      }
+
+      setVisibleRuns((prev) => prev.filter((id) => id !== runId))
+      if (selectedRunPath === runId) {
+        setSelectedRunPath(null)
+      }
+      queryClient.invalidateQueries({ queryKey: ["runs"] })
+    } catch (error) {
+      console.error("Failed to drain run:", error)
+    } finally {
+      setIsDrainingRun(null)
+    }
+  }
+
+  const handleRestoreDrainedRun = async (runId: string) => {
+    if (!runId) return
+    try {
+      const response = await fetch(`${API_BASE}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_path: runId }),
+      })
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || "Failed to restore run")
+      }
+      queryClient.invalidateQueries({ queryKey: ["runs"] })
+    } catch (error) {
+      console.error("Failed to restore drained run:", error)
     }
   }
 
@@ -968,12 +1038,17 @@ export function AppSidebar() {
                         draftColor ?? run.color,
                         run.color,
                       )
+                      const isDraining = isDrainingRun === run.run_id
+                      const isDrained = run.is_drained && !isDraining
                       const isPendingSync =
                         run.last_rollout_step === -1 &&
                         !run.is_syncing &&
-                        !run.is_tracking
+                        !run.is_tracking &&
+                        !isDrained
                       const statusDotsCount =
-                        Number(run.is_tracking) + Number(run.is_syncing)
+                        Number(run.is_tracking) +
+                        Number(run.is_syncing) +
+                        Number(isDraining)
                       const runNameMaxChars =
                         statusDotsCount >= 2
                           ? MAX_RUN_NAME_CHARS - 4
@@ -986,36 +1061,42 @@ export function AppSidebar() {
                         <div
                           key={run.run_id}
                           className={cn(
-                            "group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors w-full cursor-pointer",
+                            "group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors w-full",
+                            isDrained
+                              ? "cursor-default [--run-item-bg:var(--sidebar)]"
+                              : "cursor-pointer",
                             !isSelected &&
+                              !isDrained &&
                               "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [--run-item-bg:var(--sidebar)] hover:[--run-item-bg:var(--sidebar-accent)]",
                             isSelected &&
                               "bg-[var(--sidebar-selected)] text-sidebar-accent-foreground [--run-item-bg:var(--sidebar-selected)]",
                           )}
-                          onClick={() => setSelectedRunPath(run.run_id)}
+                          onClick={() => {
+                            if (!isDrained) setSelectedRunPath(run.run_id)
+                          }}
                           onMouseEnter={() => {
                             // Only trigger hover effect if run is visible
-                            if (isVisible) {
+                            if (isVisible && !isDrained) {
                               setHoveredRunId(run.run_id)
                             }
                           }}
                           onMouseLeave={() => setHoveredRunId(null)}
                         >
-                          {/* Checkbox - locked for selected run */}
+                          {/* Checkbox - locked for selected run and drained runs */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
-                              if (!isSelected) {
+                              if (!isSelected && !isDrained) {
                                 toggleRunVisibility(run.run_id)
                               }
                             }}
-                            disabled={isSelected}
+                            disabled={isSelected || isDrained}
                             className={cn(
                               "w-3 h-3 rounded-sm border shrink-0 flex items-center justify-center transition-colors",
-                              isVisible
+                              isVisible && !isDrained
                                 ? "bg-foreground border-foreground"
                                 : "border-muted-foreground/50",
-                              isSelected && "opacity-50 cursor-not-allowed",
+                              (isSelected || isDrained) && "opacity-50 cursor-not-allowed",
                             )}
                           >
                             {isVisible && (
@@ -1085,12 +1166,21 @@ export function AppSidebar() {
                           <div
                             className={cn(
                               "flex-1 min-w-0 text-left",
-                              isPendingSync && "text-muted-foreground/60",
+                              isDrained
+                                ? "text-muted-foreground"
+                                : isPendingSync && "text-muted-foreground/60",
                             )}
                           >
                             <RunNameLabel
                               name={runLabel}
                               maxChars={runNameMaxChars}
+                              tooltipExtra={
+                                isDrained ? (
+                                  <div className="opacity-60 mt-0.5">
+                                    Drained
+                                  </div>
+                                ) : undefined
+                              }
                             />
                           </div>
 
@@ -1105,6 +1195,12 @@ export function AppSidebar() {
                             <span
                               className="w-2 h-2 rounded-full bg-blue-500 shrink-0"
                               title="Syncing"
+                            />
+                          )}
+                          {isDraining && (
+                            <span
+                              className="w-2 h-2 rounded-full bg-orange-500 shrink-0"
+                              title="Draining"
                             />
                           )}
 
@@ -1167,6 +1263,23 @@ export function AppSidebar() {
                                   {isSyncingEvalsRun === run.run_id
                                     ? "Syncing evals..."
                                     : "Sync Evals After Training"}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={isDraining}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    if (isDrained) {
+                                      handleRestoreDrainedRun(run.run_id)
+                                    } else {
+                                      handleDrainRun(run.run_id)
+                                    }
+                                  }}
+                                >
+                                  {isDraining
+                                    ? "Draining..."
+                                    : isDrained
+                                      ? "Restore Data"
+                                      : "Drain"}
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   className="text-destructive"
