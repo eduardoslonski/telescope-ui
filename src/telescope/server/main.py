@@ -65,6 +65,7 @@ from .db import (
     update_custom_metrics_template_layout,
     update_run_color,
     update_run_name,
+    update_run_notes,
 )
 from .run_code import (
     build_code_diff_summary,
@@ -299,6 +300,11 @@ class SetRunColorRequest(BaseModel):
 class RenameRunRequest(BaseModel):
     run_path: str
     name: str
+
+
+class UpdateNotesRequest(BaseModel):
+    run_path: str
+    notes: str
 
 
 class RolloutsRequest(BaseModel):
@@ -791,6 +797,44 @@ def rename_run(req: RenameRunRequest):
     return {"ok": True, "run_path": run_path, "name": new_name}
 
 
+@app.post("/update-notes")
+def update_notes(req: UpdateNotesRequest):
+    """Update notes for a run locally and on W&B."""
+    run_path = req.run_path.strip()
+    notes = req.notes
+
+    if not run_path:
+        raise HTTPException(status_code=400, detail="Missing run path")
+
+    con = connect()
+    row = con.execute(
+        "SELECT run_id FROM runs WHERE run_id = ?",
+        [run_path],
+    ).fetchone()
+    if row is None:
+        con.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    update_run_notes(con, run_path, notes)
+    con.close()
+
+    # Update on W&B in the background
+    api_key = get_wandb_api_key()
+    if api_key:
+        try:
+            api = _get_wandb_api(api_key)
+            wandb_run = api.run(run_path)
+            wandb_run.notes = notes
+            wandb_run.update()
+            log.info(f"[API] Updated notes for run {run_path} (local + W&B)")
+        except Exception as e:
+            log.warning(f"[API] Updated notes for run {run_path} locally but W&B update failed: {e}")
+    else:
+        log.info(f"[API] Updated notes for run {run_path} (local only, no W&B key)")
+
+    return {"ok": True, "run_path": run_path, "notes": notes}
+
+
 @app.post("/delete-run-data")
 def delete_run_data(req: DeleteRunDataRequest):
     """Delete all data for a specific run from the database."""
@@ -861,13 +905,13 @@ def list_runs():
     rows = con.execute("""
         SELECT r.run_id, r.name, r.created_at, r.state, r.entity, r.project, r.url,
                COALESCE(i.last_rollout_step, -1) as last_rollout_step,
-               r.color, r.trainer_commit, r.schema_version
+               r.color, r.trainer_commit, r.schema_version, r.notes
         FROM runs r
         LEFT JOIN ingest_state i ON r.run_id = i.run_id
         WHERE COALESCE(r.removed, FALSE) = FALSE
         ORDER BY r.created_at DESC NULLS LAST
     """).fetchall()
-    
+
     runs = []
     for row in rows:
         run_id = row[0]
@@ -885,6 +929,7 @@ def list_runs():
             "color": row[8],
             "trainer_commit": row[9],
             "schema_version": row[10],
+            "notes": row[11],
         })
     
     log.debug(f"[API] Found {len(runs)} runs in database")

@@ -51,6 +51,8 @@ import {
   useRuns,
   useStepMetricSingle,
 } from "@/hooks/use-run-data"
+import { useQueryClient } from "@tanstack/react-query"
+import { API_BASE } from "@/lib/constants"
 
 const NUM_BARS = 100
 
@@ -368,6 +370,10 @@ export default function HomePage() {
   const [showCodeView, setShowCodeView] = useAtom(overviewShowCodeViewAtom)
   const [showLogsView, setShowLogsView] = useAtom(overviewShowLogsViewAtom)
   const [overviewPlots, setOverviewPlots] = useAtom(overviewPlotsAtom)
+  const [isEditingNotes, setIsEditingNotes] = useState(false)
+  const [notesDraft, setNotesDraft] = useState("")
+  const [isSavingNotes, setIsSavingNotes] = useState(false)
+  const queryClient = useQueryClient()
 
   // Only highlight hovered run when all selected runs are shown
   const hoveredRunId = showAllRuns ? hoveredRunIdRaw : null
@@ -493,6 +499,11 @@ export default function HomePage() {
     if (!selectedRunPath || !runsData?.runs) return null
     return runsData.runs.find((r) => r.run_id === selectedRunPath) ?? null
   }, [selectedRunPath, runsData])
+
+  // Reset notes editor when switching runs
+  useEffect(() => {
+    setIsEditingNotes(false)
+  }, [selectedRunPath])
 
   const isRunRunning = currentRun?.state?.toLowerCase() === "running"
 
@@ -905,6 +916,78 @@ export default function HomePage() {
                   )}
                 </div>
               )}
+
+            {/* Notes */}
+            {currentRun && (
+              <div className="mt-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-semibold">Notes</span>
+                  {!isEditingNotes && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        setNotesDraft(currentRun.notes || "")
+                        setIsEditingNotes(true)
+                      }}
+                    >
+                      {currentRun.notes ? "Edit" : "Add Notes"}
+                    </Button>
+                  )}
+                </div>
+                {isEditingNotes ? (
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      className="w-full h-[200px] rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+                      value={notesDraft}
+                      onChange={(e) => setNotesDraft(e.target.value)}
+                      placeholder="Add notes for this run…"
+                      autoFocus
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        disabled={isSavingNotes}
+                        onClick={async () => {
+                          setIsSavingNotes(true)
+                          try {
+                            const res = await fetch(`${API_BASE}/update-notes`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                run_path: currentRun.run_id,
+                                notes: notesDraft,
+                              }),
+                            })
+                            if (res.ok) {
+                              await queryClient.invalidateQueries({ queryKey: ["runs"] })
+                              setIsEditingNotes(false)
+                            }
+                          } finally {
+                            setIsSavingNotes(false)
+                          }
+                        }}
+                      >
+                        {isSavingNotes ? "Saving…" : "Save"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        disabled={isSavingNotes}
+                        onClick={() => setIsEditingNotes(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : currentRun.notes ? (
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">{currentRun.notes}</p>
+                ) : null}
+              </div>
+            )}
           </div>
         )}
       </div>

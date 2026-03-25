@@ -2181,6 +2181,17 @@ def update_run_name(con: duckdb.DuckDBPyConnection, run_id: str, name: str):
     )
 
 
+def update_run_notes(con: duckdb.DuckDBPyConnection, run_id: str, notes: str):
+    """Update the notes for a run in the runs table."""
+    from datetime import datetime
+
+    updated_at = datetime.utcnow().isoformat()
+    con.execute(
+        "UPDATE runs SET notes = ?, updated_at = ? WHERE run_id = ?",
+        [notes, updated_at, run_id],
+    )
+
+
 def get_ingested_tails(con: duckdb.DuckDBPyConnection, run_id: str, min_tail_idx: int | None = None, max_tail_idx: int | None = None) -> set[int]:
     """Get the set of tail indices that have already been ingested for a run.
     
