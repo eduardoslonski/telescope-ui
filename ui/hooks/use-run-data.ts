@@ -282,6 +282,127 @@ export function useRunSummary(
   })
 }
 
+/**
+ * Fetch summaries for multiple runs and merge metric catalog fields.
+ * Returns the union of custom_metric_sections, reward names, evals, tags, and envs.
+ */
+export function useRunSummaries(
+  runPaths: string[],
+  shouldPoll: boolean,
+) {
+  const queries = useQueries({
+    queries: runPaths.map((runPath) => ({
+      queryKey: ["run-summary", runPath],
+      queryFn: async (): Promise<RunSummary> => {
+        const response = await fetch(
+          `${API_BASE}/run-summary/${encodeURIComponent(runPath)}`
+        )
+        if (!response.ok) {
+          throw new Error("Failed to fetch run summary")
+        }
+        return response.json()
+      },
+      enabled: !!runPath,
+      refetchInterval: shouldPoll ? POLL_INTERVAL : false,
+    })),
+  })
+
+  return useMemo(() => {
+    const summaries = queries
+      .map((q) => q.data)
+      .filter((d): d is RunSummary => d != null)
+
+    // Merge custom_metric_sections: union of all sections and their metric keys
+    const mergedSections: Record<string, Record<string, string[]>> = {}
+    for (const s of summaries) {
+      const sections = s.step_metrics_info?.custom_metric_sections ?? {}
+      for (const [sectionName, groups] of Object.entries(sections)) {
+        if (!mergedSections[sectionName]) {
+          mergedSections[sectionName] = {}
+        }
+        for (const [groupName, metrics] of Object.entries(groups)) {
+          if (!mergedSections[sectionName][groupName]) {
+            mergedSections[sectionName][groupName] = []
+          }
+          const existing = new Set(mergedSections[sectionName][groupName])
+          for (const m of metrics) {
+            if (!existing.has(m)) {
+              mergedSections[sectionName][groupName].push(m)
+            }
+          }
+        }
+      }
+    }
+
+    // Merge reward names
+    const rewardNameSet = new Set<string>()
+    for (const s of summaries) {
+      for (const name of s.available_rollout_metric_names ?? []) {
+        rewardNameSet.add(name)
+      }
+    }
+
+    // Merge evals (union by eval_name, merge their metric names)
+    const evalsMap = new Map<string, Set<string>>()
+    for (const s of summaries) {
+      for (const e of s.eval_info?.evals ?? []) {
+        if (!evalsMap.has(e.eval_name)) {
+          evalsMap.set(e.eval_name, new Set())
+        }
+        const set = evalsMap.get(e.eval_name)!
+        for (const m of e.available_rollout_metric_names) {
+          set.add(m)
+        }
+      }
+    }
+    const mergedEvals = Array.from(evalsMap.entries()).map(([eval_name, metrics]) => ({
+      eval_name,
+      available_rollout_metric_names: Array.from(metrics),
+    }))
+
+    // Merge sample tags
+    const mergedTags: Record<string, string[]> = {}
+    for (const s of summaries) {
+      for (const [key, values] of Object.entries(s.available_sample_tags ?? {})) {
+        if (!mergedTags[key]) {
+          mergedTags[key] = []
+        }
+        const existing = new Set(mergedTags[key])
+        for (const v of values) {
+          if (!existing.has(v)) {
+            mergedTags[key].push(v)
+          }
+        }
+      }
+    }
+
+    // Merge envs
+    const envSet = new Set<string>()
+    for (const s of summaries) {
+      for (const env of s.available_envs ?? []) {
+        envSet.add(env)
+      }
+    }
+
+    // Total steps from the selected (first) run, or max across all
+    const totalSteps = Math.max(0, ...summaries.map((s) => s.step_metrics_info?.local_steps ?? 0))
+
+    const isLoading = queries.some((q) => q.isLoading)
+    const error = queries.find((q) => q.error)?.error ?? null
+
+    return {
+      customMetricSections: mergedSections,
+      availableRewardNames: Array.from(rewardNameSet),
+      evalsList: mergedEvals,
+      availableSampleTags: mergedTags,
+      availableEnvs: Array.from(envSet),
+      totalSteps,
+      isLoading,
+      error,
+    }
+  }, [queries])
+}
+
 // ============================================================================
 // Logs Queries
 // ============================================================================
