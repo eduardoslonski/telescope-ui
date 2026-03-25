@@ -54,7 +54,7 @@ import {
   hoveredRunIdAtom,
 } from "@/lib/atoms"
 import {
-  useRunSummary,
+  useRunSummaries,
   useRuns,
   useCustomMetricsLayout,
   useCustomMetricsTemplates,
@@ -267,20 +267,22 @@ export default function MetricsPage() {
       }))
   }, [selectedRunPath, visibleRuns, runsData?.runs])
 
-  // Get summary to know if we have step metrics data
-  const { data: summaryData, error } = useRunSummary(
-    selectedRunPath || "",
-    !!selectedRunPath,
-    shouldPoll,
-  )
+  // Get summaries from all visible runs to build the full metric catalog
+  const allRunPaths = useMemo(() => {
+    const paths = new Set<string>(visibleRuns)
+    if (selectedRunPath) paths.add(selectedRunPath)
+    return Array.from(paths)
+  }, [selectedRunPath, visibleRuns])
 
-  const stepMetricsInfo = summaryData?.step_metrics_info
-  const totalSteps = stepMetricsInfo?.local_steps ?? 0
-  const availableRewardNames = summaryData?.available_rollout_metric_names ?? []
-  const customMetricSections = stepMetricsInfo?.custom_metric_sections ?? {}
-  const evalsList = summaryData?.eval_info?.evals ?? []
-  const availableSampleTags = summaryData?.available_sample_tags ?? {}
-  const availableEnvs = summaryData?.available_envs ?? []
+  const {
+    customMetricSections,
+    availableRewardNames,
+    evalsList,
+    availableSampleTags,
+    availableEnvs,
+    totalSteps,
+    error,
+  } = useRunSummaries(allRunPaths, shouldPoll)
 
   // No run selected
   if (!selectedRunPath) {
