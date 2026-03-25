@@ -197,6 +197,9 @@ export function AppSidebar() {
   const [runColorDrafts, setRunColorDrafts] = useState<Record<string, string>>(
     {},
   )
+  const [renameRunId, setRenameRunId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState("")
+  const [isRenaming, setIsRenaming] = useState(false)
 
   const setIsSyncing = useSetAtom(isSyncingAtom)
   const setIsTracking = useSetAtom(isTrackingAtom)
@@ -1096,6 +1099,15 @@ export function AppSidebar() {
                                 </DropdownMenuLabel>
                                 <DropdownMenuSeparator />
                                 <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setRenameValue(run.name || run.run_id.split("/").pop() || "")
+                                    setRenameRunId(run.run_id)
+                                  }}
+                                >
+                                  Rename
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
                                   disabled={isResyncingRun === run.run_id}
                                   onClick={(e) => {
                                     e.stopPropagation()
@@ -1619,6 +1631,90 @@ export function AppSidebar() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={!!renameRunId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameRunId(null)
+            setRenameValue("")
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename Run</DialogTitle>
+            <DialogDescription>
+              This will update the run name locally and on W&B.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault()
+              const trimmed = renameValue.trim()
+              if (!trimmed || !renameRunId) return
+              setIsRenaming(true)
+              // Optimistic update
+              queryClient.setQueryData<RunsResponse>(["runs"], (old) => {
+                if (!old) return old
+                return {
+                  ...old,
+                  runs: old.runs.map((r) =>
+                    r.run_id === renameRunId ? { ...r, name: trimmed } : r,
+                  ),
+                }
+              })
+              try {
+                const response = await fetch(`${API_BASE}/rename-run`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    run_path: renameRunId,
+                    name: trimmed,
+                  }),
+                })
+                if (!response.ok) {
+                  throw new Error("Failed to rename run")
+                }
+              } catch (error) {
+                console.error("Failed to rename run:", error)
+              } finally {
+                queryClient.invalidateQueries({ queryKey: ["runs"] })
+                setIsRenaming(false)
+                setRenameRunId(null)
+                setRenameValue("")
+              }
+            }}
+          >
+            <div className="py-2">
+              <Input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                placeholder="Run name"
+                autoFocus
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setRenameRunId(null)
+                  setRenameValue("")
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={!renameValue.trim() || isRenaming}
+              >
+                {isRenaming ? "Renaming..." : "Rename"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <DatabaseDialog
         open={databaseDialogOpen}
