@@ -542,6 +542,7 @@ def restore_active_runs_from_db(api_key: str) -> int:
     rows = con.execute("""
         SELECT run_id FROM runs
         WHERE COALESCE(removed, FALSE) = FALSE
+          AND COALESCE(drained, FALSE) = FALSE
           AND state = 'running'
     """).fetchall()
 
@@ -2646,15 +2647,15 @@ async def start_evals_after_training_sync(run_path: str, api_key: str) -> dict:
 
 async def ingest_rollouts(run_path: str, api_key: str):
     """Ingest rollouts and events for a run (used by tracking loop)."""
-    # Safety guard: removed runs must never be tracked/ingested.
+    # Safety guard: removed/drained runs must never be tracked/ingested.
     con = connect()
     row = con.execute(
-        "SELECT COALESCE(removed, FALSE) FROM runs WHERE run_id = ?",
+        "SELECT COALESCE(removed, FALSE), COALESCE(drained, FALSE) FROM runs WHERE run_id = ?",
         [run_path],
     ).fetchone()
     con.close()
-    if row and bool(row[0]):
-        log.info(f"[INGEST] Skipping ingestion for removed run: {run_path}")
+    if row and (bool(row[0]) or bool(row[1])):
+        log.info(f"[INGEST] Skipping ingestion for removed/drained run: {run_path}")
         clear_active_run(run_path)
         return
 
@@ -3283,12 +3284,12 @@ async def _sync_worker(worker_id: int):
 
                 con = connect()
                 run_row = con.execute(
-                    "SELECT state, COALESCE(removed, FALSE) FROM runs WHERE run_id = ?",
+                    "SELECT state, COALESCE(removed, FALSE), COALESCE(drained, FALSE) FROM runs WHERE run_id = ?",
                     [run_path],
                 ).fetchone()
-                if run_row and bool(run_row[1]):
+                if run_row and (bool(run_row[1]) or bool(run_row[2])):
                     con.close()
-                    log.info(f"[SYNC] Skipping {run_path} (run is removed)")
+                    log.info(f"[SYNC] Skipping {run_path} (run is removed/drained)")
                     clear_active_run(run_path)
                     continue
 
@@ -3502,6 +3503,7 @@ async def ingest_state_reconcile_loop():
                 SELECT run_id
                 FROM runs
                 WHERE COALESCE(removed, FALSE) = FALSE
+                  AND COALESCE(drained, FALSE) = FALSE
                   AND LOWER(COALESCE(state, '')) = 'running'
                 """
             ).fetchall()
@@ -3523,6 +3525,7 @@ async def ingest_state_reconcile_loop():
                 FROM runs r
                 LEFT JOIN ingest_state i ON r.run_id = i.run_id
                 WHERE COALESCE(r.removed, FALSE) = FALSE
+                  AND COALESCE(r.drained, FALSE) = FALSE
                 """
             ).fetchall()
             con.close()
