@@ -40,6 +40,7 @@ from .ingest import (
     add_project_to_known,
     remove_project_from_known,
     set_discovery_status_discovering,
+    _get_wandb_api,
 )
 from .db import (
     compact_database,
@@ -63,6 +64,7 @@ from .db import (
     delete_wandb_api_key,
     update_custom_metrics_template_layout,
     update_run_color,
+    update_run_name,
 )
 from .run_code import (
     build_code_diff_summary,
@@ -292,6 +294,11 @@ class RemoveProjectRequest(BaseModel):
 class SetRunColorRequest(BaseModel):
     run_path: str
     color: str
+
+
+class RenameRunRequest(BaseModel):
+    run_path: str
+    name: str
 
 
 class RolloutsRequest(BaseModel):
@@ -742,6 +749,46 @@ def set_run_color(req: SetRunColorRequest):
     update_run_color(con, run_path, color.lower())
     con.close()
     return {"ok": True, "run_path": run_path, "color": color.lower()}
+
+
+@app.post("/rename-run")
+def rename_run(req: RenameRunRequest):
+    """Rename a run locally and on W&B."""
+    run_path = req.run_path.strip()
+    new_name = req.name.strip()
+    if not run_path:
+        raise HTTPException(status_code=400, detail="Missing run path")
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+
+    con = connect()
+    row = con.execute(
+        "SELECT run_id FROM runs WHERE run_id = ?",
+        [run_path],
+    ).fetchone()
+    if row is None:
+        con.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Update locally first
+    update_run_name(con, run_path, new_name)
+    con.close()
+
+    # Update on W&B in the background
+    api_key = get_wandb_api_key()
+    if api_key:
+        try:
+            api = _get_wandb_api(api_key)
+            wandb_run = api.run(run_path)
+            wandb_run.name = new_name
+            wandb_run.update()
+            log.info(f"[API] Renamed run {run_path} to '{new_name}' (local + W&B)")
+        except Exception as e:
+            log.warning(f"[API] Renamed run {run_path} locally but W&B update failed: {e}")
+    else:
+        log.info(f"[API] Renamed run {run_path} to '{new_name}' (local only, no W&B key)")
+
+    return {"ok": True, "run_path": run_path, "name": new_name}
 
 
 @app.post("/delete-run-data")
@@ -3523,11 +3570,10 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         LEFT JOIN samples_info si ON si.group_id = rr.group_id AND si.sample_idx = rr.sample_id
         LEFT JOIN ranked_env re ON re.group_id = rr.group_id AND re.sample_idx = rr.sample_id AND re.env_pos = rr.turn_pos
         WHERE rr.start_time < ?
-          AND (rr.end_time IS NULL
-               OR (rr.end_time
-                   + COALESCE(re.environment_response_time, 0)
-                   + CASE WHEN rr.turn_pos = rr.total_turns THEN COALESCE(si.compute_reward_time, 0) ELSE 0 END
-                  ) > ?)
+          AND (rr.end_time
+               + COALESCE(re.environment_response_time, 0)
+               + CASE WHEN rr.turn_pos = rr.total_turns THEN COALESCE(si.compute_reward_time, 0) ELSE 0 END
+              ) > ?
 
         UNION ALL
 
@@ -3563,9 +3609,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "tp_group_id": row[3],
             "tp_size": row[4],
             "start_time": row[5],
-            # For events with no end_time (e.g. canceled while in-flight), fall back to start_time
-            # so the event is still renderable and its sample_id blocks synthetic inflight creation.
-            "end_time": row[6] if row[6] is not None else row[5],
+            "end_time": row[6],
             "prompt_tokens": row[7],
             "rollout_tokens": row[8],
             "sample_id": row[9],
