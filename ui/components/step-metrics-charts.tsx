@@ -5079,6 +5079,19 @@ const INFERENCE_AVG_METRICS = new Set([
   "avg_time_inference",
   "avg_time_e2e",
   "avg_time_generation",
+  "avg_tokens_per_second_generation",
+  "tokens_per_second_throughput",
+])
+
+const INFERENCE_TIME_METRICS = new Set([
+  "avg_time_prefill",
+  "avg_time_decode",
+  "avg_time_compute_reward",
+  "avg_time_queue",
+  "avg_time_ttft",
+  "avg_time_inference",
+  "avg_time_e2e",
+  "avg_time_generation",
 ])
 
 interface InferencePerformanceMetricChartProps {
@@ -5136,6 +5149,7 @@ function InferencePerformanceMetricChart({
   const isVisible = isOnScreen || isFullscreen
 
   const isAvgMetric = INFERENCE_AVG_METRICS.has(inferenceMetricType)
+  const isTimeMetric = INFERENCE_TIME_METRICS.has(inferenceMetricType)
 
   // Sort runs: non-selected first, selected last (drawn on top)
   const sortedRuns = useMemo(() => {
@@ -5291,20 +5305,21 @@ function InferencePerformanceMetricChart({
   const formatValue = useCallback(
     (v: number | null | undefined): string => {
       if (v === undefined || v === null) return "N/A"
-      if (isAvgMetric) return formatSecondsTooltipHtml(v)
+      if (isTimeMetric) return formatSecondsTooltipHtml(v)
+      if (isAvgMetric) return Math.round(v).toLocaleString()
       return formatValueSmart(v)
     },
-    [isAvgMetric],
+    [isTimeMetric, isAvgMetric],
   )
 
   const formatYAxisTick = useCallback(
     (v: number): string => {
-      if (isAvgMetric) return formatSecondsCompact(v)
+      if (isTimeMetric) return formatSecondsCompact(v)
       if (Math.abs(v) >= 1000) return `${parseFloat((v / 1000).toFixed(1))}k`
       if (Number.isInteger(v)) return v.toLocaleString()
       return String(parseFloat(v.toFixed(2)))
     },
-    [isAvgMetric],
+    [isTimeMetric],
   )
 
   useEffect(() => {
@@ -5684,6 +5699,11 @@ export function InferencePerformanceSection({
         <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_kept" label="Rollouts Group Done Kept" {...sharedProps} />
         <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_discarded" label="Rollouts Group Done Discarded" {...sharedProps} />
         <InferencePerformanceMetricChart inferenceMetricType="rollouts_group_done_canceled" label="Rollouts Group Done Canceled" {...sharedProps} />
+      </div>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">Throughput</h4>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <InferencePerformanceMetricChart inferenceMetricType="avg_tokens_per_second_generation" label="Tokens/s per Generation" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="tokens_per_second_throughput" label="Tokens/s Throughput" {...sharedProps} />
       </div>
       <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">Latency</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

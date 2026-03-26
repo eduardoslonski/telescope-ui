@@ -7903,6 +7903,37 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [bucket, bucket, req.run_path],
     ).fetchall()
 
+    # Average tokens per second per generation (avg of rollout_tokens / request_duration per request)
+    avg_tokens_per_second_generation = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time,
+               AVG(CAST(rollout_tokens AS DOUBLE) / (end_time - start_time)) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
+            AND (end_time - start_time) > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Tokens per second throughput (total tokens in interval / interval duration)
+    tokens_per_second_throughput = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time,
+               CAST(SUM(rollout_tokens) AS DOUBLE) / ? as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, bucket, req.run_path],
+    ).fetchall()
+
     # --- Inference utilization (idle vs working) ---
     # Total number of lanes = distinct (server, server_lane) combinations
     num_lanes_row = con.execute(
@@ -8033,6 +8064,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         rollouts_group_done_kept, rollouts_group_done_discarded, rollouts_group_done_canceled,
         avg_time_prefill, avg_time_decode, avg_time_compute_reward,
         avg_time_queue, avg_time_ttft, avg_time_inference, avg_time_e2e, avg_time_generation,
+        avg_tokens_per_second_generation, tokens_per_second_throughput,
     ]
     first_time = None
     for rows in all_bucket_rows:
@@ -8066,6 +8098,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
         "avg_time_inference": format_avg_buckets(avg_time_inference),
         "avg_time_e2e": format_avg_buckets(avg_time_e2e),
         "avg_time_generation": format_avg_buckets(avg_time_generation),
+        "avg_tokens_per_second_generation": format_avg_buckets(avg_tokens_per_second_generation),
+        "tokens_per_second_throughput": format_avg_buckets(tokens_per_second_throughput),
         "utilization_buckets": utilization_buckets,
         "num_lanes": num_lanes,
         "step_times": [

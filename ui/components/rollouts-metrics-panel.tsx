@@ -559,6 +559,8 @@ function buildMetricOptions(
     { key: "rollouts_group_done_kept", label: "Rollouts Group Done Kept", inferenceMetricType: "rollouts_group_done_kept" },
     { key: "rollouts_group_done_discarded", label: "Rollouts Group Done Discarded", inferenceMetricType: "rollouts_group_done_discarded" },
     { key: "rollouts_group_done_canceled", label: "Rollouts Group Done Canceled", inferenceMetricType: "rollouts_group_done_canceled" },
+    { key: "avg_tokens_per_second_generation", label: "Tokens/s per Generation", inferenceMetricType: "avg_tokens_per_second_generation" },
+    { key: "tokens_per_second_throughput", label: "Tokens/s Throughput", inferenceMetricType: "tokens_per_second_throughput" },
   ]) {
     options.push({
       category: "inference_performance",

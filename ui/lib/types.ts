@@ -687,6 +687,8 @@ export interface InferencePerformanceResponse {
   avg_time_inference: InferencePerformanceAvgBucket[]
   avg_time_e2e: InferencePerformanceAvgBucket[]
   avg_time_generation: InferencePerformanceAvgBucket[]
+  avg_tokens_per_second_generation: InferencePerformanceAvgBucket[]
+  tokens_per_second_throughput: InferencePerformanceAvgBucket[]
   utilization_buckets: InferenceUtilizationBucket[]
   num_lanes: number
   step_times: StepTime[]
