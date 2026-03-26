@@ -7903,6 +7903,125 @@ def get_inference_performance(req: InferencePerformanceRequest):
         [bucket, bucket, req.run_path],
     ).fetchall()
 
+    # Average tokens per second per generation (avg of rollout_tokens / request_duration per request)
+    avg_tokens_per_second_generation = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time,
+               AVG(CAST(rollout_tokens AS DOUBLE) / (end_time - start_time)) as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
+            AND (end_time - start_time) > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Tokens per second throughput (total tokens in interval / interval duration)
+    tokens_per_second_throughput = con.execute(
+        """
+        SELECT FLOOR(end_time / ?) * ? as bucket_time,
+               CAST(SUM(rollout_tokens) AS DOUBLE) / ? as avg_val
+        FROM events_inference
+        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+            AND (is_canceled = false OR is_canceled IS NULL)
+            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # --- vLLM metrics bucketed for inference performance ---
+    # Requests running average per bucket (average across all servers and timestamps)
+    vllm_requests_running_avg = con.execute(
+        """
+        SELECT FLOOR(timestamp / ?) * ? as bucket_time, AVG(value) as avg_val
+        FROM vllm_metrics
+        WHERE run_id = ? AND metric_name = 'requests_running'
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Requests waiting average per bucket
+    vllm_requests_waiting_avg = con.execute(
+        """
+        SELECT FLOOR(timestamp / ?) * ? as bucket_time, AVG(value) as avg_val
+        FROM vllm_metrics
+        WHERE run_id = ? AND metric_name = 'requests_waiting'
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Preemptions per bucket: delta (end - start) per server per bucket, summed across servers
+    vllm_preemptions = con.execute(
+        """
+        WITH per_server_bucket AS (
+            SELECT FLOOR(timestamp / ?) * ? as bucket_time,
+                   server,
+                   arg_max(value, timestamp) - arg_min(value, timestamp) as delta
+            FROM vllm_metrics
+            WHERE run_id = ? AND metric_name = 'preemptions_total'
+            GROUP BY bucket_time, server
+        )
+        SELECT bucket_time, SUM(delta) as avg_val
+        FROM per_server_bucket
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # Preemptions per request: preemptions in interval / requests done in interval
+    vllm_preemptions_per_request = con.execute(
+        """
+        WITH per_server_bucket AS (
+            SELECT FLOOR(timestamp / ?) * ? as bucket_time,
+                   server,
+                   arg_max(value, timestamp) - arg_min(value, timestamp) as delta
+            FROM vllm_metrics
+            WHERE run_id = ? AND metric_name = 'preemptions_total'
+            GROUP BY bucket_time, server
+        ),
+        preemptions_per_bucket AS (
+            SELECT bucket_time, SUM(delta) as preemptions
+            FROM per_server_bucket
+            GROUP BY bucket_time
+        ),
+        requests_per_bucket AS (
+            SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
+            FROM events_inference
+            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+                AND (is_canceled = false OR is_canceled IS NULL)
+            GROUP BY bucket_time
+        )
+        SELECT p.bucket_time, CAST(p.preemptions AS DOUBLE) / r.cnt as avg_val
+        FROM preemptions_per_bucket p
+        JOIN requests_per_bucket r ON p.bucket_time = r.bucket_time
+        WHERE r.cnt > 0
+        ORDER BY p.bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path, bucket, bucket, req.run_path],
+    ).fetchall()
+
+    # TTFT mean average per bucket
+    vllm_ttft_avg = con.execute(
+        """
+        SELECT FLOOR(timestamp / ?) * ? as bucket_time, AVG(value) as avg_val
+        FROM vllm_metrics
+        WHERE run_id = ? AND metric_name = 'ttft_mean'
+        GROUP BY bucket_time
+        ORDER BY bucket_time ASC
+        """,
+        [bucket, bucket, req.run_path],
+    ).fetchall()
+
     # --- Inference utilization (idle vs working) ---
     # Total number of lanes = distinct (server, server_lane) combinations
     num_lanes_row = con.execute(
@@ -8033,6 +8152,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
         rollouts_group_done_kept, rollouts_group_done_discarded, rollouts_group_done_canceled,
         avg_time_prefill, avg_time_decode, avg_time_compute_reward,
         avg_time_queue, avg_time_ttft, avg_time_inference, avg_time_e2e, avg_time_generation,
+        avg_tokens_per_second_generation, tokens_per_second_throughput,
+        vllm_requests_running_avg, vllm_requests_waiting_avg, vllm_preemptions, vllm_preemptions_per_request, vllm_ttft_avg,
     ]
     first_time = None
     for rows in all_bucket_rows:
@@ -8066,6 +8187,13 @@ def get_inference_performance(req: InferencePerformanceRequest):
         "avg_time_inference": format_avg_buckets(avg_time_inference),
         "avg_time_e2e": format_avg_buckets(avg_time_e2e),
         "avg_time_generation": format_avg_buckets(avg_time_generation),
+        "avg_tokens_per_second_generation": format_avg_buckets(avg_tokens_per_second_generation),
+        "tokens_per_second_throughput": format_avg_buckets(tokens_per_second_throughput),
+        "vllm_requests_running_avg": format_avg_buckets(vllm_requests_running_avg),
+        "vllm_requests_waiting_avg": format_avg_buckets(vllm_requests_waiting_avg),
+        "vllm_preemptions": format_avg_buckets(vllm_preemptions),
+        "vllm_preemptions_per_request": format_avg_buckets(vllm_preemptions_per_request),
+        "vllm_ttft_avg": format_avg_buckets(vllm_ttft_avg),
         "utilization_buckets": utilization_buckets,
         "num_lanes": num_lanes,
         "step_times": [

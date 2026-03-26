@@ -534,6 +534,21 @@ export function buildPlotCatalog(
     })
   }
 
+  // Inference Performance - Throughput
+  for (const m of [
+    { key: "avg_tokens_per_second_generation", label: "Tokens/s per Generation", inferenceMetricType: "avg_tokens_per_second_generation" },
+    { key: "tokens_per_second_throughput", label: "Tokens/s Throughput", inferenceMetricType: "tokens_per_second_throughput" },
+  ]) {
+    catalog.push({
+      section: "Inference Performance",
+      group: "Throughput",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "inference_performance",
+      inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
   // Inference Performance - Latency
   for (const m of [
     { key: "avg_time_queue", label: "Avg Queue Time", inferenceMetricType: "avg_time_queue" },
@@ -548,6 +563,24 @@ export function buildPlotCatalog(
     catalog.push({
       section: "Inference Performance",
       group: "Latency",
+      metricKey: m.key,
+      label: m.label,
+      plotType: "inference_performance",
+      inferenceMetricType: m.inferenceMetricType,
+    })
+  }
+
+  // Inference Performance - vLLM
+  for (const m of [
+    { key: "vllm_requests_running_avg", label: "vLLM Requests Running Average", inferenceMetricType: "vllm_requests_running_avg" },
+    { key: "vllm_requests_waiting_avg", label: "vLLM Requests Waiting Average", inferenceMetricType: "vllm_requests_waiting_avg" },
+    { key: "vllm_preemptions", label: "vLLM Preemptions", inferenceMetricType: "vllm_preemptions" },
+    { key: "vllm_preemptions_per_request", label: "vLLM Preemptions per Request", inferenceMetricType: "vllm_preemptions_per_request" },
+    { key: "vllm_ttft_avg", label: "vLLM TTFT Average", inferenceMetricType: "vllm_ttft_avg" },
+  ]) {
+    catalog.push({
+      section: "Inference Performance",
+      group: "vLLM",
       metricKey: m.key,
       label: m.label,
       plotType: "inference_performance",
