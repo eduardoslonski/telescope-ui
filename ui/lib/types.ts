@@ -689,6 +689,11 @@ export interface InferencePerformanceResponse {
   avg_time_generation: InferencePerformanceAvgBucket[]
   avg_tokens_per_second_generation: InferencePerformanceAvgBucket[]
   tokens_per_second_throughput: InferencePerformanceAvgBucket[]
+  vllm_requests_running_avg: InferencePerformanceAvgBucket[]
+  vllm_requests_waiting_avg: InferencePerformanceAvgBucket[]
+  vllm_preemptions: InferencePerformanceAvgBucket[]
+  vllm_preemptions_per_request: InferencePerformanceAvgBucket[]
+  vllm_ttft_avg: InferencePerformanceAvgBucket[]
   utilization_buckets: InferenceUtilizationBucket[]
   num_lanes: number
   step_times: StepTime[]

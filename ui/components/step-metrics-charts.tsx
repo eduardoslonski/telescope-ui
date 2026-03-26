@@ -5081,6 +5081,11 @@ const INFERENCE_AVG_METRICS = new Set([
   "avg_time_generation",
   "avg_tokens_per_second_generation",
   "tokens_per_second_throughput",
+  "vllm_requests_running_avg",
+  "vllm_requests_waiting_avg",
+  "vllm_preemptions",
+  "vllm_preemptions_per_request",
+  "vllm_ttft_avg",
 ])
 
 const INFERENCE_TIME_METRICS = new Set([
@@ -5092,6 +5097,7 @@ const INFERENCE_TIME_METRICS = new Set([
   "avg_time_inference",
   "avg_time_e2e",
   "avg_time_generation",
+  "vllm_ttft_avg",
 ])
 
 interface InferencePerformanceMetricChartProps {
@@ -5212,8 +5218,8 @@ function InferencePerformanceMetricChart({
       buckets.forEach((b) => {
         const val = isAvgMetric ? b.value : b.count
         if (val !== undefined && val !== null) {
-          // Skip zero values for average metrics (zero means no data, not instant)
-          if (isAvgMetric && val === 0) return
+          // Skip zero values for time metrics (zero means no data, not instant)
+          if (isTimeMetric && val === 0) return
           const relTime = b.time - runFirstTime
           // Skip buckets before first step completes
           if (ignoreFirstStep && firstStepRelTime !== null && relTime < firstStepRelTime) return
@@ -5599,28 +5605,29 @@ function InferencePerformanceMetricChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreOutliers || ignoreFirstStep || showUnfinishedIntervals) && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {ignoreOutliers && (
-              <FilterBadge
-                label="Ignoring Outliers"
-                onRemove={() => setIgnoreOutliers(false)}
-              />
-            )}
-            {ignoreFirstStep && (
-              <FilterBadge
-                label="Ignoring First Step"
-                onRemove={() => setIgnoreFirstStep(false)}
-              />
-            )}
-            {showUnfinishedIntervals && (
-              <FilterBadge
-                label="Showing Unfinished Intervals"
-                onRemove={() => setShowUnfinishedIntervals(false)}
-              />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full whitespace-nowrap shrink-0">
+            {intervalInput}
+          </span>
+          {ignoreOutliers && (
+            <FilterBadge
+              label="Ignoring Outliers"
+              onRemove={() => setIgnoreOutliers(false)}
+            />
+          )}
+          {ignoreFirstStep && (
+            <FilterBadge
+              label="Ignoring First Step"
+              onRemove={() => setIgnoreFirstStep(false)}
+            />
+          )}
+          {showUnfinishedIntervals && (
+            <FilterBadge
+              label="Showing Unfinished Intervals"
+              onRemove={() => setShowUnfinishedIntervals(false)}
+            />
+          )}
+        </div>
       </div>
       {hasData ? (
         <div
@@ -5715,6 +5722,14 @@ export function InferencePerformanceSection({
         <InferencePerformanceMetricChart inferenceMetricType="avg_time_e2e" label="Avg E2E Latency" {...sharedProps} />
         <InferencePerformanceMetricChart inferenceMetricType="avg_time_generation" label="Avg Generation Duration" {...sharedProps} />
         <InferencePerformanceMetricChart inferenceMetricType="avg_time_compute_reward" label="Avg Compute Reward Time" {...sharedProps} />
+      </div>
+      <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">vLLM</h4>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <InferencePerformanceMetricChart inferenceMetricType="vllm_requests_running_avg" label="vLLM Requests Running Average" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="vllm_requests_waiting_avg" label="vLLM Requests Waiting Average" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="vllm_preemptions" label="vLLM Preemptions" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="vllm_preemptions_per_request" label="vLLM Preemptions per Request" {...sharedProps} />
+        <InferencePerformanceMetricChart inferenceMetricType="vllm_ttft_avg" label="vLLM TTFT Average" {...sharedProps} />
       </div>
     </div>
   )
@@ -6161,16 +6176,17 @@ function InferenceUtilizationAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreFirstStep || showUnfinishedIntervals) && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {ignoreFirstStep && (
-              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
-            )}
-            {showUnfinishedIntervals && (
-              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full whitespace-nowrap shrink-0">
+            {intervalInput}
+          </span>
+          {ignoreFirstStep && (
+            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+          )}
+          {showUnfinishedIntervals && (
+            <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+          )}
+        </div>
         {hasData && activeCategories.length > 0 && (
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
             {activeCategories.map((cat) => {
@@ -6684,22 +6700,23 @@ function TrainerPerformanceMetricChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreFirstStep || showUnfinishedIntervals) && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {ignoreFirstStep && (
-              <FilterBadge
-                label="Ignoring First Step"
-                onRemove={() => setIgnoreFirstStep(false)}
-              />
-            )}
-            {showUnfinishedIntervals && (
-              <FilterBadge
-                label="Showing Unfinished Intervals"
-                onRemove={() => setShowUnfinishedIntervals(false)}
-              />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full whitespace-nowrap shrink-0">
+            {intervalInput}
+          </span>
+          {ignoreFirstStep && (
+            <FilterBadge
+              label="Ignoring First Step"
+              onRemove={() => setIgnoreFirstStep(false)}
+            />
+          )}
+          {showUnfinishedIntervals && (
+            <FilterBadge
+              label="Showing Unfinished Intervals"
+              onRemove={() => setShowUnfinishedIntervals(false)}
+            />
+          )}
+        </div>
       </div>
       {hasData ? (
         <div
@@ -7181,16 +7198,17 @@ function InferencePerformanceAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreFirstStep || showUnfinishedIntervals) && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {ignoreFirstStep && (
-              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
-            )}
-            {showUnfinishedIntervals && (
-              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full whitespace-nowrap shrink-0">
+            {intervalInput}
+          </span>
+          {ignoreFirstStep && (
+            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+          )}
+          {showUnfinishedIntervals && (
+            <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+          )}
+        </div>
         {hasData && activeCategories.length > 0 && (
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
             {activeCategories.map((cat) => {
@@ -7606,16 +7624,17 @@ function TrainerPerformanceAreaChart({
             {!isFullscreen && headerSuffix}
           </div>
         </div>
-        {(ignoreFirstStep || showUnfinishedIntervals) && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {ignoreFirstStep && (
-              <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
-            )}
-            {showUnfinishedIntervals && (
-              <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-1 mt-1 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] bg-background border border-border text-muted-foreground rounded-full whitespace-nowrap shrink-0">
+            {intervalInput}
+          </span>
+          {ignoreFirstStep && (
+            <FilterBadge label="Ignoring First Step" onRemove={() => setIgnoreFirstStep(false)} />
+          )}
+          {showUnfinishedIntervals && (
+            <FilterBadge label="Showing Unfinished Intervals" onRemove={() => setShowUnfinishedIntervals(false)} />
+          )}
+        </div>
         {/* Interactive Legend */}
         {hasData && activeCategories.length > 0 && (
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
