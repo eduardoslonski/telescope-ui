@@ -125,6 +125,7 @@ export interface MetricsChartFilterState {
 export const metricsChartFiltersAtom = atom<
   Record<string, MetricsChartFilterState>
 >({})
+export const metricsIntervalAtom = atom<number>(60)
 
 // Timeline Page
 export const timelinePageAtom = createPerRunAtom<number>(0)

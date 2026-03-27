@@ -10,7 +10,7 @@ import {
 import { createPortal } from "react-dom"
 import { useAtom, useAtomValue } from "jotai"
 import uPlot from "uplot"
-import { darkModeAtom, metricsChartFiltersAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
+import { darkModeAtom, metricsChartFiltersAtom, metricsIntervalAtom, syncedCursorAtom, type MetricsChartFilterState } from "@/lib/atoms"
 import {
   getSidebarRunNameParts,
   SIDEBAR_MAX_RUN_NAME_CHARS,
@@ -5132,8 +5132,9 @@ function InferencePerformanceMetricChart({
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
   const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
 
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+  const [bucketSeconds, setBucketSeconds] = useAtom(metricsIntervalAtom)
+  const [intervalInput, setIntervalInput] = useState(() => formatDurationHms(bucketSeconds))
+  useEffect(() => { setIntervalInput(formatDurationHms(bucketSeconds)) }, [bucketSeconds])
 
   const handleIntervalCommit = useCallback(
     (value: string) => {
@@ -5145,7 +5146,7 @@ function InferencePerformanceMetricChart({
         setIntervalInput(formatDurationHms(bucketSeconds))
       }
     },
-    [bucketSeconds],
+    [bucketSeconds, setBucketSeconds],
   )
 
   const isOnScreen = useOnScreen(visibilityRef, {
@@ -5851,8 +5852,9 @@ function InferenceUtilizationAreaChart({
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
   const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+  const [bucketSeconds, setBucketSeconds] = useAtom(metricsIntervalAtom)
+  const [intervalInput, setIntervalInput] = useState(() => formatDurationHms(bucketSeconds))
+  useEffect(() => { setIntervalInput(formatDurationHms(bucketSeconds)) }, [bucketSeconds])
 
   const [hoveredCat, setHoveredCat] = useState<string | null>(null)
   const [selectedCats, setSelectedCats] = useState<string[]>([])
@@ -5877,7 +5879,7 @@ function InferenceUtilizationAreaChart({
         setIntervalInput(formatDurationHms(bucketSeconds))
       }
     },
-    [bucketSeconds],
+    [bucketSeconds, setBucketSeconds],
   )
 
   const isOnScreen = useOnScreen(visibilityRef, {
@@ -6334,8 +6336,9 @@ function TrainerPerformanceMetricChart({
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
   const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+  const [bucketSeconds, setBucketSeconds] = useAtom(metricsIntervalAtom)
+  const [intervalInput, setIntervalInput] = useState(() => formatDurationHms(bucketSeconds))
+  useEffect(() => { setIntervalInput(formatDurationHms(bucketSeconds)) }, [bucketSeconds])
 
   const handleIntervalCommit = useCallback(
     (value: string) => {
@@ -6347,7 +6350,7 @@ function TrainerPerformanceMetricChart({
         setIntervalInput(formatDurationHms(bucketSeconds))
       }
     },
-    [bucketSeconds],
+    [bucketSeconds, setBucketSeconds],
   )
 
   const isOnScreen = useOnScreen(visibilityRef, {
@@ -6849,8 +6852,9 @@ function InferencePerformanceAreaChart({
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
   const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+  const [bucketSeconds, setBucketSeconds] = useAtom(metricsIntervalAtom)
+  const [intervalInput, setIntervalInput] = useState(() => formatDurationHms(bucketSeconds))
+  useEffect(() => { setIntervalInput(formatDurationHms(bucketSeconds)) }, [bucketSeconds])
 
   const [hoveredCat, setHoveredCat] = useState<string | null>(null)
   const [selectedCats, setSelectedCats] = useState<string[]>([])
@@ -6875,7 +6879,7 @@ function InferencePerformanceAreaChart({
         setIntervalInput(formatDurationHms(bucketSeconds))
       }
     },
-    [bucketSeconds],
+    [bucketSeconds, setBucketSeconds],
   )
 
   const isOnScreen = useOnScreen(visibilityRef, {
@@ -7290,8 +7294,9 @@ function TrainerPerformanceAreaChart({
 
   const [ignoreFirstStep, setIgnoreFirstStep] = useState(true)
   const [showUnfinishedIntervals, setShowUnfinishedIntervals] = useState(false)
-  const [bucketSeconds, setBucketSeconds] = useState(60)
-  const [intervalInput, setIntervalInput] = useState(formatDurationHms(60))
+  const [bucketSeconds, setBucketSeconds] = useAtom(metricsIntervalAtom)
+  const [intervalInput, setIntervalInput] = useState(() => formatDurationHms(bucketSeconds))
+  useEffect(() => { setIntervalInput(formatDurationHms(bucketSeconds)) }, [bucketSeconds])
 
   // Legend hover / click state (matches GPU Metrics Infra pattern)
   const [hoveredCat, setHoveredCat] = useState<string | null>(null)
@@ -7318,7 +7323,7 @@ function TrainerPerformanceAreaChart({
         setIntervalInput(formatDurationHms(bucketSeconds))
       }
     },
-    [bucketSeconds],
+    [bucketSeconds, setBucketSeconds],
   )
 
   const isOnScreen = useOnScreen(visibilityRef, {

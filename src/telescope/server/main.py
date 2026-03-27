@@ -7935,24 +7935,38 @@ def get_inference_performance(req: InferencePerformanceRequest):
     ).fetchall()
 
     # --- vLLM metrics bucketed for inference performance ---
-    # Requests running average per bucket (average across all servers and timestamps)
+    # Requests running per bucket: average per server within bucket, then sum across servers
     vllm_requests_running_avg = con.execute(
         """
-        SELECT FLOOR(timestamp / ?) * ? as bucket_time, AVG(value) as avg_val
-        FROM vllm_metrics
-        WHERE run_id = ? AND metric_name = 'requests_running'
+        WITH per_server_bucket AS (
+            SELECT FLOOR(timestamp / ?) * ? as bucket_time,
+                   server,
+                   AVG(value) as server_avg
+            FROM vllm_metrics
+            WHERE run_id = ? AND metric_name = 'requests_running'
+            GROUP BY bucket_time, server
+        )
+        SELECT bucket_time, SUM(server_avg) as avg_val
+        FROM per_server_bucket
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
         [bucket, bucket, req.run_path],
     ).fetchall()
 
-    # Requests waiting average per bucket
+    # Requests waiting per bucket: average per server within bucket, then sum across servers
     vllm_requests_waiting_avg = con.execute(
         """
-        SELECT FLOOR(timestamp / ?) * ? as bucket_time, AVG(value) as avg_val
-        FROM vllm_metrics
-        WHERE run_id = ? AND metric_name = 'requests_waiting'
+        WITH per_server_bucket AS (
+            SELECT FLOOR(timestamp / ?) * ? as bucket_time,
+                   server,
+                   AVG(value) as server_avg
+            FROM vllm_metrics
+            WHERE run_id = ? AND metric_name = 'requests_waiting'
+            GROUP BY bucket_time, server
+        )
+        SELECT bucket_time, SUM(server_avg) as avg_val
+        FROM per_server_bucket
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
