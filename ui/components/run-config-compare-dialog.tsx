@@ -1042,7 +1042,7 @@ export function RunConfigCompareDialog({
           Compare
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-4xl max-h-[95vh]">
+      <DialogContent className="sm:max-w-7xl max-h-[95vh]">
         {!selectedCompareRun ? (
           // Run selection view
           <>

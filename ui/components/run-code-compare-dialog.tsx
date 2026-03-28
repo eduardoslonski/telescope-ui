@@ -132,7 +132,7 @@ export function RunCodeCompareDialog({
           Compare
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-4xl max-h-[90vh]">
+      <DialogContent className="sm:max-w-7xl max-h-[90vh]">
         <DialogHeader>
           <DialogTitle>Select Run To Compare</DialogTitle>
           <DialogDescription>
