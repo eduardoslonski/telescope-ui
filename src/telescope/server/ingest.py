@@ -173,6 +173,13 @@ _sync_queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue()
 # already queued or actively syncing, which caused duplicate sync rounds.
 _sync_queue_pending: set[str] = set()
 
+# Runs whose in-flight sync should be aborted at the next checkpoint.
+_cancelled_syncs: set[str] = set()
+
+# Bulk sync progress counters — reset each time enqueue_sync is called.
+_sync_total_enqueued: int = 0
+_sync_total_completed: int = 0
+
 # Projects known to contain telescope-tagged runs (populated from DB on startup).
 _known_projects: set[str] = set()
 
@@ -462,6 +469,19 @@ def clear_active_run(run_path: str):
     if run_path in _active_runs:
         log.info(f"[TRACKING] Removing run from active tracking: {run_path}")
         del _active_runs[run_path]
+
+
+def cancel_sync(run_path: str):
+    """Cancel any in-flight or queued sync for a run."""
+    if is_syncing(run_path):
+        log.info(f"[SYNC] Cancelling in-flight sync for: {run_path}")
+        _cancelled_syncs.add(run_path)
+    _sync_queue_pending.discard(run_path)
+
+
+def is_sync_cancelled(run_path: str) -> bool:
+    """Check if a sync has been cancelled."""
+    return run_path in _cancelled_syncs
 
 
 def is_tracking(run_path: str) -> bool:
@@ -2266,6 +2286,16 @@ async def sync_rollouts_blocks(run_path: str, api_key: str, run: Any, summary: d
 
 
 
+def _finalise_cancelled_sync(run_path: str, sync_start: float):
+    """Clean up after a cancelled sync."""
+    _cancelled_syncs.discard(run_path)
+    _sync_status[run_path] = {
+        "status": "cancelled",
+        "started_at": sync_start,
+        "completed_at": time.time(),
+    }
+
+
 async def sync_rollouts_background(run_path: str, api_key: str):
     """Background sync of rollouts and events - downloads in parallel batches without blocking DB."""
     log.info(f"[SYNC] Starting background sync for: {run_path}")
@@ -2307,6 +2337,11 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             # Save run metadata with config
             save_run_metadata(run, run_path, config_json=config_json)
 
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before artifacts for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # Download immutable code artifacts once during explicit sync.
             _sync_source_artifacts(run, run_path)
 
@@ -2321,7 +2356,12 @@ async def sync_rollouts_background(run_path: str, api_key: str):
                 last_rollout_block_idx=summary_progress["steps_current_block_idx"],
             )
             con.close()
-            
+
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before rollouts for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # === SYNC ROLLOUTS (block-based) ===
             total_rollouts = 0
             try:
@@ -2330,7 +2370,12 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             except Exception as e:
                 log.error(f"[SYNC] Error syncing rollouts: {repr(e)}")
                 # Continue - don't fail the whole sync if rollouts fail
-            
+
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before events for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # === SYNC EVENTS (unified - includes all events and metrics) ===
             event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
@@ -3251,6 +3296,7 @@ def enqueue_sync(run_paths: list[str], api_key: str, force_sync: bool = False) -
     Ephemeral workers are spawned on demand (up to SYNC_QUEUE_WORKERS) and
     exit automatically once the queue is drained.
     """
+    global _sync_total_enqueued, _sync_total_completed
     enqueued = 0
     for run_path in run_paths:
         if run_path in _sync_queue_pending:
@@ -3260,13 +3306,50 @@ def enqueue_sync(run_paths: list[str], api_key: str, force_sync: bool = False) -
         _sync_queue.put_nowait((run_path, api_key, force_sync))
         enqueued += 1
     if enqueued:
+        # Reset counters when a new batch starts from idle
+        if _active_sync_workers == 0:
+            _sync_total_enqueued = enqueued
+            _sync_total_completed = 0
+        else:
+            _sync_total_enqueued += enqueued
         _ensure_sync_workers()
     return enqueued
 
 
+def get_sync_queue_progress() -> dict:
+    """Return bulk sync progress for the frontend."""
+    pending = len(_sync_queue_pending)
+    return {
+        "total": _sync_total_enqueued,
+        "completed": _sync_total_completed,
+        "pending": pending,
+        "active": pending > 0 or _active_sync_workers > 0,
+    }
+
+
+def stop_all_syncs():
+    """Cancel all queued and in-flight syncs."""
+    global _sync_total_enqueued, _sync_total_completed
+    # Cancel in-flight syncs
+    for run_path in list(_sync_queue_pending):
+        if is_syncing(run_path):
+            _cancelled_syncs.add(run_path)
+    # Drain the queue
+    while not _sync_queue.empty():
+        try:
+            run_path, _, _ = _sync_queue.get_nowait()
+            _sync_queue_pending.discard(run_path)
+            _sync_queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+    _sync_total_enqueued = 0
+    _sync_total_completed = 0
+    log.info("[SYNC] All syncs stopped")
+
+
 async def _sync_worker(worker_id: int):
     """Ephemeral sync worker — processes items until the queue is empty, then exits."""
-    global _active_sync_workers
+    global _active_sync_workers, _sync_total_completed
     log.info(f"[SYNC] Worker #{worker_id} started")
     try:
         while True:
@@ -3336,6 +3419,7 @@ async def _sync_worker(worker_id: int):
                 log.error(f"[SYNC] Queue worker error for {run_path}: {repr(e)}")
             finally:
                 _sync_queue_pending.discard(run_path)
+                _sync_total_completed += 1
                 _sync_queue.task_done()
     finally:
         _active_sync_workers -= 1

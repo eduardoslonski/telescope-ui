@@ -10,6 +10,7 @@ import {
   Check,
   Menu,
   Moon,
+  Square,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -216,6 +217,20 @@ export function AppSidebar() {
       }>
     },
   })
+  const { data: syncProgress } = useQuery({
+    queryKey: ["sync-queue-progress"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/sync-queue-progress`)
+      return res.json() as Promise<{
+        total: number
+        completed: number
+        pending: number
+        active: boolean
+      }>
+    },
+    refetchInterval: 2000,
+  })
+  const isBulkSyncing = syncProgress?.active && (syncProgress?.total ?? 0) > 1
   const setHoveredRunId = useSetAtom(hoveredRunIdAtom)
   const setOverviewShowCodeView = useSetAtom(overviewShowCodeViewAtom)
   const setOverviewShowLogsView = useSetAtom(overviewShowLogsViewAtom)
@@ -1016,6 +1031,30 @@ export function AppSidebar() {
                 >
                   Database
                 </DropdownMenuItem>
+                {isBulkSyncing && syncProgress && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-xs flex items-center justify-between text-red-500"
+                      onClick={async () => {
+                        await fetch(`${API_BASE}/stop-all-syncs`, {
+                          method: "POST",
+                        })
+                        queryClient.invalidateQueries({
+                          queryKey: ["sync-queue-progress"],
+                        })
+                      }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Square className="h-3 w-3 fill-current" />
+                        Stop Sync
+                      </span>
+                      <span className="text-muted-foreground font-mono">
+                        {syncProgress.completed}/{syncProgress.total}
+                      </span>
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

@@ -19,9 +19,12 @@ from pydantic import BaseModel
 
 from .ingest import (
     ingestion_loop,
+    cancel_sync,
     clear_active_run,
+    get_sync_queue_progress,
     is_tracking,
     is_syncing,
+    stop_all_syncs,
     get_sync_status,
     get_discovery_status,
     start_sync,
@@ -258,6 +261,17 @@ async def _startup():
 
 @app.get("/health")
 def health():
+    return {"ok": True}
+
+
+@app.get("/sync-queue-progress")
+def sync_queue_progress():
+    return get_sync_queue_progress()
+
+
+@app.post("/stop-all-syncs")
+def stop_all_syncs_endpoint():
+    stop_all_syncs()
     return {"ok": True}
 
 
@@ -761,6 +775,7 @@ def remove_run(req: RemoveRunRequest):
     run_path = req.run_path
     log.info(f"[API] Removing run and data for: {run_path}")
 
+    cancel_sync(run_path)
     clear_active_run(run_path)
 
     con = connect()
@@ -796,6 +811,7 @@ def drain_run(req: DrainRunRequest):
     run_path = req.run_path
     log.info(f"[API] Draining run data for: {run_path}")
 
+    cancel_sync(run_path)
     clear_active_run(run_path)
 
     con = connect()
