@@ -9,6 +9,8 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
+from packaging.version import Version
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -257,6 +259,53 @@ async def _startup():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/version-check")
+async def version_check():
+    from telescope import __version__
+
+    current = __version__
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get("https://pypi.org/pypi/telescope-ui/json")
+            resp.raise_for_status()
+            latest = resp.json()["info"]["version"]
+        update_available = Version(latest) > Version(current)
+    except Exception:
+        return {"current": current, "latest": None, "update_available": False}
+    return {"current": current, "latest": latest, "update_available": update_available}
+
+
+@app.post("/update")
+async def update_package():
+    import subprocess
+    import sys
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install", "-U",
+                "--no-input", "--disable-pip-version-check",
+                "telescope-ui",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Update timed out after 120 seconds."}
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "Permission" in stderr or "permission" in stderr:
+            return {
+                "success": False,
+                "error": "Permission denied. Run manually:\n  pip install -U telescope-ui",
+            }
+        return {"success": False, "error": stderr or "Update failed."}
+
+    return {"success": True, "output": result.stdout.strip()}
 
 
 # Request/Response models
