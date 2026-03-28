@@ -619,6 +619,11 @@ function TimelineFooter({
   totalSetupNodes?: number
 }) {
   const darkMode = useAtomValue(darkModeAtom)
+  const { data: inflightData } = useInflightGenerations(
+    runPath || "",
+    !!runPath,
+    true,
+  )
   const [selectedRequest, setSelectedRequest] = useAtom(selectedInferenceRequestAtom)
   const [selectedTrainerEvent, setSelectedTrainerEvent] = useAtom(selectedTrainerEventAtom)
   const [activeTab, setActiveTab] = useState<FooterTab>("inference")
@@ -713,9 +718,17 @@ function TimelineFooter({
         maxTime = Math.max(maxTime, cursor)
       }
     }
+    // Account for inflight compute_reward extending to snapshot_time
+    if (inflightData?.running_compute_reward?.length && inflightData.snapshot_time && selectedRequest) {
+      for (const gen of inflightData.running_compute_reward) {
+        if (gen.group_id === selectedRequest.groupId) {
+          maxTime = Math.max(maxTime, inflightData.snapshot_time)
+        }
+      }
+    }
     if (minTime === Infinity) return null
     return { start: minTime, end: maxTime, duration: maxTime - minTime }
-  }, [groupEventsBySampleId, groupTimingData])
+  }, [groupEventsBySampleId, groupTimingData, inflightData, selectedRequest])
 
   // ---- Trainer data ----
   const { data: trainerBreakdownData } = useTrainerBreakdownEvents(
@@ -1000,6 +1013,7 @@ function TimelineFooter({
             runPath={runPath ?? ""}
             envResponseTimesBySample={groupTimingData?.envBySample}
             computeRewardTimeBySample={showComputeReward ? groupTimingData?.rewardBySample : undefined}
+            inflightSnapshot={inflightData}
             onSampleClick={(sampleId) => {
               setSelectedRequest({
                 sampleId,
