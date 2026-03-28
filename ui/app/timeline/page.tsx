@@ -793,7 +793,8 @@ function TimelineFooter({
   const { data: footerSampleStatuses } = useSampleStatuses(
     runPath ?? "",
     footerSamples,
-    !!runPath && footerSamples.length > 0 && highlightDiscarded
+    !!runPath && footerSamples.length > 0 && highlightDiscarded,
+    true
   )
   const footerDiscardStatusReady =
     !highlightDiscarded || footerSamples.length === 0 || !!footerSampleStatuses

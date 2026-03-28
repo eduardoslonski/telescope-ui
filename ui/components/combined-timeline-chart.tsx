@@ -1045,6 +1045,7 @@ function InferenceSection({
     selectedRunPath ?? "",
     requestSamples,
     !!selectedRunPath && requestSamples.length > 0 && highlightDiscarded,
+    true,
   )
   const discardStatusReady =
     !highlightDiscarded || requestSamples.length === 0 || !!sampleStatuses
@@ -1691,6 +1692,7 @@ export function GroupSampleTimeline({
     runPath,
     requestSamples,
     !!runPath && requestSamples.length > 0 && highlightDiscarded,
+    true,
   )
   const discardStatusReady =
     !highlightDiscarded || requestSamples.length === 0 || !!sampleStatuses
