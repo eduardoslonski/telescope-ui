@@ -219,7 +219,8 @@ export function useSampleDetails(
 export function useSampleStatuses(
   runPath: string,
   samples: Array<{ group_id: number; sample_idx: number }>,
-  enabled: boolean
+  enabled: boolean,
+  shouldPoll: boolean = false
 ) {
   const normalizedSamples = useMemo(() => {
     const seen = new Set<string>()
@@ -258,6 +259,7 @@ export function useSampleStatuses(
       return response.json()
     },
     enabled: enabled && !!runPath && normalizedSamples.length > 0,
+    refetchInterval: shouldPoll ? POLL_INTERVAL : false,
   })
 }
 

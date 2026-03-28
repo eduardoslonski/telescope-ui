@@ -9,6 +9,8 @@ export interface OrchestratorEvent {
   event_type: string
   step: number
   node_id?: number | null
+  group_id?: number | null
+  sample_id?: number | null
 }
 
 export interface TrainerEvent {
@@ -72,6 +74,7 @@ export interface InflightGeneration {
 export interface InflightSnapshot {
   snapshot_time: number | null
   running: InflightGeneration[]
+  running_compute_reward?: InflightGeneration[]
 }
 
 // ============================================================================
