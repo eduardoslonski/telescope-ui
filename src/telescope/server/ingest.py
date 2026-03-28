@@ -173,6 +173,13 @@ _sync_queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue()
 # already queued or actively syncing, which caused duplicate sync rounds.
 _sync_queue_pending: set[str] = set()
 
+# Runs whose in-flight sync should be aborted at the next checkpoint.
+_cancelled_syncs: set[str] = set()
+
+# Bulk sync progress counters — reset each time enqueue_sync is called.
+_sync_total_enqueued: int = 0
+_sync_total_completed: int = 0
+
 # Projects known to contain telescope-tagged runs (populated from DB on startup).
 _known_projects: set[str] = set()
 
@@ -363,6 +370,19 @@ def _schema_version_mismatch(tags: list[str]) -> bool:
     return schema_version != SCHEMA_VERSION
 
 
+def _schema_version_newer(tags: list[str]) -> bool:
+    """Return True if the run's schema_version is strictly newer than SCHEMA_VERSION."""
+    _, schema_version, _ = _extract_commit_and_schema_version(tags)
+    if not schema_version:
+        return False
+    try:
+        run_parts = [int(x) for x in schema_version.split(".")]
+        our_parts = [int(x) for x in SCHEMA_VERSION.split(".")]
+        return run_parts > our_parts
+    except (ValueError, AttributeError):
+        return False
+
+
 def build_run_metadata(run, run_path: str) -> dict:
     """Extract run metadata from a W&B run object.
 
@@ -462,6 +482,19 @@ def clear_active_run(run_path: str):
     if run_path in _active_runs:
         log.info(f"[TRACKING] Removing run from active tracking: {run_path}")
         del _active_runs[run_path]
+
+
+def cancel_sync(run_path: str):
+    """Cancel any in-flight or queued sync for a run."""
+    if is_syncing(run_path):
+        log.info(f"[SYNC] Cancelling in-flight sync for: {run_path}")
+        _cancelled_syncs.add(run_path)
+    _sync_queue_pending.discard(run_path)
+
+
+def is_sync_cancelled(run_path: str) -> bool:
+    """Check if a sync has been cancelled."""
+    return run_path in _cancelled_syncs
 
 
 def is_tracking(run_path: str) -> bool:
@@ -2266,6 +2299,16 @@ async def sync_rollouts_blocks(run_path: str, api_key: str, run: Any, summary: d
 
 
 
+def _finalise_cancelled_sync(run_path: str, sync_start: float):
+    """Clean up after a cancelled sync."""
+    _cancelled_syncs.discard(run_path)
+    _sync_status[run_path] = {
+        "status": "cancelled",
+        "started_at": sync_start,
+        "completed_at": time.time(),
+    }
+
+
 async def sync_rollouts_background(run_path: str, api_key: str):
     """Background sync of rollouts and events - downloads in parallel batches without blocking DB."""
     log.info(f"[SYNC] Starting background sync for: {run_path}")
@@ -2307,6 +2350,11 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             # Save run metadata with config
             save_run_metadata(run, run_path, config_json=config_json)
 
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before artifacts for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # Download immutable code artifacts once during explicit sync.
             _sync_source_artifacts(run, run_path)
 
@@ -2321,7 +2369,12 @@ async def sync_rollouts_background(run_path: str, api_key: str):
                 last_rollout_block_idx=summary_progress["steps_current_block_idx"],
             )
             con.close()
-            
+
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before rollouts for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # === SYNC ROLLOUTS (block-based) ===
             total_rollouts = 0
             try:
@@ -2330,7 +2383,12 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             except Exception as e:
                 log.error(f"[SYNC] Error syncing rollouts: {repr(e)}")
                 # Continue - don't fail the whole sync if rollouts fail
-            
+
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before events for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
             # === SYNC EVENTS (unified - includes all events and metrics) ===
             event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
@@ -2821,17 +2879,19 @@ def _discover_tagged_runs_for_project(
             continue
         if "telescope-ignore" in tags:
             continue
-        if _schema_version_mismatch(tags):
+        if _schema_version_mismatch(tags) and not _schema_version_newer(tags):
             continue
 
         run_path = f"{run.entity}/{run.project}/{run.id}"
         run_data = build_run_metadata(run, run_path)
+        needs_update = _schema_version_newer(tags)
         discovered.append(
             {
                 "run_path": run_path,
                 "run_data": run_data,
                 "created_at": run_data.get("created_at") or "",
-                "is_running": _is_run_running(getattr(run, "state", None)),
+                "is_running": _is_run_running(getattr(run, "state", None)) and not needs_update,
+                "needs_update": needs_update,
             }
         )
         # Update progress immediately as runs are discovered (not only when
@@ -3106,12 +3166,13 @@ def _poll_project_for_new_runs(
                     continue
                 if "telescope-ignore" in run_tags:
                     continue
-                if _schema_version_mismatch(run_tags):
+                if _schema_version_mismatch(run_tags) and not _schema_version_newer(run_tags):
                     continue
 
                 run_id_short = node.get("name", "")
                 run_path = f"{entity}/{project}/{run_id_short}"
-                is_running = _is_run_running(node.get("state"))
+                needs_update = _schema_version_newer(run_tags)
+                is_running = _is_run_running(node.get("state")) and not needs_update
 
                 if run_path in existing_ids:
                     if is_running:
@@ -3126,6 +3187,7 @@ def _poll_project_for_new_runs(
                         "run_data": run_data,
                         "created_at": run_data.get("created_at") or "",
                         "is_running": is_running,
+                        "needs_update": needs_update,
                     }
                 )
     except Exception as e:
@@ -3199,13 +3261,16 @@ def poll_known_projects_for_new_runs(api_key: str, tag: str) -> list[str]:
 
     log.debug(f"[WANDB] scan took {time.time() - t_scan:.2f}s — {len(all_new)} new, {len(all_state_updates)} state-update(s)")
 
-    # Insert new runs
+    # Insert new runs (but don't sync/track runs that need a UI update)
     new_run_paths: list[str] = []
     for item in all_new:
         run_path = item["run_path"]
         is_running = item.get("is_running", False)
         upsert_run(con, item["run_data"])
         existing_ids.add(run_path)
+        if item.get("needs_update"):
+            log.debug(f"[WANDB] NEW run: {run_path} (needs UI update, skipping sync)")
+            continue
         new_run_paths.append(run_path)
         log.debug(f"[WANDB] NEW run: {run_path} (running={is_running})")
         if is_running:
@@ -3251,6 +3316,7 @@ def enqueue_sync(run_paths: list[str], api_key: str, force_sync: bool = False) -
     Ephemeral workers are spawned on demand (up to SYNC_QUEUE_WORKERS) and
     exit automatically once the queue is drained.
     """
+    global _sync_total_enqueued, _sync_total_completed
     enqueued = 0
     for run_path in run_paths:
         if run_path in _sync_queue_pending:
@@ -3260,13 +3326,50 @@ def enqueue_sync(run_paths: list[str], api_key: str, force_sync: bool = False) -
         _sync_queue.put_nowait((run_path, api_key, force_sync))
         enqueued += 1
     if enqueued:
+        # Reset counters when a new batch starts from idle
+        if _active_sync_workers == 0:
+            _sync_total_enqueued = enqueued
+            _sync_total_completed = 0
+        else:
+            _sync_total_enqueued += enqueued
         _ensure_sync_workers()
     return enqueued
 
 
+def get_sync_queue_progress() -> dict:
+    """Return bulk sync progress for the frontend."""
+    pending = len(_sync_queue_pending)
+    return {
+        "total": _sync_total_enqueued,
+        "completed": _sync_total_completed,
+        "pending": pending,
+        "active": pending > 0 or _active_sync_workers > 0,
+    }
+
+
+def stop_all_syncs():
+    """Cancel all queued and in-flight syncs."""
+    global _sync_total_enqueued, _sync_total_completed
+    # Cancel in-flight syncs
+    for run_path in list(_sync_queue_pending):
+        if is_syncing(run_path):
+            _cancelled_syncs.add(run_path)
+    # Drain the queue
+    while not _sync_queue.empty():
+        try:
+            run_path, _, _ = _sync_queue.get_nowait()
+            _sync_queue_pending.discard(run_path)
+            _sync_queue.task_done()
+        except asyncio.QueueEmpty:
+            break
+    _sync_total_enqueued = 0
+    _sync_total_completed = 0
+    log.info("[SYNC] All syncs stopped")
+
+
 async def _sync_worker(worker_id: int):
     """Ephemeral sync worker — processes items until the queue is empty, then exits."""
-    global _active_sync_workers
+    global _active_sync_workers, _sync_total_completed
     log.info(f"[SYNC] Worker #{worker_id} started")
     try:
         while True:
@@ -3336,6 +3439,7 @@ async def _sync_worker(worker_id: int):
                 log.error(f"[SYNC] Queue worker error for {run_path}: {repr(e)}")
             finally:
                 _sync_queue_pending.discard(run_path)
+                _sync_total_completed += 1
                 _sync_queue.task_done()
     finally:
         _active_sync_workers -= 1
@@ -3426,9 +3530,12 @@ async def discover_and_sync_project(api_key: str, project_path: str, tag: str = 
             con.close()
 
         # Only sync the top 20; track running ones.
+        # Skip runs that need a UI update (newer schema).
         sync_run_paths: list[str] = []
         for item in discovered:
             run_path = item["run_path"]
+            if item.get("needs_update"):
+                continue
             is_top = run_path in top_run_paths
             is_running = bool(item.get("is_running", False))
             if is_top and is_running:

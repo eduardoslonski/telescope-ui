@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, Link } from "react-router-dom"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   AlertTriangle,
   ArrowDown,
@@ -9,6 +9,7 @@ import {
   Check,
   Menu,
   Moon,
+  Square,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -188,6 +189,47 @@ export function AppSidebar() {
     wandbConfigDialogOpenAtom,
   )
   const [darkMode, setDarkMode] = useAtom(darkModeAtom)
+  const { data: versionData } = useQuery({
+    queryKey: ["version-check"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/version-check`)
+      return res.json() as Promise<{
+        current: string
+        latest: string | null
+        update_available: boolean
+      }>
+    },
+    staleTime: 60 * 60 * 1000, // check once per hour
+    refetchOnWindowFocus: false,
+  })
+  const updateAvailable = versionData?.update_available ?? false
+  const latestVersion = versionData?.latest
+  const currentVersion = versionData?.current
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`${API_BASE}/update`, { method: "POST" })
+      return res.json() as Promise<{
+        success: boolean
+        output?: string
+        error?: string
+      }>
+    },
+  })
+  const { data: syncProgress } = useQuery({
+    queryKey: ["sync-queue-progress"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/sync-queue-progress`)
+      return res.json() as Promise<{
+        total: number
+        completed: number
+        pending: number
+        active: boolean
+      }>
+    },
+    refetchInterval: 2000,
+  })
+  const isBulkSyncing = syncProgress?.active && (syncProgress?.total ?? 0) > 1
   const setHoveredRunId = useSetAtom(hoveredRunIdAtom)
   const setOverviewShowCodeView = useSetAtom(overviewShowCodeViewAtom)
   const setOverviewShowLogsView = useSetAtom(overviewShowLogsViewAtom)
@@ -813,13 +855,26 @@ export function AppSidebar() {
           >
             <img src={darkMode ? "/logo-full-dark.svg" : "/logo-full.svg"} alt="Telescope" className="h-5" />
           </Link>
-          <button
-            onClick={() => setDarkMode((prev) => !prev)}
-            className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
-            aria-label="Toggle dark mode"
-          >
-            {darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-          </button>
+          <div className="flex items-center gap-1">
+            {updateAvailable && latestVersion && (
+              <button
+                onClick={() => {
+                  updateMutation.reset()
+                  setUpdateDialogOpen(true)
+                }}
+                className="text-[11px] font-medium text-amber-500 hover:text-amber-400 transition-colors"
+              >
+                Update
+              </button>
+            )}
+            <button
+              onClick={() => setDarkMode((prev) => !prev)}
+              className="text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              aria-label="Toggle dark mode"
+            >
+              {darkMode ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+            </button>
+          </div>
         </div>
 
         {/* Navigation */}
@@ -967,6 +1022,30 @@ export function AppSidebar() {
                 >
                   Database
                 </DropdownMenuItem>
+                {isBulkSyncing && syncProgress && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-xs flex items-center justify-between text-red-500"
+                      onClick={async () => {
+                        await fetch(`${API_BASE}/stop-all-syncs`, {
+                          method: "POST",
+                        })
+                        queryClient.invalidateQueries({
+                          queryKey: ["sync-queue-progress"],
+                        })
+                      }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Square className="h-3 w-3 fill-current" />
+                        Stop Sync
+                      </span>
+                      <span className="text-muted-foreground font-mono">
+                        {syncProgress.completed}/{syncProgress.total}
+                      </span>
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -1040,15 +1119,19 @@ export function AppSidebar() {
                       )
                       const isDraining = isDrainingRun === run.run_id
                       const isDrained = run.is_drained && !isDraining
+                      const needsUpdate = run.needs_update
                       const isPendingSync =
                         run.last_rollout_step === -1 &&
                         !run.is_syncing &&
                         !run.is_tracking &&
-                        !isDrained
+                        !isDrained &&
+                        !needsUpdate
                       const statusDotsCount =
-                        Number(run.is_tracking) +
-                        Number(run.is_syncing) +
-                        Number(isDraining)
+                        needsUpdate
+                          ? 1
+                          : Number(run.is_tracking) +
+                            Number(run.is_syncing) +
+                            Number(isDraining)
                       const runNameMaxChars =
                         statusDotsCount >= 2
                           ? MAX_RUN_NAME_CHARS - 4
@@ -1185,23 +1268,45 @@ export function AppSidebar() {
                           </div>
 
                           {/* Status dots */}
-                          {run.is_tracking && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-green-500 shrink-0"
-                              title="Live"
-                            />
-                          )}
-                          {run.is_syncing && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-blue-500 shrink-0"
-                              title="Syncing"
-                            />
-                          )}
-                          {isDraining && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-orange-500 shrink-0"
-                              title="Draining"
-                            />
+                          {needsUpdate ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    updateMutation.reset()
+                                    setUpdateDialogOpen(true)
+                                  }}
+                                  className="text-amber-500 hover:text-amber-400 transition-colors shrink-0 text-xs font-bold leading-none"
+                                >
+                                  !
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right">
+                                <p className="text-xs">Update telescope-ui to sync this run</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <>
+                              {run.is_tracking && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-green-500 shrink-0"
+                                  title="Live"
+                                />
+                              )}
+                              {run.is_syncing && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-blue-500 shrink-0"
+                                  title="Syncing"
+                                />
+                              )}
+                              {isDraining && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-orange-500 shrink-0"
+                                  title="Draining"
+                                />
+                              )}
+                            </>
                           )}
 
                           {/* Time ago / Menu container */}
@@ -1865,6 +1970,107 @@ export function AppSidebar() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Update Dialog */}
+      <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Update Available</DialogTitle>
+            <DialogDescription>
+              A new version of telescope-ui is available.
+            </DialogDescription>
+          </DialogHeader>
+
+          {updateMutation.isIdle && (
+            <>
+              <div className="text-sm space-y-2 py-2">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Installed</span>
+                  <span className="font-mono">{currentVersion}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Latest</span>
+                  <span className="font-mono">{latestVersion}</span>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setUpdateDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button onClick={() => updateMutation.mutate()}>
+                  Update
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {updateMutation.isPending && (
+            <div className="flex items-center gap-3 py-4">
+              <Spinner className="h-4 w-4" />
+              <span className="text-sm">Updating telescope-ui...</span>
+            </div>
+          )}
+
+          {updateMutation.isSuccess && updateMutation.data.success && (
+            <>
+              <div className="text-sm space-y-2 py-2">
+                <p className="text-green-500 font-medium">
+                  Updated successfully.
+                </p>
+                <p className="text-muted-foreground">
+                  Restart the server to apply the new version.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setUpdateDialogOpen(false)}
+                >
+                  OK
+                </Button>
+                <Button
+                  onClick={async () => {
+                    await fetch(`${API_BASE}/restart`, { method: "POST" })
+                    setTimeout(() => window.location.reload(), 3000)
+                  }}
+                >
+                  Restart Server
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {((updateMutation.isSuccess && !updateMutation.data.success) ||
+            updateMutation.isError) && (
+            <>
+              <div className="text-sm space-y-2 py-2">
+                <p className="text-red-500 font-medium">Update failed</p>
+                <pre className="text-xs text-muted-foreground bg-muted p-2 rounded whitespace-pre-wrap break-all max-h-40 overflow-auto">
+                  {updateMutation.isSuccess
+                    ? updateMutation.data.error
+                    : "Could not reach the server."}
+                </pre>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setUpdateDialogOpen(false)}
+                >
+                  Close
+                </Button>
+                <Button
+                  onClick={() => updateMutation.mutate()}
+                >
+                  Retry
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

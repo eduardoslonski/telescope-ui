@@ -1,13 +1,33 @@
 import { useAtomValue } from "jotai"
+import { useQuery } from "@tanstack/react-query"
 import { darkModeAtom } from "@/lib/atoms"
+import { API_BASE } from "@/lib/constants"
 
 export default function AboutPage() {
   const darkMode = useAtomValue(darkModeAtom)
+  const { data: versionData } = useQuery({
+    queryKey: ["version-check"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/version-check`)
+      return res.json() as Promise<{
+        current: string
+        latest: string | null
+        update_available: boolean
+      }>
+    },
+    staleTime: 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  })
   return (
     <div className="h-full flex items-center justify-center overflow-auto pb-40">
       <div className="max-w-2xl px-6 py-12 text-center">
-        <div className="flex items-center justify-center mb-8">
+        <div className="flex flex-col items-center justify-center mb-8 gap-2">
           <img src={darkMode ? "/logo-full-dark.svg" : "/logo-full.svg"} alt="Telescope" className="h-12" />
+          {versionData?.current && (
+            <span className="text-xs text-muted-foreground font-mono">
+              v{versionData.current}
+            </span>
+          )}
         </div>
 
         <div className="space-y-4 text-base text-foreground/60 leading-relaxed text-justify">

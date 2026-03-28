@@ -9,6 +9,8 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
+from packaging.version import Version
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,9 +19,13 @@ from pydantic import BaseModel
 
 from .ingest import (
     ingestion_loop,
+    cancel_sync,
     clear_active_run,
+    get_sync_queue_progress,
     is_tracking,
     is_syncing,
+    SCHEMA_VERSION,
+    stop_all_syncs,
     get_sync_status,
     get_discovery_status,
     start_sync,
@@ -222,6 +228,7 @@ async def _startup():
             FROM runs r
             LEFT JOIN ingest_state i ON r.run_id = i.run_id
             WHERE COALESCE(r.removed, FALSE) = FALSE
+              AND COALESCE(r.drained, FALSE) = FALSE
             ORDER BY r.created_at DESC NULLS LAST
         """).fetchall()
         pending_paths = []
@@ -256,6 +263,79 @@ async def _startup():
 
 @app.get("/health")
 def health():
+    return {"ok": True}
+
+
+@app.get("/sync-queue-progress")
+def sync_queue_progress():
+    return get_sync_queue_progress()
+
+
+@app.post("/stop-all-syncs")
+def stop_all_syncs_endpoint():
+    stop_all_syncs()
+    return {"ok": True}
+
+
+@app.get("/version-check")
+async def version_check():
+    from telescope import __version__
+
+    current = __version__
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get("https://pypi.org/pypi/telescope-ui/json")
+            resp.raise_for_status()
+            latest = resp.json()["info"]["version"]
+        update_available = Version(latest) > Version(current)
+    except Exception:
+        return {"current": current, "latest": None, "update_available": False}
+    return {"current": current, "latest": latest, "update_available": update_available}
+
+
+@app.post("/update")
+async def update_package():
+    import subprocess
+    import sys
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install", "-U",
+                "--no-input", "--disable-pip-version-check",
+                "telescope-ui",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Update timed out after 120 seconds."}
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "Permission" in stderr or "permission" in stderr:
+            return {
+                "success": False,
+                "error": "Permission denied. Run manually:\n  pip install -U telescope-ui",
+            }
+        return {"success": False, "error": stderr or "Update failed."}
+
+    return {"success": True, "output": result.stdout.strip()}
+
+
+@app.post("/restart")
+async def restart_server():
+    import os
+    import sys as _sys
+
+    log.info("[SERVER] Restart requested — re-execing process")
+
+    async def _reexec():
+        await asyncio.sleep(0.5)
+        os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+
+    asyncio.create_task(_reexec())
     return {"ok": True}
 
 
@@ -712,6 +792,7 @@ def remove_run(req: RemoveRunRequest):
     run_path = req.run_path
     log.info(f"[API] Removing run and data for: {run_path}")
 
+    cancel_sync(run_path)
     clear_active_run(run_path)
 
     con = connect()
@@ -747,6 +828,7 @@ def drain_run(req: DrainRunRequest):
     run_path = req.run_path
     log.info(f"[API] Draining run data for: {run_path}")
 
+    cancel_sync(run_path)
     clear_active_run(run_path)
 
     con = connect()
@@ -962,6 +1044,14 @@ def list_runs():
     runs = []
     for row in rows:
         run_id = row[0]
+        run_schema = row[10]
+        try:
+            needs_update = (
+                run_schema is not None
+                and [int(x) for x in run_schema.split(".")] > [int(x) for x in SCHEMA_VERSION.split(".")]
+            )
+        except (ValueError, AttributeError):
+            needs_update = False
         runs.append({
             "run_id": run_id,
             "name": row[1],
@@ -975,9 +1065,10 @@ def list_runs():
             "is_syncing": is_syncing(run_id) or is_syncing_evals_after_training(run_id),
             "color": row[8],
             "trainer_commit": row[9],
-            "schema_version": row[10],
+            "schema_version": run_schema,
             "notes": row[11],
             "is_drained": bool(row[12]),
+            "needs_update": needs_update,
         })
     
     log.debug(f"[API] Found {len(runs)} runs in database")
