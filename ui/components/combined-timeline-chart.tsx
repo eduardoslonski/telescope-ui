@@ -25,6 +25,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -617,18 +623,11 @@ function OrchestratorSection({
   const [isOpen, setIsOpen] = useState(true)
   const [hoveredType, setHoveredType] = useState<string | null>(null)
   const [selectedType, setSelectedType] = useState<string | null>(null)
+  const [hiddenEventTypes, setHiddenEventTypes] = useState<Set<string>>(
+    () => new Set(["compute reward start", "compute reward end"]),
+  )
 
   const activeHighlight = selectedType ?? hoveredType
-
-  const { thresholdSeconds, displayLabel: thresholdLabel } = useMemo(
-    () => computeCloseEventsThreshold(intervalDuration),
-    [intervalDuration],
-  )
-
-  const { sortedEvents, windowByOriginalIndex } = useMemo(
-    () => buildCloseEventWindows(events, thresholdSeconds),
-    [events, thresholdSeconds],
-  )
 
   // Compute event counts by display name, preserving first-occurrence order
   const eventCountsByDisplayName = useMemo(() => {
@@ -651,6 +650,16 @@ function OrchestratorSection({
     })
     return result
   }, [events])
+
+  const { thresholdSeconds, displayLabel: thresholdLabel } = useMemo(
+    () => computeCloseEventsThreshold(intervalDuration),
+    [intervalDuration],
+  )
+
+  const { sortedEvents, windowByOriginalIndex } = useMemo(
+    () => buildCloseEventWindows(events, thresholdSeconds),
+    [events, thresholdSeconds],
+  )
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -678,34 +687,45 @@ function OrchestratorSection({
           {eventCountsByDisplayName.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-6 text-xs">
               {eventCountsByDisplayName.map(({ displayName, color, count }) => {
-                const isActive = activeHighlight === displayName
-                const isDimmed = activeHighlight !== null && !isActive
+                const isHidden = hiddenEventTypes.has(displayName)
+                const isActive = !isHidden && activeHighlight === displayName
+                const isDimmed = isHidden || (activeHighlight !== null && !isActive)
                 return (
-                  <div
+                  <OrchestratorLegendItem
                     key={displayName}
-                    className={`flex items-center gap-1.5 cursor-pointer select-none transition-opacity duration-150 ${
-                      isActive
-                        ? "ring-1 ring-border rounded-full px-1.5 py-0.5 -mx-1.5 -my-0.5"
-                        : ""
-                    }`}
-                    style={{ opacity: isDimmed ? 0.3 : 1 }}
-                    onPointerEnter={() => setHoveredType(displayName)}
+                    displayName={displayName}
+                    color={color}
+                    count={count}
+                    isHidden={isHidden}
+                    isActive={isActive}
+                    isDimmed={isDimmed}
+                    onPointerEnter={() => { if (!isHidden) setHoveredType(displayName) }}
                     onPointerLeave={() => setHoveredType(null)}
-                    onClick={() =>
-                      setSelectedType((prev) =>
-                        prev === displayName ? null : displayName,
-                      )
-                    }
-                  >
-                    <div
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: color }}
-                    />
-                    <span className="capitalize text-muted-foreground">
-                      {displayName}
-                    </span>
-                    <span className="text-muted-foreground/50">{count}</span>
-                  </div>
+                    onClick={() => {
+                      if (isHidden) {
+                        setHiddenEventTypes((prev) => {
+                          const next = new Set(prev)
+                          next.delete(displayName)
+                          return next
+                        })
+                      } else {
+                        setSelectedType((prev) =>
+                          prev === displayName ? null : displayName,
+                        )
+                      }
+                    }}
+                    onHide={() => {
+                      setHiddenEventTypes((prev) => new Set(prev).add(displayName))
+                      if (selectedType === displayName) setSelectedType(null)
+                    }}
+                    onShow={() => {
+                      setHiddenEventTypes((prev) => {
+                        const next = new Set(prev)
+                        next.delete(displayName)
+                        return next
+                      })
+                    }}
+                  />
                 )
               })}
             </div>
@@ -732,6 +752,7 @@ function OrchestratorSection({
                     closeEventWindow={windowByOriginalIndex.get(idx)}
                     thresholdLabel={thresholdLabel}
                     highlightedDisplayName={activeHighlight}
+                    isHidden={hiddenEventTypes.has(getEventDisplayName(event.event_type))}
                   />
                 ))}
               </div>
@@ -743,6 +764,67 @@ function OrchestratorSection({
   )
 }
 
+function OrchestratorLegendItem({
+  displayName,
+  color,
+  count,
+  isHidden,
+  isActive,
+  isDimmed,
+  onPointerEnter,
+  onPointerLeave,
+  onClick,
+  onHide,
+  onShow,
+}: {
+  displayName: string
+  color: string
+  count: number
+  isHidden: boolean
+  isActive: boolean
+  isDimmed: boolean
+  onPointerEnter: () => void
+  onPointerLeave: () => void
+  onClick: () => void
+  onHide: () => void
+  onShow: () => void
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={`flex items-center gap-1.5 cursor-pointer select-none transition-opacity duration-150 ${
+            isActive
+              ? "ring-1 ring-border rounded-full px-1.5 py-0.5 -mx-1.5 -my-0.5"
+              : ""
+          }`}
+          style={{ opacity: isDimmed ? 0.3 : 1 }}
+          onPointerEnter={onPointerEnter}
+          onPointerLeave={onPointerLeave}
+          onClick={onClick}
+        >
+          <div
+            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: color }}
+          />
+          <span className="capitalize text-muted-foreground">
+            {displayName}
+          </span>
+          <span className="text-muted-foreground/50">{count}</span>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          onSelect={isHidden ? onShow : onHide}
+          className="text-xs"
+        >
+          {isHidden ? "Show" : "Hide"}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 function OrchestratorEventLine({
   event,
   intervalStart,
@@ -751,6 +833,7 @@ function OrchestratorEventLine({
   closeEventWindow,
   thresholdLabel,
   highlightedDisplayName,
+  isHidden,
 }: {
   event: OrchestratorEvent
   intervalStart: number
@@ -759,11 +842,12 @@ function OrchestratorEventLine({
   closeEventWindow?: CloseEventWindow
   thresholdLabel: string
   highlightedDisplayName: string | null
+  isHidden?: boolean
 }) {
   const relativeStart = event.timestamp - intervalStart
   const relativePosition = (relativeStart / intervalDuration) * 100
 
-  if (relativePosition < 0 || relativePosition > 100) return null
+  if (isHidden || relativePosition < 0 || relativePosition > 100) return null
 
   const darkMode = useAtomValue(darkModeAtom)
   const color = getOrchestratorEventColor(event.event_type)
@@ -774,19 +858,16 @@ function OrchestratorEventLine({
 
   // Determine highlight state: null = no filter, true = matches, false = dimmed
   const displayName = getEventDisplayName(event.event_type)
-  const isHighlighted =
-    highlightedDisplayName === null
-      ? null
-      : displayName === highlightedDisplayName
+  const isDimmed = highlightedDisplayName !== null && displayName !== highlightedDisplayName
+  const isHighlighted = highlightedDisplayName !== null && displayName === highlightedDisplayName
 
   return (
     <HoverTooltipBlock
       className="absolute top-0 bottom-0 w-0.5 group cursor-pointer"
       style={{
         left: `${relativePosition}%`,
-        backgroundColor:
-          isHighlighted === false ? dimColor(color, 0.8, darkMode) : color,
-        zIndex: isHighlighted === true ? 20 : 1,
+        backgroundColor: isDimmed ? dimColor(color, 0.8, darkMode) : color,
+        zIndex: isHighlighted ? 20 : 1,
       }}
       interactive={hasCloseEvents}
       tooltip={
