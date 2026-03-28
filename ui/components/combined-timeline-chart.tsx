@@ -420,31 +420,51 @@ export function CombinedTimelineChart({
   // (same sample_id), create a synthetic event extending to the snapshot time.
   const inferenceWithInflight = useMemo(() => {
     const events = inferenceData ?? []
-    if (!inflightSnapshot?.running?.length || !inflightSnapshot.snapshot_time) {
+    if (!inflightSnapshot?.snapshot_time) {
       return events
     }
-    // Collect sample_ids that already have end events
-    const endedSampleIds = new Set(
-      events
-        .filter((e) => e.sample_id != null)
-        .map((e) => e.sample_id!)
-    )
-    // Create synthetic events for inflight generations that have no end event
-    const syntheticEvents: InferenceEvent[] = inflightSnapshot.running
-      .filter((gen) => !endedSampleIds.has(gen.sample_id))
-      .map((gen) => ({
-        event_type: "request",
-        server: gen.server,
-        start_time: gen.start_time,
-        end_time: inflightSnapshot.snapshot_time!,
-        prompt_tokens: gen.prompt_tokens,
-        sample_id: gen.sample_id,
-        group_id: gen.group_id,
-        lane: gen.server_lane,
-        is_eval: gen.is_eval,
-        phase: "inflight",
-      }))
-    return [...events, ...syntheticEvents]
+    const syntheticAll: InferenceEvent[] = []
+    // Inflight generations: filter out sample_ids that already have end events
+    if (inflightSnapshot.running?.length) {
+      const endedSampleIds = new Set(
+        events
+          .filter((e) => e.sample_id != null)
+          .map((e) => e.sample_id!)
+      )
+      for (const gen of inflightSnapshot.running) {
+        if (!endedSampleIds.has(gen.sample_id)) {
+          syntheticAll.push({
+            event_type: "request",
+            server: gen.server,
+            start_time: gen.start_time,
+            end_time: inflightSnapshot.snapshot_time!,
+            prompt_tokens: gen.prompt_tokens,
+            sample_id: gen.sample_id,
+            group_id: gen.group_id,
+            lane: gen.server_lane,
+            is_eval: gen.is_eval,
+            phase: "inflight",
+          })
+        }
+      }
+    }
+    // Inflight compute_reward: always add (backend only includes truly in-flight entries)
+    if (inflightSnapshot.running_compute_reward?.length) {
+      for (const gen of inflightSnapshot.running_compute_reward) {
+        syntheticAll.push({
+          event_type: "request",
+          server: gen.server,
+          start_time: gen.start_time,
+          end_time: inflightSnapshot.snapshot_time!,
+          sample_id: gen.sample_id,
+          group_id: gen.group_id,
+          lane: gen.server_lane,
+          is_eval: gen.is_eval,
+          phase: "inflight",
+        })
+      }
+    }
+    return syntheticAll.length > 0 ? [...events, ...syntheticAll] : events
   }, [inferenceData, inflightSnapshot])
 
   // Page-scoped inference events (for display / discard checks).
@@ -828,6 +848,12 @@ function OrchestratorEventTooltip({
               </div>
               <div className="space-y-0.5 text-muted-foreground">
                 {e.step !== -1 && <div>Step: {e.step}</div>}
+                {e.group_id != null && e.group_id !== -1 && (
+                  <div>Group: {e.group_id}</div>
+                )}
+                {e.sample_id != null && e.sample_id !== -1 && (
+                  <div>Sample: {e.sample_id}</div>
+                )}
                 <div>
                   Time:{" "}
                   {new Date(e.timestamp * 1000).toISOString().slice(11, 23)}
@@ -1461,7 +1487,7 @@ function InferenceSection({
                         title={
                           item.sourceEvent.is_eval
                             ? "Compute Metrics"
-                            : "Compute Reward"
+                            : "Waiting for Reward"
                         }
                         titleSecondary={
                           item.sourceEvent.sample_id !== undefined
@@ -1530,7 +1556,7 @@ const GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK = "#606060"
 const ENV_RESPONSE_COLOR = "#0ea5e9" // sky-400
 const ENV_RESPONSE_DISCARDED_COLOR_LIGHT = "#ababab"
 const ENV_RESPONSE_DISCARDED_COLOR_DARK = "#555555"
-const COMPUTE_REWARD_COLOR = "#0ea5e9" // sky-400
+const COMPUTE_REWARD_COLOR = "#f59e0b" // amber-500 (waiting for reward)
 const COMPUTE_REWARD_DISCARDED_COLOR_LIGHT = "#ababab"
 const COMPUTE_REWARD_DISCARDED_COLOR_DARK = "#555555"
 // Eval compute metrics colors (green variants)
@@ -1539,11 +1565,11 @@ const COMPUTE_METRICS_DISCARDED_COLOR_LIGHT = "#ababab"
 const COMPUTE_METRICS_DISCARDED_COLOR_DARK = "#555555"
 // Env response / compute reward for selected sample (darker version of base)
 const ENV_RESPONSE_SELECTED_COLOR = "#0369a1" // sky-700
-const COMPUTE_REWARD_SELECTED_COLOR = "#0369a1" // sky-700
+const COMPUTE_REWARD_SELECTED_COLOR = "#d97706" // amber-600
 const COMPUTE_METRICS_SELECTED_COLOR = "#047857" // emerald-700
 // Darker variants for same-group (non-selected) env response / compute reward
 const ENV_RESPONSE_GROUP_COLOR = "#0284c7" // sky-600
-const COMPUTE_REWARD_GROUP_COLOR = "#0284c7" // sky-600
+const COMPUTE_REWARD_GROUP_COLOR = "#b45309" // amber-700
 const COMPUTE_METRICS_GROUP_COLOR = "#10b981" // emerald-500
 const ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT = "#b3b3b3"
 const ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK = "#505050"
@@ -1956,7 +1982,7 @@ export function GroupSampleTimeline({
                         }
                         tooltip={
                           <EventTooltip
-                            title={isEval ? "Compute Metrics" : "Compute Reward"}
+                            title={isEval ? "Compute Metrics" : "Waiting for Reward"}
                             color={rwdColor}
                             details={[
                               {
@@ -2451,7 +2477,7 @@ function InferenceServerTimeline({
                               onClick={() => onEventClick(event)}
                               tooltip={
                                 <EventTooltip
-                                  title={event.is_eval ? "Compute Metrics" : "Compute Reward"}
+                                  title={event.is_eval ? "Compute Metrics" : "Waiting for Reward"}
                                   titleSecondary={
                                     event.sample_id !== undefined
                                       ? `Sample ${event.sample_id}`
