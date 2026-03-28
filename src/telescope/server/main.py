@@ -227,6 +227,7 @@ async def _startup():
             FROM runs r
             LEFT JOIN ingest_state i ON r.run_id = i.run_id
             WHERE COALESCE(r.removed, FALSE) = FALSE
+              AND COALESCE(r.drained, FALSE) = FALSE
             ORDER BY r.created_at DESC NULLS LAST
         """).fetchall()
         pending_paths = []
