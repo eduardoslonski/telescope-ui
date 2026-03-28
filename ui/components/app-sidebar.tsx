@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
-  ArrowUpCircle,
   Check,
   Menu,
   Moon,
@@ -858,23 +857,15 @@ export function AppSidebar() {
           </Link>
           <div className="flex items-center gap-1">
             {updateAvailable && latestVersion && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => {
-                      updateMutation.reset()
-                      setUpdateDialogOpen(true)
-                    }}
-                    className="text-amber-500 hover:text-amber-400 transition-colors"
-                    aria-label={`Update available: v${latestVersion}`}
-                  >
-                    <ArrowUpCircle className="h-4 w-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">Update available</p>
-                </TooltipContent>
-              </Tooltip>
+              <button
+                onClick={() => {
+                  updateMutation.reset()
+                  setUpdateDialogOpen(true)
+                }}
+                className="text-[11px] font-medium text-amber-500 hover:text-amber-400 transition-colors"
+              >
+                Update
+              </button>
             )}
             <button
               onClick={() => setDarkMode((prev) => !prev)}
@@ -2010,8 +2001,19 @@ export function AppSidebar() {
                 </p>
               </div>
               <DialogFooter>
-                <Button onClick={() => setUpdateDialogOpen(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setUpdateDialogOpen(false)}
+                >
                   OK
+                </Button>
+                <Button
+                  onClick={async () => {
+                    await fetch(`${API_BASE}/restart`, { method: "POST" })
+                    setTimeout(() => window.location.reload(), 3000)
+                  }}
+                >
+                  Restart Server
                 </Button>
               </DialogFooter>
             </>

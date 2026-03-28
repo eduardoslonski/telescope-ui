@@ -323,6 +323,21 @@ async def update_package():
     return {"success": True, "output": result.stdout.strip()}
 
 
+@app.post("/restart")
+async def restart_server():
+    import os
+    import sys as _sys
+
+    log.info("[SERVER] Restart requested — re-execing process")
+
+    async def _reexec():
+        await asyncio.sleep(0.5)
+        os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+
+    asyncio.create_task(_reexec())
+    return {"ok": True}
+
+
 # Request/Response models
 class SyncRequest(BaseModel):
     run_path: str
