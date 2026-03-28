@@ -370,6 +370,19 @@ def _schema_version_mismatch(tags: list[str]) -> bool:
     return schema_version != SCHEMA_VERSION
 
 
+def _schema_version_newer(tags: list[str]) -> bool:
+    """Return True if the run's schema_version is strictly newer than SCHEMA_VERSION."""
+    _, schema_version, _ = _extract_commit_and_schema_version(tags)
+    if not schema_version:
+        return False
+    try:
+        run_parts = [int(x) for x in schema_version.split(".")]
+        our_parts = [int(x) for x in SCHEMA_VERSION.split(".")]
+        return run_parts > our_parts
+    except (ValueError, AttributeError):
+        return False
+
+
 def build_run_metadata(run, run_path: str) -> dict:
     """Extract run metadata from a W&B run object.
 
@@ -2866,17 +2879,19 @@ def _discover_tagged_runs_for_project(
             continue
         if "telescope-ignore" in tags:
             continue
-        if _schema_version_mismatch(tags):
+        if _schema_version_mismatch(tags) and not _schema_version_newer(tags):
             continue
 
         run_path = f"{run.entity}/{run.project}/{run.id}"
         run_data = build_run_metadata(run, run_path)
+        needs_update = _schema_version_newer(tags)
         discovered.append(
             {
                 "run_path": run_path,
                 "run_data": run_data,
                 "created_at": run_data.get("created_at") or "",
-                "is_running": _is_run_running(getattr(run, "state", None)),
+                "is_running": _is_run_running(getattr(run, "state", None)) and not needs_update,
+                "needs_update": needs_update,
             }
         )
         # Update progress immediately as runs are discovered (not only when
@@ -3151,12 +3166,13 @@ def _poll_project_for_new_runs(
                     continue
                 if "telescope-ignore" in run_tags:
                     continue
-                if _schema_version_mismatch(run_tags):
+                if _schema_version_mismatch(run_tags) and not _schema_version_newer(run_tags):
                     continue
 
                 run_id_short = node.get("name", "")
                 run_path = f"{entity}/{project}/{run_id_short}"
-                is_running = _is_run_running(node.get("state"))
+                needs_update = _schema_version_newer(run_tags)
+                is_running = _is_run_running(node.get("state")) and not needs_update
 
                 if run_path in existing_ids:
                     if is_running:
@@ -3171,6 +3187,7 @@ def _poll_project_for_new_runs(
                         "run_data": run_data,
                         "created_at": run_data.get("created_at") or "",
                         "is_running": is_running,
+                        "needs_update": needs_update,
                     }
                 )
     except Exception as e:
@@ -3244,13 +3261,16 @@ def poll_known_projects_for_new_runs(api_key: str, tag: str) -> list[str]:
 
     log.debug(f"[WANDB] scan took {time.time() - t_scan:.2f}s — {len(all_new)} new, {len(all_state_updates)} state-update(s)")
 
-    # Insert new runs
+    # Insert new runs (but don't sync/track runs that need a UI update)
     new_run_paths: list[str] = []
     for item in all_new:
         run_path = item["run_path"]
         is_running = item.get("is_running", False)
         upsert_run(con, item["run_data"])
         existing_ids.add(run_path)
+        if item.get("needs_update"):
+            log.debug(f"[WANDB] NEW run: {run_path} (needs UI update, skipping sync)")
+            continue
         new_run_paths.append(run_path)
         log.debug(f"[WANDB] NEW run: {run_path} (running={is_running})")
         if is_running:
@@ -3510,9 +3530,12 @@ async def discover_and_sync_project(api_key: str, project_path: str, tag: str = 
             con.close()
 
         # Only sync the top 20; track running ones.
+        # Skip runs that need a UI update (newer schema).
         sync_run_paths: list[str] = []
         for item in discovered:
             run_path = item["run_path"]
+            if item.get("needs_update"):
+                continue
             is_top = run_path in top_run_paths
             is_running = bool(item.get("is_running", False))
             if is_top and is_running:

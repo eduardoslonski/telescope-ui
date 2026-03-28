@@ -1119,15 +1119,19 @@ export function AppSidebar() {
                       )
                       const isDraining = isDrainingRun === run.run_id
                       const isDrained = run.is_drained && !isDraining
+                      const needsUpdate = run.needs_update
                       const isPendingSync =
                         run.last_rollout_step === -1 &&
                         !run.is_syncing &&
                         !run.is_tracking &&
-                        !isDrained
+                        !isDrained &&
+                        !needsUpdate
                       const statusDotsCount =
-                        Number(run.is_tracking) +
-                        Number(run.is_syncing) +
-                        Number(isDraining)
+                        needsUpdate
+                          ? 1
+                          : Number(run.is_tracking) +
+                            Number(run.is_syncing) +
+                            Number(isDraining)
                       const runNameMaxChars =
                         statusDotsCount >= 2
                           ? MAX_RUN_NAME_CHARS - 4
@@ -1264,23 +1268,45 @@ export function AppSidebar() {
                           </div>
 
                           {/* Status dots */}
-                          {run.is_tracking && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-green-500 shrink-0"
-                              title="Live"
-                            />
-                          )}
-                          {run.is_syncing && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-blue-500 shrink-0"
-                              title="Syncing"
-                            />
-                          )}
-                          {isDraining && (
-                            <span
-                              className="w-2 h-2 rounded-full bg-orange-500 shrink-0"
-                              title="Draining"
-                            />
+                          {needsUpdate ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    updateMutation.reset()
+                                    setUpdateDialogOpen(true)
+                                  }}
+                                  className="text-amber-500 hover:text-amber-400 transition-colors shrink-0 text-xs font-bold leading-none"
+                                >
+                                  !
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right">
+                                <p className="text-xs">Update telescope-ui to sync this run</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <>
+                              {run.is_tracking && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-green-500 shrink-0"
+                                  title="Live"
+                                />
+                              )}
+                              {run.is_syncing && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-blue-500 shrink-0"
+                                  title="Syncing"
+                                />
+                              )}
+                              {isDraining && (
+                                <span
+                                  className="w-2 h-2 rounded-full bg-orange-500 shrink-0"
+                                  title="Draining"
+                                />
+                              )}
+                            </>
                           )}
 
                           {/* Time ago / Menu container */}

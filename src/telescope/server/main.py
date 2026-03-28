@@ -24,6 +24,7 @@ from .ingest import (
     get_sync_queue_progress,
     is_tracking,
     is_syncing,
+    SCHEMA_VERSION,
     stop_all_syncs,
     get_sync_status,
     get_discovery_status,
@@ -1043,6 +1044,14 @@ def list_runs():
     runs = []
     for row in rows:
         run_id = row[0]
+        run_schema = row[10]
+        try:
+            needs_update = (
+                run_schema is not None
+                and [int(x) for x in run_schema.split(".")] > [int(x) for x in SCHEMA_VERSION.split(".")]
+            )
+        except (ValueError, AttributeError):
+            needs_update = False
         runs.append({
             "run_id": run_id,
             "name": row[1],
@@ -1056,9 +1065,10 @@ def list_runs():
             "is_syncing": is_syncing(run_id) or is_syncing_evals_after_training(run_id),
             "color": row[8],
             "trainer_commit": row[9],
-            "schema_version": row[10],
+            "schema_version": run_schema,
             "notes": row[11],
             "is_drained": bool(row[12]),
+            "needs_update": needs_update,
         })
     
     log.debug(f"[API] Found {len(runs)} runs in database")

@@ -760,6 +760,7 @@ export interface Run {
   is_tracking: boolean
   is_syncing: boolean
   is_drained: boolean
+  needs_update: boolean
   color: string
   notes: string | null
 }
