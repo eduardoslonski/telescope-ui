@@ -123,9 +123,14 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             timestamp DOUBLE,
             event_type TEXT,
             step BIGINT,
-            node_id BIGINT
+            node_id BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT
         );
     """)
+    # Migration for existing DBs that don't have group_id/sample_id columns yet
+    con.execute("ALTER TABLE events_orchestrator ADD COLUMN IF NOT EXISTS group_id BIGINT;")
+    con.execute("ALTER TABLE events_orchestrator ADD COLUMN IF NOT EXISTS sample_id BIGINT;")
     
     # Trainer events table - duration events with event_type, step, rank, microbatch, start_time, end_time
     con.execute("""
@@ -777,14 +782,16 @@ def insert_events_orchestrator(con: duckdb.DuckDBPyConnection, run_id: str, even
             "event_type": event.get("event_type"),
             "step": event.get("step"),
             "node_id": event.get("node_id"),
+            "group_id": event.get("group_id"),
+            "sample_id": event.get("sample_id"),
         }
         for event in events
     ])
-    
+
     # Insert events - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
-        INSERT INTO events_orchestrator (run_id, timestamp, event_type, step, node_id)
-        SELECT run_id, timestamp, event_type, step, node_id FROM df
+        INSERT INTO events_orchestrator (run_id, timestamp, event_type, step, node_id, group_id, sample_id)
+        SELECT run_id, timestamp, event_type, step, node_id, group_id, sample_id FROM df
     """)
     
     elapsed = time.time() - start

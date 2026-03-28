@@ -3544,7 +3544,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
     # Fetch orchestrator events in this time window
     orchestrator_rows = con.execute(
         """
-        SELECT timestamp, event_type, step, node_id
+        SELECT timestamp, event_type, step, node_id, group_id, sample_id
         FROM events_orchestrator
         WHERE run_id = ? AND timestamp >= ? AND timestamp < ?
         ORDER BY timestamp ASC
@@ -3558,6 +3558,8 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "event_type": row[1],
             "step": row[2],
             "node_id": row[3],
+            "group_id": row[4],
+            "sample_id": row[5],
         }
         for row in orchestrator_rows
     ]

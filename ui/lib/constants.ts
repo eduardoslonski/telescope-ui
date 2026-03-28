@@ -24,6 +24,8 @@ export const ORCHESTRATOR_EVENT_COLORS: Record<string, string> = {
   rollout_resumed_max_async: "#3856ff", // dark ble
   checkpoint_save_start: "#328519", // dark green
   checkpoint_save_done: "#328519", // dark green
+  compute_reward_start: "#f59e0b", // amber
+  compute_reward_end: "#f59e0b", // amber
 } as const
 
 // ============================================================================
