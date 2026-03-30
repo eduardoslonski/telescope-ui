@@ -7,6 +7,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronDown,
   Menu,
   Moon,
   Square,
@@ -23,6 +24,7 @@ import {
 } from "@/components/ui/dialog"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -82,13 +84,6 @@ import {
   RunColorPicker,
   normalizeHexColor,
 } from "@/components/run-color-picker"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { DatabaseDialog } from "@/components/database-dialog"
 import type { RemovedRun, RunsResponse } from "@/lib/types"
 
@@ -939,25 +934,60 @@ export function AppSidebar() {
               )}
             </div>
             {uniqueProjects.length > 1 && (
-              <Select
-                value={projectFilter ?? "__all__"}
-                onValueChange={(v) => setProjectFilter(v === "__all__" ? null : v)}
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="h-6 text-[11px] min-w-0 max-w-[100px] rounded-md border-input px-1.5 py-0 gap-0.5 [&_svg]:size-3"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__" className="text-xs">All</SelectItem>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className="h-6 text-[11px] min-w-0 max-w-[120px] rounded-md border border-input bg-transparent px-1.5 py-0 flex items-center gap-0.5 truncate text-foreground hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <span className="truncate">
+                      {projectFilter.length === 0
+                        ? "All"
+                        : projectFilter.length === 1
+                          ? projectFilter[0]
+                          : `${projectFilter.length} projects`}
+                    </span>
+                    <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      setProjectFilter([...uniqueProjects])
+                    }}
+                    className="text-xs"
+                  >
+                    Select All
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      setProjectFilter([])
+                    }}
+                    className="text-xs"
+                  >
+                    Unselect All
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {uniqueProjects.map((project) => (
-                    <SelectItem key={project} value={project} className="text-xs">
+                    <DropdownMenuCheckboxItem
+                      key={project}
+                      checked={projectFilter.includes(project)}
+                      onCheckedChange={(checked) => {
+                        setProjectFilter(
+                          checked
+                            ? [...projectFilter, project]
+                            : projectFilter.filter((p) => p !== project),
+                        )
+                      }}
+                      onSelect={(e) => e.preventDefault()}
+                      className="text-xs"
+                    >
                       {project}
-                    </SelectItem>
+                    </DropdownMenuCheckboxItem>
                   ))}
-                </SelectContent>
-              </Select>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1084,7 +1114,7 @@ export function AppSidebar() {
                 <div className="flex flex-col">
                   {runs
                     .filter((run) => {
-                      if (projectFilter && run.project !== projectFilter)
+                      if (projectFilter.length > 0 && run.project && !projectFilter.includes(run.project))
                         return false
                       if (showOnlySelected) {
                         if (
