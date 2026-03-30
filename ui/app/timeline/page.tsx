@@ -586,8 +586,8 @@ export default function TimelinePage() {
               extractNumInferenceServersFromSetup(summaryData?.summary) ??
               (summaryData?.config?.num_inference_servers as number | undefined)
             }
-            maxConcurrentPrompts={
-              summaryData?.config?.max_concurrent_prompts as number | undefined
+            maxConcurrentPromptsPerServer={
+              summaryData?.config?.max_concurrent_prompts_per_server as number | undefined
             }
             groupSize={summaryData?.config?.group_size as number | undefined}
             freeLaneAfterGeneration={

@@ -356,7 +356,7 @@ interface CombinedTimelineChartProps {
   // Config for inference visualization
   inferenceServerNodeMap?: Record<number, number | null>
   numInferenceServers?: number
-  maxConcurrentPrompts?: number
+  maxConcurrentPromptsPerServer?: number
   groupSize?: number
   freeLaneAfterGeneration?: boolean
   inflightSnapshot?: InflightSnapshot
@@ -381,7 +381,7 @@ export function CombinedTimelineChart({
   totalSetupNodes,
   inferenceServerNodeMap,
   numInferenceServers = 0,
-  maxConcurrentPrompts = 12,
+  maxConcurrentPromptsPerServer = 12,
   groupSize = 1,
   freeLaneAfterGeneration = false,
 }: CombinedTimelineChartProps) {
@@ -538,12 +538,7 @@ export function CombinedTimelineChart({
     return { eventsByServer: byServer, servers: serverList }
   }, [filteredInferenceData])
 
-  const effectiveNumServers =
-    numInferenceServers > 0 ? numInferenceServers : Math.max(1, servers.length)
-  const lanesPerServer = Math.max(
-    1,
-    Math.floor((maxConcurrentPrompts / effectiveNumServers) * groupSize),
-  )
+  const lanesPerServer = maxConcurrentPromptsPerServer * groupSize
 
   return (
     <div
@@ -1633,7 +1628,17 @@ function InferenceSection({
                         statusLabel={
                           isInflight
                             ? { text: "In Progress", className: "text-yellow-500" }
-                            : { text: "Waiting for Group", className: "text-yellow-600" }
+                            : (() => {
+                                if (!highlightDiscarded || item.sourceEvent.is_eval) return null
+                                if (!discardStatusReady) return { text: "Waiting for Group", className: "text-yellow-600" }
+                                const sid = item.sourceEvent.sample_id
+                                const gid = item.sourceEvent.group_id
+                                if (sid != null && gid != null) {
+                                  const status = sampleStatusByKey.get(`${gid}:${sid}`)
+                                  if (status == null) return { text: "Waiting for Group", className: "text-yellow-600" }
+                                }
+                                return null
+                              })()
                         }
                         titleSecondary={
                           item.sourceEvent.sample_id !== undefined
@@ -2156,7 +2161,9 @@ export function GroupSampleTimeline({
                             statusLabel={
                               isInflightReward
                                 ? { text: "In Progress", className: "text-yellow-500" }
-                                : { text: "Waiting for Group", className: "text-yellow-600" }
+                                : isInflightOrPendingGroup
+                                  ? { text: "Waiting for Group", className: "text-yellow-600" }
+                                  : null
                             }
                             color={rwdColor}
                             details={[
