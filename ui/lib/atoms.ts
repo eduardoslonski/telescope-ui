@@ -299,10 +299,10 @@ export const infraTrainerNodeModeAtom = createPerRunAtom<InfraNodeMode>("combine
 export const infraInferenceNodeModeAtom = createPerRunAtom<InfraNodeMode>("combined")
 export const infraVllmMetricsOpenAtom = createPerRunAtom<boolean>(true)
 
-// Sidebar project filter (null = "All")
-export const sidebarProjectFilterAtom = atomWithStorage<string | null>(
-  "sidebar-project-filter",
-  null
+// Sidebar project filter (empty array = show all)
+export const sidebarProjectFilterAtom = atomWithStorage<string[]>(
+  "sidebar-project-filter-v2",
+  []
 )
 
 // Hovered run in sidebar (for highlighting in charts)
