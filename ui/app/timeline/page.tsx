@@ -726,6 +726,14 @@ function TimelineFooter({
         }
       }
     }
+    // Account for inflight env_response extending to snapshot_time
+    if (inflightData?.running_env_response?.length && inflightData.snapshot_time && selectedRequest) {
+      for (const gen of inflightData.running_env_response) {
+        if (gen.group_id === selectedRequest.groupId) {
+          maxTime = Math.max(maxTime, inflightData.snapshot_time)
+        }
+      }
+    }
     if (minTime === Infinity) return null
     return { start: minTime, end: maxTime, duration: maxTime - minTime }
   }, [groupEventsBySampleId, groupTimingData, inflightData, selectedRequest])

@@ -489,6 +489,22 @@ export function CombinedTimelineChart({
         })
       }
     }
+    // Inflight env_response: always add (backend only includes truly in-flight entries)
+    if (inflightSnapshot.running_env_response?.length) {
+      for (const gen of inflightSnapshot.running_env_response) {
+        syntheticAll.push({
+          event_type: "request",
+          server: gen.server,
+          start_time: gen.start_time,
+          end_time: inflightSnapshot.snapshot_time!,
+          sample_id: gen.sample_id,
+          group_id: gen.group_id,
+          lane: gen.server_lane,
+          is_eval: gen.is_eval,
+          phase: "inflight",
+        })
+      }
+    }
     return syntheticAll.length > 0 ? [...events, ...syntheticAll] : events
   }, [inferenceData, inflightSnapshot])
 
@@ -1924,6 +1940,14 @@ export function GroupSampleTimeline({
               ? inflightSnapshot.snapshot_time - inflightCR.start_time
               : 0
 
+            // Check if this sample has inflight env_response
+            const inflightER = inflightSnapshot?.running_env_response?.find(
+              (r) => r.sample_id === sampleId && r.group_id === groupId
+            )
+            const inflightERDuration = inflightER && inflightSnapshot?.snapshot_time
+              ? inflightSnapshot.snapshot_time - inflightER.start_time
+              : 0
+
             // Build env response trace positions: after each inference event
             const envTraces: Array<{
               start: number
@@ -1943,6 +1967,15 @@ export function GroupSampleTimeline({
                   idx: i,
                 })
               }
+            }
+
+            // Add inflight env_response as an in-progress env trace
+            if (inflightER && inflightERDuration > 0) {
+              envTraces.push({
+                start: inflightER.start_time,
+                duration: inflightERDuration,
+                idx: -1,  // sentinel for inflight
+              })
             }
 
             // Compute reward trace: after the last event (or last env response)
@@ -2055,6 +2088,7 @@ export function GroupSampleTimeline({
 
                 {/* Environment response traces */}
                 {envTraces.map((trace) => {
+                  const isInflightEnv = trace.idx === -1
                   const relativeStart = trace.start - timeBounds.start
                   const leftPercent =
                     (relativeStart / timeBounds.duration) * 100
@@ -2063,13 +2097,18 @@ export function GroupSampleTimeline({
                     (trace.duration / timeBounds.duration) * 100,
                   )
                   const durationMs = trace.duration * 1000
-                  const envColor = isSelected
-                    ? isDiscardedGroup
-                      ? (darkMode ? "#9ca3af" : "#6b7280")
-                      : ENV_RESPONSE_SELECTED_COLOR
-                    : isDiscardedGroup
-                      ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
-                      : ENV_RESPONSE_GROUP_COLOR
+                  const envColor = isInflightEnv
+                    ? (darkMode ? "rgba(134, 239, 172, 0.5)" : "rgba(34, 197, 94, 0.5)")
+                    : isSelected
+                      ? isDiscardedGroup
+                        ? (darkMode ? "#9ca3af" : "#6b7280")
+                        : ENV_RESPONSE_SELECTED_COLOR
+                      : isDiscardedGroup
+                        ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
+                        : ENV_RESPONSE_GROUP_COLOR
+                  const envBorder = isInflightEnv
+                    ? (darkMode ? "1.5px dashed rgba(134, 239, 172, 0.7)" : "1.5px dashed rgba(34, 197, 94, 0.7)")
+                    : eventBorderMedium
 
                   return (
                     <HoverTooltipBlock
@@ -2080,7 +2119,7 @@ export function GroupSampleTimeline({
                         width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
                         backgroundColor: envColor,
                         borderRadius: "1px",
-                        border: eventBorderMedium,
+                        border: envBorder,
                         boxSizing: "border-box",
                         opacity: 0.85,
                       }}
@@ -2091,8 +2130,8 @@ export function GroupSampleTimeline({
                       }
                       tooltip={
                         <EventTooltip
-                          title="Env Response"
-                          titleSecondary={`Turn ${trace.idx}`}
+                          title={isInflightEnv ? "Env Response (in flight)" : "Env Response"}
+                          titleSecondary={isInflightEnv ? undefined : `Turn ${trace.idx}`}
                           color={envColor}
                           details={[
                             {

@@ -75,6 +75,7 @@ export interface InflightSnapshot {
   snapshot_time: number | null
   running: InflightGeneration[]
   running_compute_reward?: InflightGeneration[]
+  running_env_response?: InflightGeneration[]
 }
 
 // ============================================================================
