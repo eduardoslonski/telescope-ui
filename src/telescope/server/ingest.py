@@ -702,6 +702,14 @@ class EventZipData:
         self.golden_answers_discarded: list[dict] | None = None
         self.sample_tags_discarded: list[dict] | None = None
         self.info_turns_discarded: list[dict] | None = None
+        # Kept rollout data (from event zips, same tail_idx lifecycle as discarded)
+        self.prompts_kept: list[dict] | None = None
+        self.rollouts_kept: list[dict] | None = None
+        self.samples_data_kept: list[dict] | None = None
+        self.rollouts_metrics_kept: list[dict] | None = None
+        self.golden_answers_kept: list[dict] | None = None
+        self.sample_tags_kept: list[dict] | None = None
+        self.info_turns_kept: list[dict] | None = None
         # Eval data (from event zips, same tail_idx lifecycle as discarded)
         self.prompts_eval: list[dict] | None = None
         self.rollouts_eval: list[dict] | None = None
@@ -746,6 +754,13 @@ class EventZipData:
             self.golden_answers_discarded,
             self.sample_tags_discarded,
             self.info_turns_discarded,
+            self.prompts_kept,
+            self.rollouts_kept,
+            self.samples_data_kept,
+            self.rollouts_metrics_kept,
+            self.golden_answers_kept,
+            self.sample_tags_kept,
+            self.info_turns_kept,
             self.prompts_eval,
             self.rollouts_eval,
             self.samples_data_eval,
@@ -939,6 +954,29 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.debug(
                             f"[WANDB] No info_turns_discarded.parquet in {file_path}: {e}"
                         )
+
+                    # Read kept rollout parquet files
+                    for kept_name, attr in [
+                        ("prompts_kept", "prompts_kept"),
+                        ("rollouts_kept", "rollouts_kept"),
+                        ("samples_data_kept", "samples_data_kept"),
+                        ("rollouts_metrics_kept", "rollouts_metrics_kept"),
+                        ("golden_answers_kept", "golden_answers_kept"),
+                        ("sample_tags_kept", "sample_tags_kept"),
+                        ("info_turns_kept", "info_turns_kept"),
+                    ]:
+                        kept_path = f"{tmpdir}/{kept_name}.parquet"
+                        try:
+                            table = pq.read_table(kept_path)
+                            setattr(data, attr, table.to_pylist())
+                            log.info(
+                                f"[WANDB] Extracted {kept_name}: "
+                                f"{len(getattr(data, attr))} rows"
+                            )
+                        except Exception as e:
+                            log.debug(
+                                f"[WANDB] No {kept_name}.parquet in {file_path}: {e}"
+                            )
 
                     # Read eval parquet files
                     for eval_name, attr in [
@@ -1348,9 +1386,9 @@ def _insert_event_zip_data(
     data: EventZipData, 
     source_name: str,
     missing_tails: set[int] | None = None
-) -> tuple[dict, set[int]]:
+) -> tuple[dict, set[int], set[int]]:
     """Insert all data from an EventZipData into the database.
-    
+
     Args:
         con: Database connection
         run_path: The run ID
@@ -1358,9 +1396,10 @@ def _insert_event_zip_data(
         source_name: Name for logging (e.g., "block_0", "tail.zip")
         missing_tails: Optional set of tail indices to filter by. If provided,
                       only events with tail_idx in this set will be inserted.
-    
+
     Returns:
-        Tuple of (counts dict, set of tail indices that were actually inserted)
+        Tuple of (counts dict, set of tail indices that were actually inserted,
+                  set of steps from kept rollouts)
     """
     counts = {
         "orchestrator": 0,
@@ -1376,6 +1415,13 @@ def _insert_event_zip_data(
         "golden_answers_discarded": 0,
         "sample_tags_discarded": 0,
         "info_turns_discarded": 0,
+        "prompts_kept": 0,
+        "rollouts_kept": 0,
+        "samples_data_kept": 0,
+        "rollouts_metrics_kept": 0,
+        "golden_answers_kept": 0,
+        "sample_tags_kept": 0,
+        "info_turns_kept": 0,
         "prompts_eval": 0,
         "rollouts_eval": 0,
         "samples_data_eval": 0,
@@ -1410,6 +1456,21 @@ def _insert_event_zip_data(
         info_turns_discarded = _filter_events_by_tails(
             data.info_turns_discarded, missing_tails
         )
+        prompts_kept = _filter_events_by_tails(data.prompts_kept, missing_tails)
+        rollouts_kept = _filter_events_by_tails(data.rollouts_kept, missing_tails)
+        samples_data_kept = _filter_events_by_tails(data.samples_data_kept, missing_tails)
+        rollouts_metrics_kept = _filter_events_by_tails(
+            data.rollouts_metrics_kept, missing_tails
+        )
+        golden_answers_kept = _filter_events_by_tails(
+            data.golden_answers_kept, missing_tails
+        )
+        sample_tags_kept = _filter_events_by_tails(
+            data.sample_tags_kept, missing_tails
+        )
+        info_turns_kept = _filter_events_by_tails(
+            data.info_turns_kept, missing_tails
+        )
         prompts_eval = _filter_events_by_tails(data.prompts_eval, missing_tails)
         rollouts_eval = _filter_events_by_tails(data.rollouts_eval, missing_tails)
         samples_data_eval = _filter_events_by_tails(data.samples_data_eval, missing_tails)
@@ -1432,6 +1493,13 @@ def _insert_event_zip_data(
         golden_answers_discarded = data.golden_answers_discarded
         sample_tags_discarded = data.sample_tags_discarded
         info_turns_discarded = data.info_turns_discarded
+        prompts_kept = data.prompts_kept
+        rollouts_kept = data.rollouts_kept
+        samples_data_kept = data.samples_data_kept
+        rollouts_metrics_kept = data.rollouts_metrics_kept
+        golden_answers_kept = data.golden_answers_kept
+        sample_tags_kept = data.sample_tags_kept
+        info_turns_kept = data.info_turns_kept
         prompts_eval = data.prompts_eval
         rollouts_eval = data.rollouts_eval
         samples_data_eval = data.samples_data_eval
@@ -1537,6 +1605,60 @@ def _insert_event_zip_data(
             f"{counts['info_turns_discarded']} info turns"
         )
 
+    if prompts_kept:
+        insert_prompts(con, run_path, prompts_kept)
+        counts["prompts_kept"] = len(prompts_kept)
+        inserted_tails.update(_get_tail_indices_from_events(prompts_kept))
+        log.info(f"[EVENTS] Synced {source_name} prompts_kept: {counts['prompts_kept']} prompts")
+
+    if rollouts_kept:
+        insert_rollouts(con, run_path, rollouts_kept)
+        counts["rollouts_kept"] = len(rollouts_kept)
+        inserted_tails.update(_get_tail_indices_from_events(rollouts_kept))
+        log.info(f"[EVENTS] Synced {source_name} rollouts_kept: {counts['rollouts_kept']} rollout turns")
+
+    if samples_data_kept:
+        insert_samples_data(con, run_path, samples_data_kept)
+        counts["samples_data_kept"] = len(samples_data_kept)
+        inserted_tails.update(_get_tail_indices_from_events(samples_data_kept))
+        log.info(f"[EVENTS] Synced {source_name} samples_data_kept: {counts['samples_data_kept']} samples")
+
+    if rollouts_metrics_kept:
+        insert_rollouts_metrics(con, run_path, rollouts_metrics_kept)
+        counts["rollouts_metrics_kept"] = len(rollouts_metrics_kept)
+        inserted_tails.update(_get_tail_indices_from_events(rollouts_metrics_kept))
+        log.info(
+            f"[EVENTS] Synced {source_name} rollouts_metrics_kept: "
+            f"{counts['rollouts_metrics_kept']} metrics"
+        )
+
+    if golden_answers_kept:
+        insert_golden_answers(con, run_path, golden_answers_kept)
+        counts["golden_answers_kept"] = len(golden_answers_kept)
+        inserted_tails.update(_get_tail_indices_from_events(golden_answers_kept))
+        log.info(
+            f"[EVENTS] Synced {source_name} golden_answers_kept: "
+            f"{counts['golden_answers_kept']} golden answers"
+        )
+
+    if sample_tags_kept:
+        insert_sample_tags(con, run_path, sample_tags_kept)
+        counts["sample_tags_kept"] = len(sample_tags_kept)
+        inserted_tails.update(_get_tail_indices_from_events(sample_tags_kept))
+        log.info(
+            f"[EVENTS] Synced {source_name} sample_tags_kept: "
+            f"{counts['sample_tags_kept']} sample tags"
+        )
+
+    if info_turns_kept:
+        insert_info_turns(con, run_path, info_turns_kept)
+        counts["info_turns_kept"] = len(info_turns_kept)
+        inserted_tails.update(_get_tail_indices_from_events(info_turns_kept))
+        log.info(
+            f"[EVENTS] Synced {source_name} info_turns_kept: "
+            f"{counts['info_turns_kept']} info turns"
+        )
+
     if prompts_eval:
         insert_prompts_eval(con, run_path, prompts_eval)
         counts["prompts_eval"] = len(prompts_eval)
@@ -1591,7 +1713,18 @@ def _insert_event_zip_data(
             f"{counts['info_turns_eval']} info turns"
         )
     
-    return counts, inserted_tails
+    # Collect steps from kept rollouts for ingested_steps tracking
+    kept_steps: set[int] = set()
+    for r in (rollouts_kept or []):
+        step = r.get("step")
+        if step is not None:
+            kept_steps.add(step)
+    for s in (samples_data_kept or []):
+        step = s.get("step")
+        if step is not None:
+            kept_steps.add(step)
+
+    return counts, inserted_tails, kept_steps
 
 
 TAILS_PER_BLOCK = 360  # Each block contains 360 tails (5 sec/tail * 360 = 30 minutes)
@@ -1639,6 +1772,12 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             "rollouts_metrics_discarded": 0,
             "golden_answers_discarded": 0,
             "info_turns_discarded": 0,
+            "prompts_kept": 0,
+            "rollouts_kept": 0,
+            "samples_data_kept": 0,
+            "rollouts_metrics_kept": 0,
+            "golden_answers_kept": 0,
+            "info_turns_kept": 0,
             "prompts_eval": 0,
             "rollouts_eval": 0,
             "samples_data_eval": 0,
@@ -1646,9 +1785,10 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             "golden_answers_eval": 0,
             "info_turns_eval": 0,
         }
-        
+
         # Collect all tails to insert at the end in one transaction
         all_inserted_tails: set[int] = set()
+        all_kept_steps: set[int] = set()
         
         # Step 1: Download and process tail.zip first
         log.info(f"[EVENTS] Fetching tail.zip...")
@@ -1755,19 +1895,25 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             try:
                 with transaction(con):
                     for source_name, data, missing_tails in data_sources:
-                        counts, inserted = _insert_event_zip_data(
+                        counts, inserted, kept_steps = _insert_event_zip_data(
                             con, run_path, data, source_name,
                             missing_tails=missing_tails
                         )
                         for key in totals:
-                            totals[key] += counts[key]
+                            totals[key] += counts.get(key, 0)
                         all_inserted_tails.update(inserted)
+                        all_kept_steps.update(kept_steps)
                         log.info(f"[EVENTS] Processed {source_name}: {len(inserted)} tails")
-                    
+
                     # Record all ingested tails at once
                     if all_inserted_tails:
                         insert_ingested_tails(con, run_path, all_inserted_tails)
                         log.info(f"[EVENTS] Recorded {len(all_inserted_tails)} total ingested tails")
+
+                    # Record kept rollout steps so step-based sync can skip them
+                    if all_kept_steps:
+                        insert_ingested_steps(con, run_path, all_kept_steps)
+                        log.info(f"[EVENTS] Recorded {len(all_kept_steps)} kept rollout steps as ingested")
 
             finally:
                 con.close()
@@ -1781,6 +1927,13 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             + totals["samples_data_discarded"]
             + totals["rollouts_metrics_discarded"]
             + totals["golden_answers_discarded"]
+        )
+        total_kept = (
+            totals["prompts_kept"]
+            + totals["rollouts_kept"]
+            + totals["samples_data_kept"]
+            + totals["rollouts_metrics_kept"]
+            + totals["golden_answers_kept"]
         )
         total_eval = (
             totals["prompts_eval"]
@@ -1810,6 +1963,17 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             f"{totals['rollouts_metrics_discarded']} metrics, "
             f"{totals['golden_answers_discarded']} golden answers"
         )
+        if total_kept > 0:
+            log.info(
+                "[EVENTS] Kept: "
+                f"{totals['prompts_kept']} prompts, "
+                f"{totals['rollouts_kept']} rollout turns, "
+                f"{totals['samples_data_kept']} samples_data, "
+                f"{totals['rollouts_metrics_kept']} metrics, "
+                f"{totals['golden_answers_kept']} golden answers, "
+                f"{totals['info_turns_kept']} info turns "
+                f"({len(all_kept_steps)} unique steps)"
+            )
         if total_eval > 0:
             log.info(
                 "[EVENTS] Eval: "
@@ -1820,7 +1984,7 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
                 f"{totals['golden_answers_eval']} golden answers, "
                 f"{totals['info_turns_eval']} info turns"
             )
-        
+
         return totals
         
     except Exception as e:
@@ -2371,25 +2535,11 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             con.close()
 
             if is_sync_cancelled(run_path):
-                log.info(f"[SYNC] Cancelled before rollouts for: {run_path}")
-                _finalise_cancelled_sync(run_path, sync_start)
-                return
-
-            # === SYNC ROLLOUTS (block-based) ===
-            total_rollouts = 0
-            try:
-                total_rollouts = await sync_rollouts_blocks(run_path, api_key, run, summary)
-                _sync_status[run_path]["rollouts_fetched"] = total_rollouts
-            except Exception as e:
-                log.error(f"[SYNC] Error syncing rollouts: {repr(e)}")
-                # Continue - don't fail the whole sync if rollouts fail
-
-            if is_sync_cancelled(run_path):
                 log.info(f"[SYNC] Cancelled before events for: {run_path}")
                 _finalise_cancelled_sync(run_path, sync_start)
                 return
 
-            # === SYNC EVENTS (unified - includes all events and metrics) ===
+            # === SYNC EVENTS (unified - includes all events, metrics, and kept rollouts) ===
             event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
                 event_totals = await sync_events_background(run_path, api_key, run, summary)
@@ -2401,6 +2551,20 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             except Exception as e:
                 log.error(f"[SYNC] Error syncing events: {repr(e)}")
                 # Continue - don't fail the whole sync if events fail
+
+            if is_sync_cancelled(run_path):
+                log.info(f"[SYNC] Cancelled before rollouts for: {run_path}")
+                _finalise_cancelled_sync(run_path, sync_start)
+                return
+
+            # === SYNC ROLLOUTS (block-based) - runs after events so kept steps are skipped ===
+            total_rollouts = 0
+            try:
+                total_rollouts = await sync_rollouts_blocks(run_path, api_key, run, summary)
+                _sync_status[run_path]["rollouts_fetched"] = total_rollouts
+            except Exception as e:
+                log.error(f"[SYNC] Error syncing rollouts: {repr(e)}")
+                # Continue - don't fail the whole sync if rollouts fail
             
             # Save summary_id after successful sync so we can skip unchanged summaries
             fresh_summary_id = summary.get("summary_id")
@@ -2757,21 +2921,21 @@ async def ingest_rollouts(run_path: str, api_key: str):
             )
             con.close()
             
-            # === SYNC ROLLOUTS (block-based) ===
-            total_rollouts = 0
-            try:
-                total_rollouts = await sync_rollouts_blocks(run_path, api_key, run, summary)
-            except Exception as e:
-                log.error(f"[INGEST] Error syncing rollouts: {repr(e)}")
-                # Continue - don't fail the whole ingest if rollouts fail
-            
-            # === SYNC EVENTS (unified - includes all events and metrics) ===
+            # === SYNC EVENTS (unified - includes all events, metrics, and kept rollouts) ===
             event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
                 event_totals = await sync_events_background(run_path, api_key, run, summary)
             except Exception as e:
                 log.error(f"[INGEST] Error syncing events: {repr(e)}")
                 # Continue - don't fail the whole ingest if events fail
+
+            # === SYNC ROLLOUTS (block-based) - runs after events so kept steps are skipped ===
+            total_rollouts = 0
+            try:
+                total_rollouts = await sync_rollouts_blocks(run_path, api_key, run, summary)
+            except Exception as e:
+                log.error(f"[INGEST] Error syncing rollouts: {repr(e)}")
+                # Continue - don't fail the whole ingest if rollouts fail
             
             # Save summary_id after successful sync so we can skip unchanged summaries
             fresh_summary_id = summary.get("summary_id")
