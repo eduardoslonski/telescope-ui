@@ -162,7 +162,8 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             agent_id BIGINT DEFAULT 0,
             generation_idx BIGINT,
             tool_call_idx BIGINT,
-            server_id BIGINT
+            server_id BIGINT,
+            server_lane BIGINT
         );
     """)
 
@@ -1056,6 +1057,7 @@ def insert_events_rollout(con: duckdb.DuckDBPyConnection, run_id: str, events: l
             "generation_idx": event.get("generation_idx"),
             "tool_call_idx": event.get("tool_call_idx"),
             "server_id": event.get("server_id"),
+            "server_lane": event.get("server_lane"),
         }
         for event in events
     ])
@@ -1064,11 +1066,11 @@ def insert_events_rollout(con: duckdb.DuckDBPyConnection, run_id: str, events: l
     con.execute("""
         INSERT INTO events_rollout (
             run_id, timestamp, tail_idx, event_type, phase,
-            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id
+            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id, server_lane
         )
         SELECT
             run_id, timestamp, tail_idx, event_type, phase,
-            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id
+            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id, server_lane
         FROM df
     """)
 

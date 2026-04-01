@@ -152,36 +152,41 @@ interface RolloutSpan {
   generation_idx: number
   tool_call_idx: number
   server_id: number
+  server_lane: number // Per-server lane slot for timeline positioning (-1 if N/A)
   phase?: string // "inflight" for synthetic in-progress spans
+  // vLLM timing (only for generation spans)
+  queue_time?: number | null
+  time_to_first_token?: number | null
+  prefill_time?: number | null
+  decode_time?: number | null
+  inference_time?: number | null
+  e2e_latency?: number | null
+  rollout_tokens?: number | null
+  prompt_tokens?: number | null
 }
 
-/** Pivot RolloutEvent start/end rows into paired RolloutSpan objects. */
-function pivotRolloutEvents(events: RolloutEvent[]): RolloutSpan[] {
-  const starts = new Map<string, RolloutEvent>()
-  const spans: RolloutSpan[] = []
-  for (const e of events) {
-    const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
-    if (e.phase === "start") {
-      starts.set(key, e)
-    } else if (e.phase === "end") {
-      const start = starts.get(key)
-      if (start) {
-        spans.push({
-          event_type: e.event_type,
-          start_time: start.timestamp,
-          end_time: e.timestamp,
-          sample_id: e.sample_id ?? -1,
-          group_id: start.group_id ?? e.group_id ?? -1,
-          agent_id: e.agent_id ?? 0,
-          generation_idx: e.generation_idx ?? -1,
-          tool_call_idx: e.tool_call_idx ?? -1,
-          server_id: start.server_id ?? e.server_id ?? -1,
-        })
-        starts.delete(key)
-      }
-    }
-  }
-  return spans
+/** Convert pre-pivoted RolloutEvent objects (with start_time/end_time) to RolloutSpan. */
+function rolloutEventsToSpans(events: RolloutEvent[]): RolloutSpan[] {
+  return events.map((e) => ({
+    event_type: e.event_type,
+    start_time: e.start_time,
+    end_time: e.end_time,
+    sample_id: e.sample_id ?? -1,
+    group_id: e.group_id ?? -1,
+    agent_id: e.agent_id ?? 0,
+    generation_idx: e.generation_idx ?? -1,
+    tool_call_idx: e.tool_call_idx ?? -1,
+    server_id: e.server_id ?? -1,
+    server_lane: e.server_lane ?? -1,
+    queue_time: e.queue_time,
+    time_to_first_token: e.time_to_first_token,
+    prefill_time: e.prefill_time,
+    decode_time: e.decode_time,
+    inference_time: e.inference_time,
+    e2e_latency: e.e2e_latency,
+    rollout_tokens: e.rollout_tokens,
+    prompt_tokens: e.prompt_tokens,
+  }))
 }
 
 /** Pivot InfraEvent start/end rows into spans (for weight_sync etc.). */
@@ -223,10 +228,20 @@ function buildGenerationDetails(
   durationMs: number,
   extra: Array<{ label: string; value: string }> = [],
 ): Array<{ label: string; value: string }> {
-  return [
+  const details: Array<{ label: string; value: string }> = [
     { label: "Duration", value: formatDuration(durationMs) },
-    ...extra,
   ]
+  if (span.prompt_tokens) details.push({ label: "Prompt Tokens", value: formatNumberWithDelimiter(span.prompt_tokens) })
+  if (span.rollout_tokens) details.push({ label: "Completion Tokens", value: formatNumberWithDelimiter(span.rollout_tokens) })
+  if (span.rollout_tokens && durationMs > 0) details.push({ label: "Tokens/sec", value: (span.rollout_tokens / (durationMs / 1000)).toFixed(1) })
+  if (span.queue_time) details.push({ label: "Queue", value: formatDuration(span.queue_time * 1000) })
+  if (span.time_to_first_token) details.push({ label: "TTFT", value: formatDuration(span.time_to_first_token * 1000) })
+  if (span.prefill_time) details.push({ label: "Prefill", value: formatDuration(span.prefill_time * 1000) })
+  if (span.decode_time) details.push({ label: "Decode", value: formatDuration(span.decode_time * 1000) })
+  if (span.inference_time) details.push({ label: "Inference", value: formatDuration(span.inference_time * 1000) })
+  if (span.e2e_latency) details.push({ label: "E2E Latency", value: formatDuration(span.e2e_latency * 1000) })
+  details.push(...extra)
+  return details
 }
 
 /** Lighten a hex color by mixing it with white. amount=0 returns original, amount=1 returns white. */
@@ -417,20 +432,21 @@ export function CombinedTimelineChart({
   const { rewardStartedKeys, rewardEndedKeys } = useMemo(() => {
     const started = new Set<string>()
     const ended = new Set<string>()
-    if (orchestratorData) {
-      for (const event of orchestratorData) {
-        if (event.sample_id != null && event.sample_id !== -1 && event.group_id != null) {
+    // Reward events are now in rolloutEvents (pre-pivoted spans with event_type="reward")
+    if (rolloutEvents) {
+      for (const event of rolloutEvents) {
+        if (event.event_type === "reward" && event.sample_id != null && event.sample_id !== -1 && event.group_id != null) {
           const key = `${event.group_id}:${event.sample_id}`
-          if (event.event_type === "compute_reward_start") {
-            started.add(key)
-          } else if (event.event_type === "compute_reward_end") {
+          // Pre-pivoted: if it has start_time and end_time, both started and ended
+          started.add(key)
+          if (event.end_time > event.start_time) {
             ended.add(key)
           }
         }
       }
     }
     return { rewardStartedKeys: started, rewardEndedKeys: ended }
-  }, [orchestratorData])
+  }, [rolloutEvents])
 
   const filteredTrainerData = useMemo(() => {
     if (!trainerData || trainerData.length === 0) return []
@@ -442,7 +458,7 @@ export function CombinedTimelineChart({
 
   // Pivot rollout events into spans (pair start/end rows)
   const allRolloutSpans = useMemo(
-    () => pivotRolloutEvents(rolloutEvents ?? []),
+    () => rolloutEventsToSpans(rolloutEvents ?? []),
     [rolloutEvents],
   )
 
@@ -468,23 +484,21 @@ export function CombinedTimelineChart({
       )
     )
 
-    // Build a lookup for start events from raw rollout events
-    const startEventMap = new Map<string, RolloutEvent>()
+    // Build a lookup for start times from pre-pivoted rollout events
+    const startTimeMap = new Map<string, number>()
     for (const e of (rolloutEvents ?? [])) {
-      if (e.phase === "start") {
-        const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
-        startEventMap.set(key, e)
-      }
+      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
+      startTimeMap.set(key, e.start_time)
     }
 
     // Inflight generations
     for (const gen of (inflightSnapshot.inflight_generations ?? [])) {
       const key = `generation:${gen.sample_id}:${gen.generation_idx}:-1`
       if (completedKeys.has(key)) continue
-      const startEvent = startEventMap.get(key)
+      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "generation",
-        start_time: startEvent?.timestamp ?? snapshotTime,
+        start_time: startTime ?? snapshotTime,
         end_time: snapshotTime,
         sample_id: gen.sample_id,
         group_id: -1, // not available in inflight snapshot
@@ -492,6 +506,7 @@ export function CombinedTimelineChart({
         generation_idx: gen.generation_idx,
         tool_call_idx: -1,
         server_id: gen.server_id,
+        server_lane: -1,
         phase: "inflight",
       })
     }
@@ -500,10 +515,10 @@ export function CombinedTimelineChart({
     for (const er of (inflightSnapshot.inflight_env_responses ?? [])) {
       const key = `env_response:${er.sample_id}:${er.generation_idx}:-1`
       if (completedKeys.has(key)) continue
-      const startEvent = startEventMap.get(key)
+      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "env_response",
-        start_time: startEvent?.timestamp ?? snapshotTime,
+        start_time: startTime ?? snapshotTime,
         end_time: snapshotTime,
         sample_id: er.sample_id,
         group_id: -1,
@@ -511,6 +526,7 @@ export function CombinedTimelineChart({
         generation_idx: er.generation_idx,
         tool_call_idx: -1,
         server_id: -1,
+        server_lane: -1,
         phase: "inflight",
       })
     }
@@ -519,10 +535,10 @@ export function CombinedTimelineChart({
     for (const rw of (inflightSnapshot.inflight_rewards ?? [])) {
       const key = `reward:${rw.sample_id}:-1:-1`
       if (completedKeys.has(key)) continue
-      const startEvent = startEventMap.get(key)
+      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "reward",
-        start_time: startEvent?.timestamp ?? snapshotTime,
+        start_time: startTime ?? snapshotTime,
         end_time: snapshotTime,
         sample_id: rw.sample_id,
         group_id: -1,
@@ -530,6 +546,7 @@ export function CombinedTimelineChart({
         generation_idx: -1,
         tool_call_idx: -1,
         server_id: -1,
+        server_lane: -1,
         phase: "inflight",
       })
     }
@@ -538,10 +555,10 @@ export function CombinedTimelineChart({
     for (const te of (inflightSnapshot.inflight_tool_executions ?? [])) {
       const key = `tool_execution:${te.sample_id}:${te.generation_idx}:${te.tool_call_idx}`
       if (completedKeys.has(key)) continue
-      const startEvent = startEventMap.get(key)
+      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "tool_execution",
-        start_time: startEvent?.timestamp ?? snapshotTime,
+        start_time: startTime ?? snapshotTime,
         end_time: snapshotTime,
         sample_id: te.sample_id,
         group_id: -1,
@@ -549,6 +566,7 @@ export function CombinedTimelineChart({
         generation_idx: te.generation_idx,
         tool_call_idx: te.tool_call_idx,
         server_id: -1,
+        server_lane: -1,
         phase: "inflight",
       })
     }
@@ -572,10 +590,10 @@ export function CombinedTimelineChart({
 
     for (const ws of (inflightSnapshot.inflight_weight_syncs ?? [])) {
       const key = `weight_sync:${ws.server_id}:${ws.step}`
-      const startEvent = infraStartMap.get(key)
+      const infraStartEvent = infraStartMap.get(key)
       syntheticInfra.push({
         event_type: "weight_sync",
-        start_time: startEvent?.timestamp ?? snapshotTime,
+        start_time: infraStartEvent?.timestamp ?? snapshotTime,
         end_time: snapshotTime,
         server_id: ws.server_id,
         step: ws.step,
@@ -1252,22 +1270,11 @@ function InferenceSection({
   const actualMaxLanesPerServer = useMemo(() => {
     let maxPerServer = lanesPerServer
     for (const spans of Object.values(enrichedSpansByServer)) {
-      const sorted = [...spans].sort((a, b) => a.start_time - b.start_time)
-      const laneEnds: number[] = []
-      for (const span of sorted) {
-        let placed = false
-        for (let i = 0; i < laneEnds.length; i++) {
-          if (laneEnds[i] <= span.start_time) {
-            laneEnds[i] = span.end_time
-            placed = true
-            break
-          }
-        }
-        if (!placed) {
-          laneEnds.push(span.end_time)
+      for (const span of spans) {
+        if (span.server_lane != null && span.server_lane >= 0) {
+          maxPerServer = Math.max(maxPerServer, span.server_lane + 1)
         }
       }
-      maxPerServer = Math.max(maxPerServer, laneEnds.length)
     }
     return maxPerServer
   }, [enrichedSpansByServer, lanesPerServer])
@@ -2460,32 +2467,43 @@ function InferenceServerTimeline({
       ? nodeId
       : undefined
 
-  // Greedy lane assignment for generation spans
+  // Lane assignment: use server-provided server_lane when available,
+  // fall back to greedy packing for spans without a lane (e.g. eval).
   const { assignedSpans, actualNumLanes } = useMemo(() => {
-    const sorted = [...generationSpans].sort(
-      (a, b) => a.start_time - b.start_time,
-    )
-    const laneEnds: number[] = []
-    const assigned: AssignedRolloutSpan[] = []
-    for (const span of sorted) {
-      let placed = false
-      for (let i = 0; i < laneEnds.length; i++) {
-        if (laneEnds[i] <= span.start_time) {
-          laneEnds[i] = span.end_time
-          assigned.push({ ...span, lane: i })
-          placed = true
-          break
-        }
-      }
-      if (!placed) {
-        assigned.push({ ...span, lane: laneEnds.length })
-        laneEnds.push(span.end_time)
+    const withLane: AssignedRolloutSpan[] = []
+    const withoutLane: RolloutSpan[] = []
+    for (const span of generationSpans) {
+      if (span.server_lane != null && span.server_lane >= 0) {
+        withLane.push({ ...span, lane: span.server_lane })
+      } else {
+        withoutLane.push(span)
       }
     }
 
-    const maxLane = assigned.reduce((max, s) => Math.max(max, s.lane), -1)
+    // Greedy packing for spans without pre-assigned lanes
+    if (withoutLane.length > 0) {
+      const sorted = [...withoutLane].sort((a, b) => a.start_time - b.start_time)
+      const laneEnds: number[] = []
+      for (const span of sorted) {
+        let placed = false
+        for (let i = 0; i < laneEnds.length; i++) {
+          if (laneEnds[i] <= span.start_time) {
+            laneEnds[i] = span.end_time
+            withLane.push({ ...span, lane: i })
+            placed = true
+            break
+          }
+        }
+        if (!placed) {
+          withLane.push({ ...span, lane: laneEnds.length })
+          laneEnds.push(span.end_time)
+        }
+      }
+    }
+
+    const maxLane = withLane.reduce((max, s) => Math.max(max, s.lane), -1)
     return {
-      assignedSpans: assigned,
+      assignedSpans: withLane,
       actualNumLanes: Math.max(numLanes, maxLane + 1),
     }
   }, [generationSpans, numLanes])

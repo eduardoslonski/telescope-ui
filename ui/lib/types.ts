@@ -29,15 +29,25 @@ export interface TrainerEvent {
 }
 
 export interface RolloutEvent {
-  timestamp: number
   event_type: string // "generation", "tool_execution", "env_response", "reward"
-  phase: string // "start" or "end"
-  group_id?: number | null
+  start_time: number
+  end_time: number
   sample_id?: number | null
+  group_id?: number | null
   agent_id?: number // 0 = main agent
   generation_idx?: number | null
   tool_call_idx?: number | null
   server_id?: number | null
+  server_lane?: number | null // Per-server lane slot for timeline positioning
+  // vLLM timing (from generations table, only for generation events)
+  queue_time?: number | null
+  time_to_first_token?: number | null
+  prefill_time?: number | null
+  decode_time?: number | null
+  inference_time?: number | null
+  e2e_latency?: number | null
+  rollout_tokens?: number | null
+  prompt_tokens?: number | null
 }
 
 export interface InfraEvent {

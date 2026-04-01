@@ -583,7 +583,7 @@ export function useRolloutEventsByGroup(
   return useQuery<{ events: unknown[] }>({
     queryKey: ["rollout-events-by-group", runPath, groupId],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/events/rollout-by-group`, {
+      const response = await fetch(`${API_BASE}/events/inference-by-group`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -2809,7 +2809,7 @@ def get_sample_details(req: SampleDetailsRequest):
                 "eval_name": eval_name,
                 "model_step": model_step,
                 "group_id": req.group_id,
-                "sample_id": req.sample_idx,
+                "sample_id": req.resolved_sample_key,
                 "prompts": prompts,
                 "generations": generations,
                 "env_responses": env_responses,
@@ -2829,7 +2829,7 @@ def get_sample_details(req: SampleDetailsRequest):
         ORDER BY step DESC
         LIMIT 1
         """,
-        [req.run_path, req.group_id, req.sample_idx],
+        [req.run_path, req.group_id, req.resolved_sample_key],
     ).fetchone()
 
     if step_row is None:
@@ -2841,7 +2841,7 @@ def get_sample_details(req: SampleDetailsRequest):
             ORDER BY step DESC
             LIMIT 1
             """,
-            [req.run_path, req.group_id, req.sample_idx],
+            [req.run_path, req.group_id, req.resolved_sample_key],
         ).fetchone()
 
     if step_row is not None:
@@ -2878,7 +2878,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
             ORDER BY generation_idx
             """,
-            [req.run_path, step, req.group_id, req.sample_idx],
+            [req.run_path, step, req.group_id, req.resolved_sample_key],
         ).fetchall()
 
         generations = [
@@ -2904,7 +2904,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
             ORDER BY generation_idx
             """,
-            [req.run_path, step, req.group_id, req.sample_idx],
+            [req.run_path, step, req.group_id, req.resolved_sample_key],
         ).fetchall()
 
         env_responses = [
@@ -2931,7 +2931,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
             ORDER BY generation_idx, tool_call_idx
             """,
-            [req.run_path, step, req.group_id, req.sample_idx],
+            [req.run_path, step, req.group_id, req.resolved_sample_key],
         ).fetchall()
 
         tool_calls = [
@@ -2963,7 +2963,7 @@ def get_sample_details(req: SampleDetailsRequest):
             FROM samples_data
             WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
             """,
-            [req.run_path, step, req.group_id, req.sample_idx],
+            [req.run_path, step, req.group_id, req.resolved_sample_key],
         ).fetchall()
 
         samples_data = [
@@ -3072,7 +3072,7 @@ def get_sample_details(req: SampleDetailsRequest):
         ORDER BY timestamp DESC
         LIMIT 1
         """,
-        [req.run_path, req.group_id, req.sample_idx],
+        [req.run_path, req.group_id, req.resolved_sample_key],
     ).fetchone()
 
     if discarded_row is None:
@@ -3083,7 +3083,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND group_id = ? AND sample_id = ?
             LIMIT 1
             """,
-            [req.run_path, req.group_id, req.sample_idx],
+            [req.run_path, req.group_id, req.resolved_sample_key],
         ).fetchone()
         if gen_discarded_row is not None:
             discarded_row = (gen_discarded_row[0], gen_discarded_row[1], "unknown")
@@ -3352,7 +3352,7 @@ def get_sample_statuses(req: SampleStatusesRequest):
     values_clause = ", ".join(["(?, ?)"] * len(req.samples))
     params: list[object] = []
     for sample in req.samples:
-        params.extend([sample.group_id, sample.sample_idx])
+        params.extend([sample.group_id, sample.resolved_id])
     params.extend([req.run_path, req.run_path])
 
     rows = con.execute(
@@ -4164,42 +4164,88 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         for row in trainer_rows
     ]
 
-    # Fetch rollout events from events_rollout (thin schema — return as-is, frontend pivots start/end).
-    # We need both start and end events for the frontend to pair them. A span that overlaps the interval
-    # may have its start before interval_start or its end after interval_end. We fetch all events in the
-    # interval, plus start events that might pair with end events in the interval (lookback) and end events
-    # that pair with start events in the interval (lookahead). Simplest correct approach: fetch a wider window.
+    # Fetch rollout events from events_rollout — server-side pivot of start/end pairs
+    # into spans with start_time/end_time, enriched with vLLM timing from generations table.
+    # This mirrors the old events_inference CTE approach.
     rollout_rows = con.execute(
         """
-        SELECT timestamp, event_type, phase, group_id, sample_id, agent_id,
-               generation_idx, tool_call_idx, server_id
-        FROM events_rollout
-        WHERE run_id = ?
-          AND timestamp >= ? - 300
-          AND timestamp < ? + 300
-        ORDER BY timestamp ASC
+        WITH starts AS (
+            SELECT event_type, sample_id, group_id, agent_id, generation_idx,
+                   tool_call_idx, server_id, server_lane, timestamp as start_time
+            FROM events_rollout
+            WHERE run_id = ? AND phase = 'start'
+        ),
+        ends AS (
+            SELECT event_type, sample_id, generation_idx, tool_call_idx,
+                   timestamp as end_time
+            FROM events_rollout
+            WHERE run_id = ? AND phase = 'end'
+        ),
+        pivoted AS (
+            SELECT s.event_type, s.sample_id, s.group_id, s.agent_id, s.generation_idx,
+                   s.tool_call_idx, s.server_id, s.server_lane, s.start_time, e.end_time
+            FROM starts s
+            LEFT JOIN ends e ON s.event_type = e.event_type
+                AND s.sample_id IS NOT DISTINCT FROM e.sample_id
+                AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
+                AND s.tool_call_idx IS NOT DISTINCT FROM e.tool_call_idx
+            WHERE s.start_time < ? AND e.end_time > ?
+        )
+        SELECT p.event_type, p.sample_id, p.group_id, p.agent_id, p.generation_idx,
+               p.tool_call_idx, p.server_id, p.server_lane, p.start_time, p.end_time,
+               g.queue_time, g.ttft, g.prefill_time, g.decode_time,
+               g.inference_time, g.e2e_latency, g.tokens as rollout_tokens,
+               g.prompt_tokens
+        FROM pivoted p
+        LEFT JOIN (
+            SELECT run_id, sample_id, generation_idx, queue_time, ttft, prefill_time,
+                   decode_time, inference_time, e2e_latency, tokens, prompt_tokens
+            FROM generations WHERE run_id = ?
+            UNION ALL
+            SELECT run_id, sample_id, generation_idx, queue_time, ttft, prefill_time,
+                   decode_time, inference_time, e2e_latency, tokens, prompt_tokens
+            FROM generations_discarded WHERE run_id = ?
+        ) g ON g.sample_id = p.sample_id
+            AND g.generation_idx = p.generation_idx
+            AND p.event_type = 'generation'
+        ORDER BY p.start_time ASC
         """,
-        [req.run_path, interval_start, interval_end],
+        [req.run_path, req.run_path, interval_end, interval_start, req.run_path, req.run_path],
     ).fetchall()
 
     rollout_events = [
         {
-            "timestamp": row[0],
-            "event_type": row[1],
-            "phase": row[2],
-            "group_id": row[3],
-            "sample_id": row[4],
-            "agent_id": row[5],
-            "generation_idx": row[6],
-            "tool_call_idx": row[7],
-            "server_id": row[8],
-            "is_eval": False,
-            "step": None,
-            "is_canceled": False,
-            "off_policy_steps": None,
+            "event_type": row[0],
+            "sample_id": row[1],
+            "group_id": row[2],
+            "agent_id": row[3],
+            "generation_idx": row[4],
+            "tool_call_idx": row[5],
+            "server_id": row[6],
+            "server_lane": row[7],
+            "start_time": row[8],
+            "end_time": row[9],
+            "queue_time": row[10],
+            "time_to_first_token": row[11],
+            "prefill_time": row[12],
+            "decode_time": row[13],
+            "inference_time": row[14],
+            "e2e_latency": row[15],
+            "rollout_tokens": row[16],
+            "prompt_tokens": row[17],
         }
         for row in rollout_rows
     ]
+
+    # Debug: log first few rollout events to verify start/end times
+    if rollout_events:
+        gen_events = [e for e in rollout_events if e["event_type"] == "generation"]
+        log.info(f"[API] DEBUG: {len(rollout_events)} rollout events total, {len(gen_events)} generation spans")
+        for e in gen_events[:3]:
+            duration = (e["end_time"] or 0) - (e["start_time"] or 0)
+            log.info(f"[API] DEBUG gen: sample_id={e['sample_id']}, gen_idx={e['generation_idx']}, "
+                     f"server_id={e['server_id']}, start={e['start_time']:.3f}, end={e['end_time']:.3f}, "
+                     f"duration={duration:.3f}s, prefill={e.get('prefill_time')}, decode={e.get('decode_time')}")
 
     # Fetch infra events from events_infra (thin schema: timestamp, event_type, phase, step, server_id, sandbox_id)
     infra_rows = con.execute(

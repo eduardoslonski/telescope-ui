@@ -643,8 +643,7 @@ function TimelineFooter({
   // Pivot rollout events from the group into spans, then group by sample_id
   const groupEventsBySampleId = useMemo(() => {
     if (!selectedRequest || !groupEventsData?.events) return null
-    // Pivot start/end rows into spans
-    const starts = new Map<string, RolloutEvent>()
+    // Convert pre-pivoted rollout events into spans
     const spans: Array<{
       event_type: string
       start_time: number
@@ -657,26 +656,17 @@ function TimelineFooter({
       server_id: number
     }> = []
     for (const e of groupEventsData.events as RolloutEvent[]) {
-      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
-      if (e.phase === "start") {
-        starts.set(key, e)
-      } else if (e.phase === "end") {
-        const start = starts.get(key)
-        if (start) {
-          spans.push({
-            event_type: e.event_type,
-            start_time: start.timestamp,
-            end_time: e.timestamp,
-            sample_id: e.sample_id ?? -1,
-            group_id: start.group_id ?? e.group_id ?? -1,
-            agent_id: e.agent_id ?? 0,
-            generation_idx: e.generation_idx ?? -1,
-            tool_call_idx: e.tool_call_idx ?? -1,
-            server_id: start.server_id ?? e.server_id ?? -1,
-          })
-          starts.delete(key)
-        }
-      }
+      spans.push({
+        event_type: e.event_type,
+        start_time: e.start_time,
+        end_time: e.end_time,
+        sample_id: e.sample_id ?? -1,
+        group_id: e.group_id ?? -1,
+        agent_id: e.agent_id ?? 0,
+        generation_idx: e.generation_idx ?? -1,
+        tool_call_idx: e.tool_call_idx ?? -1,
+        server_id: e.server_id ?? -1,
+      })
     }
     // Only keep generation spans for the group timeline
     const generationSpans = spans.filter((s) => s.event_type === "generation")
@@ -696,32 +686,22 @@ function TimelineFooter({
   const groupTimingData = useMemo(() => {
     if (!groupEventsData?.events) return null
     // Pivot to get env_response and reward spans
-    const starts = new Map<string, RolloutEvent>()
     const envSpans: Array<{ sample_id: number; generation_idx: number; start_time: number; end_time: number }> = []
     const rewardSpans: Array<{ sample_id: number; start_time: number; end_time: number }> = []
     for (const e of groupEventsData.events as RolloutEvent[]) {
-      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
-      if (e.phase === "start") {
-        starts.set(key, e)
-      } else if (e.phase === "end") {
-        const start = starts.get(key)
-        if (start) {
-          if (e.event_type === "env_response") {
-            envSpans.push({
-              sample_id: e.sample_id ?? -1,
-              generation_idx: e.generation_idx ?? -1,
-              start_time: start.timestamp,
-              end_time: e.timestamp,
-            })
-          } else if (e.event_type === "reward") {
-            rewardSpans.push({
-              sample_id: e.sample_id ?? -1,
-              start_time: start.timestamp,
-              end_time: e.timestamp,
-            })
-          }
-          starts.delete(key)
-        }
+      if (e.event_type === "env_response") {
+        envSpans.push({
+          sample_id: e.sample_id ?? -1,
+          generation_idx: e.generation_idx ?? -1,
+          start_time: e.start_time,
+          end_time: e.end_time,
+        })
+      } else if (e.event_type === "reward") {
+        rewardSpans.push({
+          sample_id: e.sample_id ?? -1,
+          start_time: e.start_time,
+          end_time: e.end_time,
+        })
       }
     }
     // Index env times by sample_id → sorted list of {turn_order, time}
