@@ -1216,14 +1216,14 @@ function InferenceSection({
 
   const requestSamples = useMemo(() => {
     const seen = new Set<string>()
-    const samples: Array<{ group_id: number; sample_idx: number }> = []
+    const samples: Array<{ group_id: number; sample_id: number }> = []
     for (const spans of Object.values(enrichedSpansByServer)) {
       for (const span of spans) {
         if (span.sample_id < 0 || span.group_id < 0) continue
         const key = `${span.group_id}:${span.sample_id}`
         if (seen.has(key)) continue
         seen.add(key)
-        samples.push({ group_id: span.group_id, sample_idx: span.sample_id })
+        samples.push({ group_id: span.group_id, sample_id: span.sample_id })
       }
     }
     return samples
@@ -1242,7 +1242,7 @@ function InferenceSection({
   const sampleStatusByKey = useMemo(() => {
     const map = new Map<string, "rollouts" | "rollouts_discarded" | null>()
     sampleStatuses?.statuses.forEach((status) => {
-      map.set(`${status.group_id}:${status.sample_idx}`, status.kind)
+      map.set(`${status.group_id}:${status.sample_id}`, status.kind)
     })
     return map
   }, [sampleStatuses])
@@ -1995,7 +1995,7 @@ export function GroupSampleTimeline({
 
   // Check discard status for all samples in this group
   const requestSamples = useMemo(
-    () => sampleIds.map((s) => ({ group_id: groupId, sample_idx: s })),
+    () => sampleIds.map((s) => ({ group_id: groupId, sample_id: s })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [groupId, sampleIds.join(",")],
   )

@@ -844,7 +844,7 @@ function TimelineFooter({
     if (!selectedRequest || !groupEventsBySampleId) return []
     return Object.keys(groupEventsBySampleId).map(Number).map((s) => ({
       group_id: selectedRequest.groupId,
-      sample_idx: s,
+      sample_id: s,
     }))
   }, [selectedRequest, groupEventsBySampleId])
   const { data: footerSampleStatuses } = useSampleStatuses(
