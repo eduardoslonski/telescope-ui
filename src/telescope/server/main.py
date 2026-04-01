@@ -4164,59 +4164,35 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         for row in trainer_rows
     ]
 
-    # Fetch rollout events from events_rollout (thin schema with start/end phase rows).
-    # Pivot start/end into a single row per event for timeline display.
+    # Fetch rollout events from events_rollout (thin schema — return as-is, frontend pivots start/end).
+    # We need both start and end events for the frontend to pair them. A span that overlaps the interval
+    # may have its start before interval_start or its end after interval_end. We fetch all events in the
+    # interval, plus start events that might pair with end events in the interval (lookback) and end events
+    # that pair with start events in the interval (lookahead). Simplest correct approach: fetch a wider window.
     rollout_rows = con.execute(
         """
-        WITH starts AS (
-            SELECT event_type, sample_id, group_id, agent_id, generation_idx,
-                   tool_call_idx, server_id, timestamp as start_time
-            FROM events_rollout
-            WHERE run_id = ? AND phase = 'start'
-        ),
-        ends AS (
-            SELECT event_type, sample_id, group_id, generation_idx,
-                   tool_call_idx, timestamp as end_time
-            FROM events_rollout
-            WHERE run_id = ? AND phase = 'end'
-        )
-        SELECT s.event_type, s.sample_id, s.group_id, s.agent_id, s.generation_idx,
-               s.tool_call_idx, s.server_id, s.start_time, e.end_time
-        FROM starts s
-        LEFT JOIN ends e ON s.event_type = e.event_type AND s.sample_id IS NOT DISTINCT FROM e.sample_id
-            AND s.group_id IS NOT DISTINCT FROM e.group_id
-            AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
-            AND s.tool_call_idx IS NOT DISTINCT FROM e.tool_call_idx
-        WHERE s.start_time < ? AND (e.end_time > ? OR e.end_time IS NULL)
-        ORDER BY s.start_time ASC
+        SELECT timestamp, event_type, phase, group_id, sample_id, agent_id,
+               generation_idx, tool_call_idx, server_id
+        FROM events_rollout
+        WHERE run_id = ?
+          AND timestamp >= ? - 300
+          AND timestamp < ? + 300
+        ORDER BY timestamp ASC
         """,
-        [req.run_path, req.run_path, interval_end, interval_start],
+        [req.run_path, interval_start, interval_end],
     ).fetchall()
 
     rollout_events = [
         {
-            "event_type": row[0],
-            "server": row[6],
-            "node_id": None,
-            "tp_group_id": None,
-            "tp_size": None,
-            "start_time": row[7],
-            "end_time": row[8],
-            "prompt_tokens": None,
-            "rollout_tokens": None,
-            "sample_id": row[1],
-            "group_id": row[2],
-            "agent_id": row[3],
-            "generation_idx": row[4],
-            "vllm_request_id": None,
-            "queue_time": None,
-            "time_to_first_token": None,
-            "prefill_time": None,
-            "decode_time": None,
-            "inference_time": None,
-            "e2e_latency": None,
-            "max_tokens": None,
-            "lane": None,
+            "timestamp": row[0],
+            "event_type": row[1],
+            "phase": row[2],
+            "group_id": row[3],
+            "sample_id": row[4],
+            "agent_id": row[5],
+            "generation_idx": row[6],
+            "tool_call_idx": row[7],
+            "server_id": row[8],
             "is_eval": False,
             "step": None,
             "is_canceled": False,
