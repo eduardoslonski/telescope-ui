@@ -2371,7 +2371,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
         FROM (
             SELECT step, sample_idx, completion_idx, SUM(tokens) as completion_tokens
             FROM generations_eval
-            WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
+            WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
             GROUP BY step, sample_idx, completion_idx
         )
         GROUP BY step
@@ -2441,7 +2441,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx * 10000 + completion_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx * 10000 + completion_idx), 0) as stop_reason_length_pct
         FROM generations_eval
-        WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
+        WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
         GROUP BY step
         ORDER BY step ASC
     """
@@ -5116,7 +5116,7 @@ def get_step_metrics(req: StepMetricsRequest):
         FROM (
             SELECT step, sample_id, SUM(tokens) as completion_tokens
             FROM generations
-            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
+            WHERE run_id = ? {step_filter} {tag_filter_sql} {env_filter_sql}
             GROUP BY step, sample_id
         )
         GROUP BY step
@@ -5168,7 +5168,7 @@ def get_step_metrics(req: StepMetricsRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_id), 0) as stop_reason_length_pct
         FROM generations
-        WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
+        WHERE run_id = ? {step_filter} {tag_filter_sql} {env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
     """
@@ -5189,7 +5189,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 sample_id,
                 SUM(tokens) as completion_tokens
             FROM generations
-            WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
+            WHERE run_id = ? {step_filter} {tag_filter_sql} {env_filter_sql}
             GROUP BY step, group_id, sample_id
         ),
         group_stats AS (
@@ -5704,7 +5704,7 @@ def get_step_metrics(req: StepMetricsRequest):
         FROM (
             SELECT trainer_step, sample_id, SUM(tokens) as completion_tokens
             FROM generations_discarded
-            WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
+            WHERE run_id = ? {discarded_step_filter}
             GROUP BY trainer_step, sample_id
         )
         GROUP BY trainer_step
@@ -5804,7 +5804,7 @@ def get_step_metrics(req: StepMetricsRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_id), 0) as discarded_stop_reason_length_pct
         FROM generations_discarded
-        WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
+        WHERE run_id = ? {discarded_step_filter}
         GROUP BY trainer_step
         ORDER BY trainer_step ASC
     """
@@ -5832,7 +5832,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 sample_id,
                 SUM(tokens) as completion_tokens
             FROM generations_discarded
-            WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
+            WHERE run_id = ? {discarded_step_filter}
             GROUP BY trainer_step, group_id, sample_id
         ),
         group_stats AS (
@@ -7027,7 +7027,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM (
             SELECT run_id, step, sample_id, SUM(tokens) as completion_tokens
             FROM generations
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
+            WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql} {multi_env_sql}
             GROUP BY run_id, step, sample_id
         )
         GROUP BY run_id, step
@@ -7077,7 +7077,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_id), 0)
         FROM generations
-        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
+        WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql} {multi_env_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
     """, a_params + multi_tag_params + multi_env_params).fetchall():
@@ -7096,7 +7096,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 sample_id,
                 SUM(tokens) as completion_tokens
             FROM generations
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
+            WHERE run_id IN ({a_in_ph}) {step_filter} {multi_tag_sql} {multi_env_sql}
             GROUP BY run_id, step, group_id, sample_id
         ),
         group_stats AS (
@@ -7348,7 +7348,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         FROM (
             SELECT run_id, trainer_step, sample_id, SUM(tokens) as completion_tokens
             FROM generations_discarded
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
+            WHERE run_id IN ({a_in_ph}) {discarded_step_filter}
             GROUP BY run_id, trainer_step, sample_id
         )
         GROUP BY run_id, trainer_step
@@ -7409,7 +7409,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_id), 0)
         FROM generations_discarded
-        WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
+        WHERE run_id IN ({a_in_ph}) {discarded_step_filter}
         GROUP BY run_id, trainer_step
         ORDER BY run_id, trainer_step ASC
     """, a_disc_params).fetchall():
@@ -7427,7 +7427,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 sample_id,
                 SUM(tokens) as completion_tokens
             FROM generations_discarded
-            WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
+            WHERE run_id IN ({a_in_ph}) {discarded_step_filter}
             GROUP BY run_id, trainer_step, group_id, sample_id
         ),
         group_stats AS (
@@ -8857,7 +8857,7 @@ def get_step_histogram(req: StepHistogramRequest):
             values = [row[0] for row in rows]
         elif metric_type == "length_completion":
             rows = con.execute(
-                f"SELECT SUM(tokens) as ct FROM generations_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
+                f"SELECT SUM(tokens) as ct FROM generations_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
                 base_params,
             ).fetchall()
             values = [row[0] for row in rows]
@@ -8928,7 +8928,7 @@ def get_step_histogram(req: StepHistogramRequest):
         rows = con.execute(
             f"""
             SELECT SUM(tokens) as completion_tokens FROM {rollouts_table}
-            WHERE run_id = ? AND {step_col} = ? AND turn_type = 'model' AND tokens IS NOT NULL
+            WHERE run_id = ? AND {step_col} = ? AND tokens IS NOT NULL
             GROUP BY sample_id
             ORDER BY sample_id
             """,
@@ -9027,7 +9027,7 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
             all_values_query = f"SELECT step, tokens_prompt as value FROM prompts_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens_prompt IS NOT NULL ORDER BY step, sample_idx"
             params = base_params
         elif eval_metric_type == "length_completion":
-            all_values_query = f"SELECT step, SUM(tokens) as value FROM generations_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
+            all_values_query = f"SELECT step, SUM(tokens) as value FROM generations_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
             params = base_params
         elif eval_metric_type == "length_sum":
             all_values_query = f"SELECT step, SUM(tokens) as value FROM generations_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
@@ -9115,7 +9115,7 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
     elif metric_type == "length_completion":
         all_values_query = f"""
             SELECT {step_col} as step, SUM(tokens) as value FROM {rollouts_table}
-            WHERE run_id = ? AND turn_type = 'model' AND tokens IS NOT NULL
+            WHERE run_id = ? AND tokens IS NOT NULL
             GROUP BY {step_col}, sample_id
             ORDER BY {step_col}, sample_id
         """
