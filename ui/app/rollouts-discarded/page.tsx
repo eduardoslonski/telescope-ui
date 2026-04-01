@@ -393,7 +393,7 @@ export default function RolloutsDiscardedPage() {
       {/* Sample Picker Sidebar (Left) */}
       <RolloutsSamplePickerSidebar
         prompts={mappedPrompts}
-        data={mappedRollouts}
+        data={mappedGenerations}
         samplesData={mappedSamplesData}
         rolloutMetrics={mappedRolloutMetrics}
         isLoading={isLoading}
@@ -436,12 +436,12 @@ export default function RolloutsDiscardedPage() {
                   <div className="text-sm text-muted-foreground">
                     <span>
                       Step{" "}
-                      {lastValidSample.sample.turns[0]?.step ?? selectedStep}
+                      {lastValidSample.sample.generations[0]?.step ?? selectedStep}
                     </span>
                     {" · "}
                     <span>Group {lastValidSample.sample.group_id}</span>
                     {" · "}
-                    <span>Sample {lastValidSample.sample.sample_idx}</span>
+                    <span>Sample {lastValidSample.sample.sample_id}</span>
                   </div>
                 )}
                 {/* Raw Text button */}
@@ -449,7 +449,7 @@ export default function RolloutsDiscardedPage() {
                   <RawTextDialog
                     rawString={lastValidSample.sample.raw_string}
                     totalTokens={lastValidSample.sample.total_tokens}
-                    turns={lastValidSample.sample.turns.length}
+                    turns={lastValidSample.sample.num_generations ?? lastValidSample.sample.generations.length}
                   />
                 )}
                 {/* Collapse / Expand All */}

@@ -24,7 +24,9 @@ import { useSampleDetails, useRunSummary } from "@/hooks/use-run-data"
 import { rolloutsFormatThinkAtom, rolloutsRenderOptionsAtom, type RolloutsRenderOption } from "@/lib/atoms"
 import type {
   Prompt,
-  Rollout,
+  GenerationRow,
+  EnvResponseRow,
+  ToolCallRow,
   SampleData,
   RolloutMetric,
   GoldenAnswer,
@@ -81,17 +83,28 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
     }))
   }, [data])
 
-  const mappedRollouts = useMemo<Rollout[] | undefined>(() => {
-    if (!data?.rollouts) return undefined
-    return data.rollouts.map((rollout) => ({
-      step: rollout.trainer_step,
-      group_id: rollout.group_id,
-      sample_idx: rollout.sample_idx,
-      turn_order: rollout.turn_order,
-      turn_type: rollout.turn_type,
-      content: rollout.content,
-      tokens: rollout.tokens,
-    }))
+  const mappedGenerations = useMemo<GenerationRow[] | undefined>(() => {
+    if (!data?.generations) return undefined
+    return data.generations.map((g) => ({
+      ...g,
+      step: g.trainer_step,
+    } as unknown as GenerationRow))
+  }, [data])
+
+  const mappedEnvResponses = useMemo<EnvResponseRow[] | undefined>(() => {
+    if (!data?.env_responses) return undefined
+    return data.env_responses.map((e) => ({
+      ...e,
+      step: e.trainer_step,
+    } as unknown as EnvResponseRow))
+  }, [data])
+
+  const mappedToolCalls = useMemo<ToolCallRow[] | undefined>(() => {
+    if (!data?.tool_calls) return undefined
+    return data.tool_calls.map((tc) => ({
+      ...tc,
+      step: tc.trainer_step,
+    } as unknown as ToolCallRow))
   }, [data])
 
   const mappedSamplesData = useMemo<SampleData[] | undefined>(() => {
@@ -99,12 +112,14 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
     return data.samples_data.map((sample) => ({
       step: sample.trainer_step,
       group_id: sample.group_id,
-      sample_idx: sample.sample_idx,
+      sample_id: sample.sample_id,
       reward: sample.reward,
       advantage: sample.advantage,
-      turns: sample.turns,
+      num_generations: sample.num_generations,
       total_tokens: sample.total_tokens,
       raw_string: sample.raw_string,
+      compute_reward_time: null,
+      stop_reason: sample.stop_reason,
     }))
   }, [data])
 
@@ -113,7 +128,7 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
     const step = data.trainer_step ?? 0
     return data.rollout_metrics.map((metric) => ({
       step,
-      sample_idx: metric.sample_idx,
+      sample_id: metric.sample_id,
       env: metric.env,
       metric_name: metric.metric_name,
       value: metric.value,
@@ -125,7 +140,7 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
     const step = data.trainer_step ?? 0
     return data.golden_answers.map((answer) => ({
       step,
-      sample_idx: answer.sample_idx,
+      sample_id: answer.sample_id,
       env: answer.env,
       key: answer.key,
       value: answer.value,
@@ -137,8 +152,10 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
     const step = data.trainer_step ?? 0
     return data.info_turns.map((it) => ({
       step,
-      sample_idx: it.sample_idx,
-      turn_order: it.turn_order,
+      sample_id: it.sample_id,
+      agent_id: it.agent_id ?? 0,
+      generation_idx: it.generation_idx,
+      tool_call_idx: it.tool_call_idx ?? null,
       env: it.env,
       info_key: it.info_key,
       info_value: it.info_value,
@@ -148,7 +165,9 @@ function useDiscardedToRegularMapping(data: SampleDetailsDiscarded | null) {
 
   return {
     mappedPrompts,
-    mappedRollouts,
+    mappedGenerations,
+    mappedEnvResponses,
+    mappedToolCalls,
     mappedSamplesData,
     mappedRolloutMetrics,
     mappedGoldenAnswers,
@@ -213,7 +232,9 @@ export function SampleDetailsDialog({
 
   const {
     mappedPrompts,
-    mappedRollouts,
+    mappedGenerations,
+    mappedEnvResponses,
+    mappedToolCalls,
     mappedSamplesData,
     mappedRolloutMetrics,
     mappedGoldenAnswers,
@@ -230,7 +251,7 @@ export function SampleDetailsDialog({
     if (!firstSample) return null
     return {
       groupId: firstSample.group_id,
-      sampleIdx: firstSample.sample_idx,
+      sampleIdx: firstSample.sample_id,
     }
   }, [data])
 
@@ -296,7 +317,7 @@ export function SampleDetailsDialog({
     const targetIdx = data.kind === "eval"
       ? (evalFilterIds?.sampleIdx ?? sampleId)
       : sampleId
-    return samples.find((s) => s.sample_idx === targetIdx) ?? null
+    return samples.find((s) => s.sample_id === targetIdx) ?? null
   }, [data, mappedSamplesData, sampleId, evalFilterIds])
 
   const hasData = !isLoading && !error && data && data.kind !== null
@@ -353,7 +374,7 @@ export function SampleDetailsDialog({
                   <RawTextDialog
                     rawString={currentSampleData.raw_string}
                     totalTokens={currentSampleData.total_tokens}
-                    turns={currentSampleData.turns ?? undefined}
+                    turns={currentSampleData.num_generations ?? undefined}
                   />
                 )}
                 <Button
@@ -442,7 +463,9 @@ export function SampleDetailsDialog({
         {!isLoading && !error && data?.kind === "rollouts" && (
           <RolloutsView
             prompts={data.prompts}
-            data={data.rollouts}
+            generations={data.generations}
+            envResponses={data.env_responses}
+            toolCalls={data.tool_calls}
             samplesData={data.samples_data}
             rolloutMetrics={data.rollout_metrics}
             goldenAnswers={data.golden_answers}
@@ -464,7 +487,9 @@ export function SampleDetailsDialog({
         {!isLoading && !error && data?.kind === "rollouts_discarded" && (
           <RolloutsView
             prompts={mappedPrompts}
-            data={mappedRollouts}
+            generations={mappedGenerations}
+            envResponses={mappedEnvResponses}
+            toolCalls={mappedToolCalls}
             samplesData={mappedSamplesData}
             rolloutMetrics={mappedRolloutMetrics}
             goldenAnswers={mappedGoldenAnswers}
@@ -488,7 +513,9 @@ export function SampleDetailsDialog({
         {!isLoading && !error && data?.kind === "eval" && (
           <RolloutsView
             prompts={data.prompts}
-            data={data.rollouts}
+            generations={data.generations}
+            envResponses={data.env_responses}
+            toolCalls={data.tool_calls}
             samplesData={data.samples_data}
             rolloutMetrics={data.rollout_metrics}
             goldenAnswers={data.golden_answers}

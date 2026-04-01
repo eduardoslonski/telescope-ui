@@ -43,7 +43,7 @@ import {
   type EnvMetricRanges,
   type MetricRange,
 } from "@/components/rollouts-view"
-import type { Prompt, Rollout, SampleData, RolloutMetric } from "@/lib/types"
+import type { Prompt, GenerationRow, SampleData, RolloutMetric } from "@/lib/types"
 
 // Grouped sample for picker
 interface GroupedSample {
@@ -52,7 +52,7 @@ interface GroupedSample {
   prompt: Prompt | null
   responsePreview: string
   turnsCount: number
-  turnsData: Rollout[]
+  turnsData: GenerationRow[]
   reward: number | null
   advantage: number | null
   assistantTokens: number | null // average tokens per turn (for color scale)
@@ -137,7 +137,7 @@ type AtomWithState<T> = WritableAtom<T, [SetStateAction<T>], void>
 
 interface RolloutsSamplePickerSidebarProps {
   prompts?: Prompt[]
-  data?: Rollout[]
+  data?: GenerationRow[]
   samplesData?: SampleData[]
   rolloutMetrics?: RolloutMetric[]
   availableMetricNames?: string[]
@@ -279,7 +279,7 @@ export function RolloutsSamplePickerSidebar({
     return false
   }, [envDetailsValue, summaryData?.summary?.env_details])
 
-  // Build metrics lookup: sample_idx -> metric_name -> { value, env }
+  // Build metrics lookup: sample_id -> metric_name -> { value, env }
   // Keep previous value during loading to prevent metric columns from disappearing
   type MetricsBySampleIdx = Map<number, Map<string, { value: number; env: string | null }>>
   const [cachedMetricsBySampleIdx, setCachedMetricsBySampleIdx] = useState<MetricsBySampleIdx>(new Map())
@@ -287,10 +287,10 @@ export function RolloutsSamplePickerSidebar({
     if (!rolloutMetrics) return null
     const map: MetricsBySampleIdx = new Map()
     for (const m of rolloutMetrics) {
-      let sampleMap = map.get(m.sample_idx)
+      let sampleMap = map.get(m.sample_id)
       if (!sampleMap) {
         sampleMap = new Map()
-        map.set(m.sample_idx, sampleMap)
+        map.set(m.sample_id, sampleMap)
       }
       sampleMap.set(m.metric_name, { value: m.value, env: m.env })
     }
@@ -429,12 +429,12 @@ export function RolloutsSamplePickerSidebar({
     return map
   }, [prompts])
 
-  // Index samples data by sample_idx
+  // Index samples data by sample_id
   const samplesDataBySample = useMemo(() => {
     if (!samplesData) return new Map<number, SampleData>()
     const map = new Map<number, SampleData>()
     for (const s of samplesData) {
-      map.set(s.sample_idx, s)
+      map.set(s.sample_id, s)
     }
     return map
   }, [samplesData])
@@ -443,51 +443,50 @@ export function RolloutsSamplePickerSidebar({
   const computedGroups = useMemo(() => {
     if (!data) return null
 
-    // Group rollouts by sample_idx and get group_id
-    const turnsBySample = new Map<number, Rollout[]>()
+    // Group generations by sample_id and get group_id
+    const gensBySample = new Map<number, GenerationRow[]>()
     const groupIdBySample = new Map<number, number>()
 
     for (const gen of data) {
-      const existing = turnsBySample.get(gen.sample_idx) || []
+      const existing = gensBySample.get(gen.sample_id) || []
       existing.push(gen)
-      turnsBySample.set(gen.sample_idx, existing)
-      groupIdBySample.set(gen.sample_idx, gen.group_id)
+      gensBySample.set(gen.sample_id, existing)
+      groupIdBySample.set(gen.sample_id, gen.group_id)
     }
 
     // Build grouped samples
     const samplesByGroup = new Map<number, GroupedSample[]>()
 
-    for (const [sample_idx, turns] of turnsBySample) {
-      const sortedTurns = [...turns].sort((a, b) => a.turn_order - b.turn_order)
-      const group_id = groupIdBySample.get(sample_idx) ?? -1
+    for (const [sample_id, gens] of gensBySample) {
+      const sortedGens = [...gens].sort((a, b) => a.generation_idx - b.generation_idx)
+      const group_id = groupIdBySample.get(sample_id) ?? -1
       const prompt = promptsByGroup.get(group_id) ?? null
-      const sampleData = samplesDataBySample.get(sample_idx)
+      const sampleData = samplesDataBySample.get(sample_id)
 
-      // Get the first model response as preview
-      const firstModelTurn = sortedTurns.find((t) => t.turn_type === "model")
-      const responsePreview = firstModelTurn?.content ?? ""
+      // Get the first generation as preview
+      const firstGen = sortedGens[0]
+      const responsePreview = firstGen?.content ?? ""
       let assistantTokens: number | null = null
       let assistantTokensTotal: number | null = null
       let assistantTokenSum = 0
-      let assistantTurnCount = 0
-      for (const turn of sortedTurns) {
-        if (turn.turn_type !== "model") continue
-        if (typeof turn.tokens !== "number") continue
-        assistantTokenSum += turn.tokens
-        assistantTurnCount += 1
+      let assistantGenCount = 0
+      for (const gen of sortedGens) {
+        if (typeof gen.tokens !== "number") continue
+        assistantTokenSum += gen.tokens
+        assistantGenCount += 1
       }
-      if (assistantTurnCount > 0) {
-        assistantTokens = assistantTokenSum / assistantTurnCount
+      if (assistantGenCount > 0) {
+        assistantTokens = assistantTokenSum / assistantGenCount
         assistantTokensTotal = assistantTokenSum
       }
 
       const groupedSample: GroupedSample = {
-        sample_idx,
+        sample_idx: sample_id,
         group_id,
         prompt,
         responsePreview,
-        turnsCount: sortedTurns.length,
-        turnsData: sortedTurns,
+        turnsCount: sortedGens.length,
+        turnsData: sortedGens,
         reward: sampleData?.reward ?? null,
         advantage: sampleData?.advantage ?? null,
         assistantTokens,
@@ -1373,23 +1372,23 @@ function SampleItem({
         className="max-w-xl max-h-[70vh] overflow-y-auto p-3 bg-popover text-popover-foreground border border-border shadow-md"
       >
         <div className="space-y-3">
-          {sample.turnsData.map((turn) => (
-            <div key={`${turn.sample_idx}-${turn.turn_order}`}>
+          {sample.turnsData.map((gen) => (
+            <div key={`${gen.sample_id}-${gen.generation_idx}`}>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center gap-2">
-                <span>{formatTurnType(turn.turn_type)}</span>
-                {turn.tokens != null && (
+                <span>Generation {gen.generation_idx}</span>
+                {gen.tokens != null && (
                   <span className="font-normal normal-case">
-                    {turn.tokens.toLocaleString()} tokens
+                    {gen.tokens.toLocaleString()} tokens
                   </span>
                 )}
               </div>
               <p className="text-xs whitespace-pre-wrap break-words font-sans">
-                {turn.content || "(empty)"}
+                {gen.content || "(empty)"}
               </p>
             </div>
           ))}
           {sample.turnsData.length === 0 && (
-            <p className="text-xs text-muted-foreground">No turns available</p>
+            <p className="text-xs text-muted-foreground">No generations available</p>
           )}
         </div>
       </TooltipContent>

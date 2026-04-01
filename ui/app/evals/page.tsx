@@ -435,9 +435,9 @@ export default function EvalsPage() {
   // Header info display
   const headerInfo = useMemo(() => {
     if (!lastValidSample) return null
-    const step = lastValidSample.sample.turns[0]?.step ?? selectedStep
+    const step = lastValidSample.sample.generations[0]?.step ?? selectedStep
     const evalSampleIdx = lastValidSample.sample.group_id
-    const synthIdx = lastValidSample.sample.sample_idx
+    const synthIdx = lastValidSample.sample.sample_id
     const completionIdx = synthIdx % COMPLETION_MULTIPLIER
     const numCompletions = completionsPerSample.get(evalSampleIdx) ?? 1
     return { step, evalSampleIdx, completionIdx, numCompletions }
@@ -452,7 +452,7 @@ export default function EvalsPage() {
       {/* Sample Picker Sidebar (Left) */}
       <RolloutsSamplePickerSidebar
         prompts={mappedPrompts}
-        data={mappedRollouts}
+        data={mappedGenerations}
         samplesData={mappedSamplesData}
         rolloutMetrics={mappedRolloutMetrics}
         availableMetricNames={stableRolloutMetricNames}
@@ -506,7 +506,7 @@ export default function EvalsPage() {
                   <RawTextDialog
                     rawString={lastValidSample.sample.raw_string}
                     totalTokens={lastValidSample.sample.total_tokens}
-                    turns={lastValidSample.sample.turns.length}
+                    turns={lastValidSample.sample.num_generations ?? lastValidSample.sample.generations.length}
                   />
                 )}
                 {lastValidSample && (
