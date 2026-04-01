@@ -49,7 +49,9 @@ import {
 } from "@/lib/atoms"
 import { useEvals, useRunSummary } from "@/hooks/use-run-data"
 import type {
-  Rollout,
+  GenerationRow,
+  EnvResponseRow,
+  ToolCallRow,
   Prompt,
   RolloutMetric,
   GoldenAnswer,
@@ -241,16 +243,59 @@ export default function EvalsPage() {
     }))
   }, [evalsData])
 
-  const mappedRollouts = useMemo<Rollout[] | undefined>(() => {
-    if (!evalsData?.rollouts) return undefined
-    return evalsData.rollouts.map((r) => ({
-      step: r.step,
-      group_id: r.sample_idx,
-      sample_idx: syntheticSampleIdx(r.sample_idx, r.completion_idx),
-      turn_order: r.turn_order,
-      turn_type: r.turn_type,
-      content: r.content,
-      tokens: r.tokens,
+  const mappedGenerations = useMemo<GenerationRow[] | undefined>(() => {
+    if (!evalsData?.generations) return undefined
+    return evalsData.generations.map((g) => ({
+      step: g.step,
+      group_id: g.sample_idx,
+      sample_id: syntheticSampleIdx(g.sample_idx, g.completion_idx),
+      agent_id: g.agent_id ?? 0,
+      generation_idx: g.generation_idx,
+      content: g.content,
+      tokens: g.tokens,
+      prompt_tokens: g.prompt_tokens,
+      tool_call_count: g.tool_call_count,
+      stop_reason: g.stop_reason,
+      queue_time: null, ttft: null, prefill_time: null, decode_time: null,
+      inference_time: null, e2e_latency: null, server_id: null, vllm_request_id: null,
+    }))
+  }, [evalsData])
+
+  const mappedEnvResponses = useMemo<EnvResponseRow[] | undefined>(() => {
+    if (!evalsData?.env_responses) return undefined
+    return evalsData.env_responses.map((e) => ({
+      step: e.step,
+      group_id: e.sample_idx,
+      sample_id: syntheticSampleIdx(e.sample_idx, e.completion_idx),
+      agent_id: e.agent_id ?? 0,
+      generation_idx: e.generation_idx,
+      content: e.content,
+      turn_type: e.turn_type,
+      tokens: e.tokens,
+      response_time: e.response_time,
+    }))
+  }, [evalsData])
+
+  const mappedToolCalls = useMemo<ToolCallRow[] | undefined>(() => {
+    if (!evalsData?.tool_calls) return undefined
+    return evalsData.tool_calls.map((tc) => ({
+      step: tc.step,
+      group_id: tc.sample_idx,
+      sample_id: syntheticSampleIdx(tc.sample_idx, tc.completion_idx),
+      agent_id: tc.agent_id ?? 0,
+      generation_idx: tc.generation_idx,
+      tool_call_idx: tc.tool_call_idx,
+      env_response_generation_idx: tc.env_response_generation_idx,
+      tool_name: tc.tool_name,
+      arguments: tc.arguments,
+      raw_text: tc.raw_text,
+      result: tc.result,
+      success: tc.success,
+      error: tc.error,
+      exit_code: tc.exit_code,
+      truncated: tc.truncated,
+      result_tokens: tc.result_tokens,
+      sandbox_id: tc.sandbox_id,
     }))
   }, [evalsData])
 
@@ -259,12 +304,14 @@ export default function EvalsPage() {
     return evalsData.samples_data.map((s) => ({
       step: s.step,
       group_id: s.sample_idx,
-      sample_idx: syntheticSampleIdx(s.sample_idx, s.completion_idx),
+      sample_id: syntheticSampleIdx(s.sample_idx, s.completion_idx),
       reward: null,
       advantage: null,
-      turns: s.turns,
+      num_generations: s.num_generations,
       total_tokens: null,
       raw_string: null,
+      compute_reward_time: s.compute_eval_metrics_time,
+      stop_reason: s.stop_reason,
     }))
   }, [evalsData])
 
@@ -272,7 +319,7 @@ export default function EvalsPage() {
     if (!evalsData?.rollout_metrics) return undefined
     return evalsData.rollout_metrics.map((m) => ({
       step: m.step,
-      sample_idx: syntheticSampleIdx(m.sample_idx, m.completion_idx),
+      sample_id: syntheticSampleIdx(m.sample_idx, m.completion_idx),
       env: m.env,
       metric_name: m.metric_name,
       value: m.value,
@@ -283,7 +330,7 @@ export default function EvalsPage() {
     if (!evalsData?.golden_answers) return undefined
     return evalsData.golden_answers.map((a) => ({
       step: a.step,
-      sample_idx: syntheticSampleIdx(a.sample_idx, a.completion_idx),
+      sample_id: syntheticSampleIdx(a.sample_idx, a.completion_idx),
       env: a.env,
       key: a.key,
       value: a.value,
@@ -294,8 +341,10 @@ export default function EvalsPage() {
     if (!evalsData?.info_turns) return undefined
     return evalsData.info_turns.map((it) => ({
       step: it.step,
-      sample_idx: syntheticSampleIdx(it.sample_idx, it.completion_idx),
-      turn_order: it.turn_order,
+      sample_id: syntheticSampleIdx(it.sample_idx, it.completion_idx),
+      agent_id: it.agent_id ?? 0,
+      generation_idx: it.generation_idx,
+      tool_call_idx: it.tool_call_idx ?? null,
       env: it.env,
       info_key: it.info_key,
       info_value: it.info_value,
@@ -543,7 +592,9 @@ export default function EvalsPage() {
 
             <RolloutsView
               prompts={mappedPrompts}
-              data={mappedRollouts}
+              generations={mappedGenerations}
+              envResponses={mappedEnvResponses}
+              toolCalls={mappedToolCalls}
               samplesData={mappedSamplesData}
               rolloutMetrics={mappedRolloutMetrics}
               goldenAnswers={mappedGoldenAnswers}
