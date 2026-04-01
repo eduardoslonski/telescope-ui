@@ -13,7 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { CombinedTimelineChart, GroupSampleTimeline, TrainerBreakdownContent } from "@/components/combined-timeline-chart"
+import { CombinedTimelineChart, GroupSampleTimeline, TrainerBreakdownContent, type RolloutSpan } from "@/components/combined-timeline-chart"
 import { PaginationControls } from "@/components/pagination-controls"
 import {
   selectedRunPathAtom,
@@ -643,30 +643,51 @@ function TimelineFooter({
   // Pivot rollout events from the group into spans, then group by sample_id
   const groupEventsBySampleId = useMemo(() => {
     if (!selectedRequest || !groupEventsData?.events) return null
+    const snapshotTime = inflightData?.timestamp ?? null
     // Convert pre-pivoted rollout events into spans
-    const spans: Array<{
-      event_type: string
-      start_time: number
-      end_time: number
-      sample_id: number
-      group_id: number
-      agent_id: number
-      generation_idx: number
-      tool_call_idx: number
-      server_id: number
-    }> = []
+    const spans: RolloutSpan[] = []
     for (const e of groupEventsData.events as RolloutEvent[]) {
+      // In-progress generations have end_time null/0; use snapshot timestamp instead
+      const isInflight = e.event_type === "generation" && !e.end_time && snapshotTime
       spans.push({
         event_type: e.event_type,
         start_time: e.start_time,
-        end_time: e.end_time,
+        end_time: isInflight ? snapshotTime : e.end_time,
         sample_id: e.sample_id ?? -1,
         group_id: e.group_id ?? -1,
         agent_id: e.agent_id ?? 0,
         generation_idx: e.generation_idx ?? -1,
         tool_call_idx: e.tool_call_idx ?? -1,
         server_id: e.server_id ?? -1,
+        server_lane: e.server_lane ?? -1,
+        ...(isInflight ? { phase: "inflight" as const } : {}),
       })
+    }
+    // Also add inflight generations from the snapshot that may not be in the API response yet
+    if (snapshotTime && inflightData?.inflight_generations) {
+      const existingKeys = new Set(
+        spans
+          .filter((s) => s.event_type === "generation" && s.sample_id >= 0)
+          .map((s) => `${s.sample_id}-${s.generation_idx}`)
+      )
+      for (const gen of inflightData.inflight_generations) {
+        if (gen.group_id !== selectedRequest.groupId) continue
+        const key = `${gen.sample_id}-${gen.generation_idx}`
+        if (existingKeys.has(key)) continue
+        spans.push({
+          event_type: "generation",
+          start_time: gen.start_time,
+          end_time: snapshotTime,
+          sample_id: gen.sample_id,
+          group_id: gen.group_id,
+          agent_id: gen.agent_id,
+          generation_idx: gen.generation_idx,
+          tool_call_idx: -1,
+          server_id: gen.server_id,
+          server_lane: gen.server_lane,
+          phase: "inflight",
+        })
+      }
     }
     // Only keep generation spans for the group timeline
     const generationSpans = spans.filter((s) => s.event_type === "generation")
@@ -680,7 +701,7 @@ function TimelineFooter({
       }
     }
     return eventsBySample
-  }, [selectedRequest, groupEventsData])
+  }, [selectedRequest, groupEventsData, inflightData])
 
   // Build per-sample timing data from env_response and reward spans
   const groupTimingData = useMemo(() => {

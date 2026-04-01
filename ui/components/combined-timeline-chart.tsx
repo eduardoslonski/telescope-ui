@@ -142,7 +142,7 @@ function formatNumberWithDelimiter(n: number): string {
 // RolloutSpan: pivoting start/end rows into paired spans
 // ============================================================================
 
-interface RolloutSpan {
+export interface RolloutSpan {
   event_type: string // "generation", "tool_execution", "env_response", "reward"
   start_time: number
   end_time: number
@@ -477,48 +477,37 @@ export function CombinedTimelineChart({
     const snapshotTime = inflightSnapshot.timestamp
     const syntheticSpans: RolloutSpan[] = []
 
-    // Build a set of completed sample_id+event_type+generation_idx keys
-    const completedKeys = new Set(
-      allRolloutSpans.map(
-        (s) => `${s.event_type}:${s.sample_id}:${s.generation_idx}:${s.tool_call_idx}`
-      )
+    // Build a set of completed sample_ids (like old code: if a sample has an end event, skip inflight)
+    const endedSampleIds = new Set(
+      allRolloutSpans
+        .filter((s) => s.event_type === "generation" && s.sample_id >= 0)
+        .map((s) => s.sample_id)
     )
-
-    // Build a lookup for start times from pre-pivoted rollout events
-    const startTimeMap = new Map<string, number>()
-    for (const e of (rolloutEvents ?? [])) {
-      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
-      startTimeMap.set(key, e.start_time)
-    }
 
     // Inflight generations
     for (const gen of (inflightSnapshot.inflight_generations ?? [])) {
-      const key = `generation:${gen.sample_id}:${gen.generation_idx}:-1`
-      if (completedKeys.has(key)) continue
-      const startTime = startTimeMap.get(key)
+      if (endedSampleIds.has(gen.sample_id)) continue
       syntheticSpans.push({
         event_type: "generation",
-        start_time: startTime ?? snapshotTime,
+        start_time: gen.start_time,
         end_time: snapshotTime,
         sample_id: gen.sample_id,
-        group_id: -1, // not available in inflight snapshot
+        group_id: gen.group_id,
         agent_id: gen.agent_id,
         generation_idx: gen.generation_idx,
         tool_call_idx: -1,
         server_id: gen.server_id,
-        server_lane: -1,
+        server_lane: gen.server_lane,
         phase: "inflight",
       })
     }
 
-    // Inflight env responses
+    // Inflight env responses (start_time not in snapshot, use snapshotTime as fallback)
     for (const er of (inflightSnapshot.inflight_env_responses ?? [])) {
-      const key = `env_response:${er.sample_id}:${er.generation_idx}:-1`
-      if (completedKeys.has(key)) continue
-      const startTime = startTimeMap.get(key)
+      if (endedSampleIds.has(er.sample_id)) continue
       syntheticSpans.push({
         event_type: "env_response",
-        start_time: startTime ?? snapshotTime,
+        start_time: snapshotTime,
         end_time: snapshotTime,
         sample_id: er.sample_id,
         group_id: -1,
@@ -533,12 +522,9 @@ export function CombinedTimelineChart({
 
     // Inflight rewards
     for (const rw of (inflightSnapshot.inflight_rewards ?? [])) {
-      const key = `reward:${rw.sample_id}:-1:-1`
-      if (completedKeys.has(key)) continue
-      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "reward",
-        start_time: startTime ?? snapshotTime,
+        start_time: snapshotTime,
         end_time: snapshotTime,
         sample_id: rw.sample_id,
         group_id: -1,
@@ -553,12 +539,9 @@ export function CombinedTimelineChart({
 
     // Inflight tool executions
     for (const te of (inflightSnapshot.inflight_tool_executions ?? [])) {
-      const key = `tool_execution:${te.sample_id}:${te.generation_idx}:${te.tool_call_idx}`
-      if (completedKeys.has(key)) continue
-      const startTime = startTimeMap.get(key)
       syntheticSpans.push({
         event_type: "tool_execution",
-        start_time: startTime ?? snapshotTime,
+        start_time: snapshotTime,
         end_time: snapshotTime,
         sample_id: te.sample_id,
         group_id: -1,
@@ -572,7 +555,7 @@ export function CombinedTimelineChart({
     }
 
     return syntheticSpans.length > 0 ? [...allRolloutSpans, ...syntheticSpans] : allRolloutSpans
-  }, [allRolloutSpans, inflightSnapshot, rolloutEvents])
+  }, [allRolloutSpans, inflightSnapshot])
 
   // Inflight weight syncs as synthetic infra spans
   const infraSpansWithInflight = useMemo(() => {
@@ -2194,6 +2177,7 @@ export function GroupSampleTimeline({
               >
                 {/* Inference request bars */}
                 {events.map((event, eventIdx) => {
+                  const isInflightEvent = event.phase === "inflight"
                   const relativeStart = event.start_time - timeBounds.start
                   const leftPercent =
                     (relativeStart / timeBounds.duration) * 100
@@ -2213,10 +2197,13 @@ export function GroupSampleTimeline({
                         width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
                         backgroundColor: color,
                         borderRadius: "1px",
-                        border: isCanceledGroup
-                          ? eventBorderLightSubtle
-                          : eventBorderLight,
+                        border: isInflightEvent
+                          ? `1.5px dashed ${color}`
+                          : isCanceledGroup
+                            ? eventBorderLightSubtle
+                            : eventBorderLight,
                         boxSizing: "border-box",
+                        opacity: isInflightEvent ? 0.75 : undefined,
                       }}
                       onClick={
                         onSampleClick
@@ -2239,14 +2226,16 @@ export function GroupSampleTimeline({
                           }
                           color={color}
                           statusLabel={
-                            isCanceledGroup
-                              ? { text: "Canceled", className: "text-muted-foreground" }
-                              : isDiscardedGroup
-                                ? {
-                                    text: "Discarded",
-                                    className: "text-red-700",
-                                  }
-                                : null
+                            isInflightEvent
+                              ? { text: "In Progress", className: "text-yellow-500" }
+                              : isCanceledGroup
+                                ? { text: "Canceled", className: "text-muted-foreground" }
+                                : isDiscardedGroup
+                                  ? {
+                                      text: "Discarded",
+                                      className: "text-red-700",
+                                    }
+                                  : null
                           }
                           details={buildGenerationDetails(
                             event,
