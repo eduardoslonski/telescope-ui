@@ -347,11 +347,17 @@ export interface EvalToolCall {
   agent_id: number
   generation_idx: number
   tool_call_idx: number
+  env_response_generation_idx: number
   tool_name: string
   arguments: string
+  raw_text: string | null
   result: string | null
   success: boolean
   error: string | null
+  exit_code: number | null
+  truncated: boolean
+  result_tokens: number | null
+  sandbox_id: string | null
 }
 
 export interface EvalSampleData {
