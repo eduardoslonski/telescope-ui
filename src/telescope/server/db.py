@@ -149,39 +149,36 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
-    # Inference events table - duration events with event_type, server, start_time, end_time, token counts, sample_id, group_id, vLLM metrics
+    # Rollout events table - per-sample lifecycle events (generation, tool_execution, env_response, reward)
     con.execute("""
-        CREATE TABLE IF NOT EXISTS events_inference (
+        CREATE TABLE IF NOT EXISTS events_rollout (
             run_id TEXT,
+            timestamp DOUBLE,
+            tail_idx BIGINT,
             event_type TEXT,
-            server BIGINT,
-            node_id BIGINT,
-            tp_group_id BIGINT,
-            tp_size BIGINT,
-            start_time DOUBLE,
-            end_time DOUBLE,
-            prompt_tokens BIGINT,
-            rollout_tokens BIGINT,
-            sample_id INTEGER,
-            group_id INTEGER,
-            vllm_request_id TEXT,
-            queue_time DOUBLE,
-            time_to_first_token DOUBLE,
-            prefill_time DOUBLE,
-            decode_time DOUBLE,
-            inference_time DOUBLE,
-            e2e_latency DOUBLE,
-            max_tokens INTEGER,
-            is_eval BOOLEAN,
-            step INTEGER,
-            is_canceled BOOLEAN,
-            off_policy_steps INTEGER,
-            server_lane BIGINT,
-            phase TEXT DEFAULT ''
+            phase TEXT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            server_id BIGINT
         );
     """)
-    # Migration for existing DBs that don't have the phase column yet
-    con.execute("ALTER TABLE events_inference ADD COLUMN IF NOT EXISTS phase TEXT DEFAULT '';")
+
+    # Infrastructure events table - weight sync, sandbox lifecycle
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS events_infra (
+            run_id TEXT,
+            timestamp DOUBLE,
+            tail_idx BIGINT,
+            event_type TEXT,
+            phase TEXT,
+            step BIGINT,
+            server_id BIGINT,
+            sandbox_id TEXT
+        );
+    """)
 
     # Prompts table - stores prompt information per group (one row per group)
     con.execute("""
@@ -197,69 +194,161 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
-    # Rollouts table - stores rollout turns from each step (one row per turn per sample)
-    # Supports multi-turn conversations where each sample can have multiple turns
+    # Generations table - one row per model generation
     con.execute("""
-        CREATE TABLE IF NOT EXISTS rollouts (
+        CREATE TABLE IF NOT EXISTS generations (
             run_id TEXT,
             step BIGINT,
             group_id BIGINT,
-            sample_idx BIGINT,
-            turn_order BIGINT,
-            turn_type TEXT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
             content BLOB,
             tokens BIGINT,
+            prompt_tokens BIGINT,
+            tool_call_count BIGINT,
             stop_reason TEXT,
-            environment_response_time DOUBLE
+            queue_time DOUBLE,
+            ttft DOUBLE,
+            prefill_time DOUBLE,
+            decode_time DOUBLE,
+            inference_time DOUBLE,
+            e2e_latency DOUBLE,
+            server_id BIGINT,
+            vllm_request_id TEXT
         );
     """)
-    
-    # Samples data table - stores sample-level data (one row per sample)
-    # Contains reward, advantage, and aggregated sample info
+
+    # Environment responses table - one row per injection between generations
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS env_responses (
+            run_id TEXT,
+            step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            content BLOB,
+            turn_type TEXT,
+            tokens BIGINT,
+            response_time DOUBLE
+        );
+    """)
+
+    # Tool calls table - one row per tool call (call + result combined)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            run_id TEXT,
+            step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            env_response_generation_idx BIGINT,
+            tool_name TEXT,
+            arguments TEXT,
+            raw_text TEXT,
+            result BLOB,
+            success BOOLEAN,
+            error TEXT,
+            exit_code BIGINT,
+            truncated BOOLEAN,
+            result_tokens BIGINT,
+            sandbox_id TEXT
+        );
+    """)
+
+    # Sandboxes table - one row per sandbox session
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sandboxes (
+            run_id TEXT,
+            step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            sandbox_id TEXT,
+            sandbox_type TEXT,
+            image TEXT,
+            create_time DOUBLE,
+            setup_time DOUBLE,
+            total_execute_time DOUBLE,
+            destroy_time DOUBLE,
+            cpu_limit FLOAT,
+            memory_limit_mb BIGINT,
+            disk_limit_mb BIGINT,
+            timeout_seconds BIGINT,
+            peak_cpu_pct FLOAT,
+            peak_memory_mb BIGINT,
+            peak_disk_mb BIGINT,
+            status TEXT,
+            error TEXT,
+            tool_calls_executed BIGINT,
+            reused BOOLEAN
+        );
+    """)
+
+    # Samples data table - one row per sample with summary info
     con.execute("""
         CREATE TABLE IF NOT EXISTS samples_data (
             run_id TEXT,
             step BIGINT,
             group_id BIGINT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             reward DOUBLE,
             advantage DOUBLE,
-            turns BIGINT,
+            num_generations BIGINT,
             total_tokens BIGINT,
             raw_string BLOB,
-            compute_reward_time DOUBLE
+            compute_reward_time DOUBLE,
+            stop_reason TEXT
         );
     """)
 
-    # Rollouts metrics table - normalized metrics with dynamic names per environment
+    # Rollouts metrics table - per-sample metrics
     con.execute("""
         CREATE TABLE IF NOT EXISTS rollouts_metrics (
             run_id TEXT,
             step BIGINT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             metric_name TEXT,
             value DOUBLE
         );
     """)
-    # Golden answers table - separate from metrics
+
+    # Turn metrics table - per-generation/env-response metrics
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS turn_metrics (
+            run_id TEXT,
+            step BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            turn_type TEXT,
+            env TEXT,
+            metric_name TEXT,
+            value DOUBLE
+        );
+    """)
+
+    # Golden answers table
     con.execute("""
         CREATE TABLE IF NOT EXISTS golden_answers (
             run_id TEXT,
             step BIGINT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             key TEXT,
             value TEXT
         );
     """)
-    
-    # Sample tags table - normalized tags with dynamic names per environment
+
+    # Sample tags table
     con.execute("""
         CREATE TABLE IF NOT EXISTS sample_tags (
             run_id TEXT,
             step BIGINT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             tag_name TEXT,
             tag_value TEXT
@@ -350,26 +439,78 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
-    # Discarded rollouts table - stores rollouts that were discarded during training
-    # (e.g., due to max_async or zero_advantage) - supports multi-turn
+    # Discarded generations table
     con.execute("""
-        CREATE TABLE IF NOT EXISTS rollouts_discarded (
+        CREATE TABLE IF NOT EXISTS generations_discarded (
             run_id TEXT,
             trainer_step BIGINT,
             inference_step BIGINT,
             group_id BIGINT,
-            sample_idx BIGINT,
-            turn_order BIGINT,
-            turn_type TEXT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
             content BLOB,
             tokens BIGINT,
+            prompt_tokens BIGINT,
+            tool_call_count BIGINT,
             stop_reason TEXT,
-            tail_idx BIGINT,
-            environment_response_time DOUBLE
+            queue_time DOUBLE,
+            ttft DOUBLE,
+            prefill_time DOUBLE,
+            decode_time DOUBLE,
+            inference_time DOUBLE,
+            e2e_latency DOUBLE,
+            server_id BIGINT,
+            vllm_request_id TEXT,
+            tail_idx BIGINT
         );
     """)
-    
-    # Discarded samples data table - stores sample-level data for discarded samples
+
+    # Discarded env responses table
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS env_responses_discarded (
+            run_id TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            content BLOB,
+            turn_type TEXT,
+            tokens BIGINT,
+            response_time DOUBLE,
+            tail_idx BIGINT
+        );
+    """)
+
+    # Discarded tool calls table
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls_discarded (
+            run_id TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            env_response_generation_idx BIGINT,
+            tool_name TEXT,
+            arguments TEXT,
+            raw_text TEXT,
+            result BLOB,
+            success BOOLEAN,
+            error TEXT,
+            exit_code BIGINT,
+            truncated BOOLEAN,
+            result_tokens BIGINT,
+            sandbox_id TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    # Discarded samples data table
     con.execute("""
         CREATE TABLE IF NOT EXISTS samples_data_discarded (
             run_id TEXT,
@@ -378,45 +519,47 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             trainer_step BIGINT,
             inference_step BIGINT,
             group_id BIGINT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             reward DOUBLE,
             advantage DOUBLE,
-            turns BIGINT,
+            num_generations BIGINT,
             total_tokens BIGINT,
             raw_string BLOB,
             tail_idx BIGINT,
-            compute_reward_time DOUBLE
+            compute_reward_time DOUBLE,
+            stop_reason TEXT
         );
     """)
 
-    # Discarded rollouts metrics table - normalized metrics for discarded rollouts
+    # Discarded rollouts metrics table
     con.execute("""
         CREATE TABLE IF NOT EXISTS rollouts_metrics_discarded (
             run_id TEXT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             metric_name TEXT,
             value DOUBLE,
             tail_idx BIGINT
         );
     """)
-    # Discarded golden answers table - separate from metrics
+
+    # Discarded golden answers table
     con.execute("""
         CREATE TABLE IF NOT EXISTS golden_answers_discarded (
             run_id TEXT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             key TEXT,
             value TEXT,
             tail_idx BIGINT
         );
     """)
-    
-    # Discarded sample tags table - normalized tags for discarded rollouts
+
+    # Discarded sample tags table
     con.execute("""
         CREATE TABLE IF NOT EXISTS sample_tags_discarded (
             run_id TEXT,
-            sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             tag_name TEXT,
             tag_value TEXT,
@@ -424,14 +567,15 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
-    # Info turns table - stores per-turn info items (stderr, stdout, summary, etc.)
-    # Multiple rows can exist for the same turn (one per info_key)
+    # Info turns table - stores per-generation info items (stderr, stdout, summary, etc.)
     con.execute("""
         CREATE TABLE IF NOT EXISTS info_turns (
             run_id TEXT,
             step BIGINT,
-            sample_idx BIGINT,
-            turn_order BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
             env TEXT,
             info_key TEXT,
             info_value TEXT,
@@ -439,12 +583,14 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
-    # Discarded info turns table - same structure but with tail_idx instead of step
+    # Discarded info turns table
     con.execute("""
         CREATE TABLE IF NOT EXISTS info_turns_discarded (
             run_id TEXT,
-            sample_idx BIGINT,
-            turn_order BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
             env TEXT,
             info_key TEXT,
             info_value TEXT,
@@ -470,26 +616,73 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
-    # Eval rollouts table - one row per turn per eval completion (inside events zips)
+    # Eval generations table
     con.execute("""
-        CREATE TABLE IF NOT EXISTS rollouts_eval (
+        CREATE TABLE IF NOT EXISTS generations_eval (
             run_id TEXT,
             step BIGINT,
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
             completion_idx BIGINT,
-            turn_order BIGINT,
-            turn_type TEXT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
             content BLOB,
             tokens BIGINT,
+            prompt_tokens BIGINT,
+            tool_call_count BIGINT,
             stop_reason TEXT,
-            environment_response_time DOUBLE,
             tail_idx BIGINT
         );
     """)
-    
-    # Eval samples data table - one row per eval completion (inside events zips)
+
+    # Eval env responses table
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS env_responses_eval (
+            run_id TEXT,
+            step BIGINT,
+            eval_name TEXT,
+            model_step BIGINT,
+            sample_idx BIGINT,
+            completion_idx BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            content BLOB,
+            turn_type TEXT,
+            tokens BIGINT,
+            response_time DOUBLE,
+            tail_idx BIGINT
+        );
+    """)
+
+    # Eval tool calls table
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls_eval (
+            run_id TEXT,
+            step BIGINT,
+            eval_name TEXT,
+            model_step BIGINT,
+            sample_idx BIGINT,
+            completion_idx BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            env_response_generation_idx BIGINT,
+            tool_name TEXT,
+            arguments TEXT,
+            raw_text TEXT,
+            result BLOB,
+            success BOOLEAN,
+            error TEXT,
+            exit_code BIGINT,
+            truncated BOOLEAN,
+            result_tokens BIGINT,
+            sandbox_id TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    # Eval samples data table
     con.execute("""
         CREATE TABLE IF NOT EXISTS samples_data_eval (
             run_id TEXT,
@@ -499,13 +692,14 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             sample_idx BIGINT,
             completion_idx BIGINT,
             env TEXT,
-            turns BIGINT,
+            num_generations BIGINT,
             compute_eval_metrics_time DOUBLE,
+            stop_reason TEXT,
             tail_idx BIGINT
         );
     """)
-    
-    # Eval rollouts metrics table - one row per metric per eval completion (inside events zips)
+
+    # Eval rollouts metrics table
     con.execute("""
         CREATE TABLE IF NOT EXISTS rollouts_metrics_eval (
             run_id TEXT,
@@ -519,8 +713,8 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             tail_idx BIGINT
         );
     """)
-    
-    # Eval golden answers table - one row per golden answer key/value (inside events zips)
+
+    # Eval golden answers table
     con.execute("""
         CREATE TABLE IF NOT EXISTS golden_answers_eval (
             run_id TEXT,
@@ -534,8 +728,8 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             tail_idx BIGINT
         );
     """)
-    
-    # Eval sample tags table - one row per tag per eval completion (inside events zips)
+
+    # Eval sample tags table
     con.execute("""
         CREATE TABLE IF NOT EXISTS sample_tags_eval (
             run_id TEXT,
@@ -550,7 +744,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
-    # Eval info turns table - per-turn text info for eval completions (inside events zips)
+    # Eval info turns table
     con.execute("""
         CREATE TABLE IF NOT EXISTS info_turns_eval (
             run_id TEXT,
@@ -558,7 +752,9 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             sample_idx BIGINT,
             completion_idx BIGINT,
-            turn_order BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
             env TEXT,
             info_key TEXT,
             info_value TEXT,
@@ -838,65 +1034,83 @@ def insert_events_trainer(con: duckdb.DuckDBPyConnection, run_id: str, events: l
     log.info(f"[DB] Inserted {len(events)} trainer events in {elapsed:.2f}s")
 
 
-def insert_events_inference(con: duckdb.DuckDBPyConnection, run_id: str, events: list[dict]):
-    """Insert inference events (duration events) into the database."""
+def insert_events_rollout(con: duckdb.DuckDBPyConnection, run_id: str, events: list[dict]):
+    """Insert rollout events (per-sample lifecycle events) into the database."""
     if not events:
         return
-    
-    log.info(f"[DB] Inserting {len(events)} inference events...")
+
+    log.info(f"[DB] Inserting {len(events)} rollout events...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
+            "timestamp": event.get("timestamp"),
+            "tail_idx": event.get("tail_idx"),
             "event_type": event.get("event_type"),
-            "server": event.get("server"),
-            "node_id": event.get("node_id"),
-            "tp_group_id": event.get("tp_group_id"),
-            "tp_size": event.get("tp_size"),
-            "start_time": event.get("start_time"),
-            "end_time": event.get("end_time"),
-            "prompt_tokens": event.get("prompt_tokens"),
-            "rollout_tokens": event.get("rollout_tokens"),
-            "sample_id": event.get("sample_id"),
+            "phase": event.get("phase"),
             "group_id": event.get("group_id"),
-            "vllm_request_id": event.get("vllm_request_id"),
-            "queue_time": event.get("queue_time"),
-            "time_to_first_token": event.get("time_to_first_token"),
-            "prefill_time": event.get("prefill_time"),
-            "decode_time": event.get("decode_time"),
-            "inference_time": event.get("inference_time"),
-            "e2e_latency": event.get("e2e_latency"),
-            "max_tokens": event.get("max_tokens"),
-            "is_eval": event.get("is_eval"),
-            "step": event.get("step"),
-            "is_canceled": event.get("is_canceled"),
-            "off_policy_steps": event.get("off_policy_steps"),
-            "server_lane": event.get("server_lane"),
-            "phase": event.get("phase", ""),
+            "sample_id": event.get("sample_id"),
+            "agent_id": event.get("agent_id", 0),
+            "generation_idx": event.get("generation_idx"),
+            "tool_call_idx": event.get("tool_call_idx"),
+            "server_id": event.get("server_id"),
         }
         for event in events
     ])
 
     # Insert events - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
-        INSERT INTO events_inference (
-            run_id, event_type, server, node_id, tp_group_id, tp_size,
-            start_time, end_time, prompt_tokens, rollout_tokens, sample_id, group_id,
-            vllm_request_id, queue_time, time_to_first_token, prefill_time, decode_time, inference_time,
-            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane, phase
+        INSERT INTO events_rollout (
+            run_id, timestamp, tail_idx, event_type, phase,
+            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id
         )
         SELECT
-            run_id, event_type, server, node_id, tp_group_id, tp_size,
-            start_time, end_time, prompt_tokens, rollout_tokens, sample_id, group_id,
-            vllm_request_id, queue_time, time_to_first_token, prefill_time, decode_time, inference_time,
-            e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps, server_lane, phase
+            run_id, timestamp, tail_idx, event_type, phase,
+            group_id, sample_id, agent_id, generation_idx, tool_call_idx, server_id
         FROM df
     """)
-    
+
     elapsed = time.time() - start
-    log.info(f"[DB] Inserted {len(events)} inference events in {elapsed:.2f}s")
+    log.info(f"[DB] Inserted {len(events)} rollout events in {elapsed:.2f}s")
+
+
+def insert_events_infra(con: duckdb.DuckDBPyConnection, run_id: str, events: list[dict]):
+    """Insert infrastructure events (weight sync, sandbox lifecycle) into the database."""
+    if not events:
+        return
+
+    log.info(f"[DB] Inserting {len(events)} infra events...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "timestamp": event.get("timestamp"),
+            "tail_idx": event.get("tail_idx"),
+            "event_type": event.get("event_type"),
+            "phase": event.get("phase"),
+            "step": event.get("step"),
+            "server_id": event.get("server_id"),
+            "sandbox_id": event.get("sandbox_id"),
+        }
+        for event in events
+    ])
+
+    # Insert events - duplicates are avoided by filtering on ingested_tails before calling this
+    con.execute("""
+        INSERT INTO events_infra (
+            run_id, timestamp, tail_idx, event_type, phase, step, server_id, sandbox_id
+        )
+        SELECT
+            run_id, timestamp, tail_idx, event_type, phase, step, server_id, sandbox_id
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(events)} infra events in {elapsed:.2f}s")
 
 
 
@@ -934,86 +1148,260 @@ def insert_prompts(con: duckdb.DuckDBPyConnection, run_id: str, prompts: list[di
     log.info(f"[DB] Inserted {len(prompts)} prompts in {elapsed:.2f}s")
 
 
-def insert_rollouts(con: duckdb.DuckDBPyConnection, run_id: str, rollouts: list[dict]):
-    """Insert rollouts (turns) into the database using fast bulk insert.
-    
-    Supports multi-turn conversations where each sample can have multiple turns.
-    """
-    if not rollouts:
+def insert_generations(con: duckdb.DuckDBPyConnection, run_id: str, generations: list[dict]):
+    """Insert generations into the database using fast bulk insert."""
+    if not generations:
         return
-    
-    log.info(f"[DB] Inserting {len(rollouts)} rollout turns...")
+
+    log.info(f"[DB] Inserting {len(generations)} generations...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "step": gen.get("step"),
-            "group_id": gen.get("group_id"),
-            "sample_idx": gen.get("sample_idx"),
-            "turn_order": gen.get("turn_order"),
-            "turn_type": gen.get("turn_type"),
-            "content": gen.get("content"),
-            "tokens": gen.get("tokens"),
-            "stop_reason": gen.get("stop_reason"),
-            "environment_response_time": gen.get("environment_response_time"),
+            "step": g.get("step"),
+            "group_id": g.get("group_id"),
+            "sample_id": g.get("sample_id"),
+            "agent_id": g.get("agent_id", 0),
+            "generation_idx": g.get("generation_idx"),
+            "content": g.get("content"),
+            "tokens": g.get("tokens"),
+            "prompt_tokens": g.get("prompt_tokens"),
+            "tool_call_count": g.get("tool_call_count"),
+            "stop_reason": g.get("stop_reason"),
+            "queue_time": g.get("queue_time"),
+            "ttft": g.get("ttft"),
+            "prefill_time": g.get("prefill_time"),
+            "decode_time": g.get("decode_time"),
+            "inference_time": g.get("inference_time"),
+            "e2e_latency": g.get("e2e_latency"),
+            "server_id": g.get("server_id"),
+            "vllm_request_id": g.get("vllm_request_id"),
         }
-        for gen in rollouts
+        for g in generations
     ])
-    
+
     # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
-    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_idx", "turn_order", "turn_type"])
+    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_id", "agent_id", "generation_idx"])
     con.execute("""
-        INSERT INTO rollouts
-        SELECT d.*
+        INSERT INTO generations (
+            run_id, step, group_id, sample_id, agent_id, generation_idx,
+            content, tokens, prompt_tokens, tool_call_count, stop_reason,
+            queue_time, ttft, prefill_time, decode_time, inference_time, e2e_latency,
+            server_id, vllm_request_id
+        )
+        SELECT
+            d.run_id, d.step, d.group_id, d.sample_id, d.agent_id, d.generation_idx,
+            d.content, d.tokens, d.prompt_tokens, d.tool_call_count, d.stop_reason,
+            d.queue_time, d.ttft, d.prefill_time, d.decode_time, d.inference_time, d.e2e_latency,
+            d.server_id, d.vllm_request_id
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
-            FROM rollouts g
+            FROM generations g
             WHERE g.run_id = d.run_id
               AND g.step = d.step
               AND g.group_id = d.group_id
-              AND g.sample_idx = d.sample_idx
-              AND g.turn_order = d.turn_order
-              AND g.turn_type = d.turn_type
+              AND g.sample_id = d.sample_id
+              AND g.agent_id = d.agent_id
+              AND g.generation_idx = d.generation_idx
         )
     """)
-    
+
     elapsed = time.time() - start
-    log.info(f"[DB] Inserted {len(rollouts)} rollout turns in {elapsed:.2f}s")
+    log.info(f"[DB] Inserted {len(generations)} generations in {elapsed:.2f}s")
+
+
+def insert_env_responses(con: duckdb.DuckDBPyConnection, run_id: str, env_responses: list[dict]):
+    """Insert environment responses into the database using fast bulk insert."""
+    if not env_responses:
+        return
+
+    log.info(f"[DB] Inserting {len(env_responses)} env responses...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": e.get("step"),
+            "group_id": e.get("group_id"),
+            "sample_id": e.get("sample_id"),
+            "agent_id": e.get("agent_id", 0),
+            "generation_idx": e.get("generation_idx"),
+            "content": e.get("content"),
+            "turn_type": e.get("turn_type"),
+            "tokens": e.get("tokens"),
+            "response_time": e.get("response_time"),
+        }
+        for e in env_responses
+    ])
+
+    # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
+    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_id", "agent_id", "generation_idx"])
+    con.execute("""
+        INSERT INTO env_responses (
+            run_id, step, group_id, sample_id, agent_id, generation_idx,
+            content, turn_type, tokens, response_time
+        )
+        SELECT
+            d.run_id, d.step, d.group_id, d.sample_id, d.agent_id, d.generation_idx,
+            d.content, d.turn_type, d.tokens, d.response_time
+        FROM df d
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM env_responses er
+            WHERE er.run_id = d.run_id
+              AND er.step = d.step
+              AND er.group_id = d.group_id
+              AND er.sample_id = d.sample_id
+              AND er.agent_id = d.agent_id
+              AND er.generation_idx = d.generation_idx
+        )
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(env_responses)} env responses in {elapsed:.2f}s")
+
+
+def insert_tool_calls(con: duckdb.DuckDBPyConnection, run_id: str, tool_calls: list[dict]):
+    """Insert tool calls into the database using fast bulk insert."""
+    if not tool_calls:
+        return
+
+    log.info(f"[DB] Inserting {len(tool_calls)} tool calls...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": tc.get("step"),
+            "group_id": tc.get("group_id"),
+            "sample_id": tc.get("sample_id"),
+            "agent_id": tc.get("agent_id", 0),
+            "generation_idx": tc.get("generation_idx"),
+            "tool_call_idx": tc.get("tool_call_idx"),
+            "env_response_generation_idx": tc.get("env_response_generation_idx"),
+            "tool_name": tc.get("tool_name"),
+            "arguments": tc.get("arguments"),
+            "raw_text": tc.get("raw_text"),
+            "result": tc.get("result"),
+            "success": tc.get("success"),
+            "error": tc.get("error"),
+            "exit_code": tc.get("exit_code"),
+            "truncated": tc.get("truncated"),
+            "result_tokens": tc.get("result_tokens"),
+            "sandbox_id": tc.get("sandbox_id"),
+        }
+        for tc in tool_calls
+    ])
+
+    # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
+    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_id", "agent_id", "generation_idx", "tool_call_idx"])
+    con.execute("""
+        INSERT INTO tool_calls (
+            run_id, step, group_id, sample_id, agent_id, generation_idx, tool_call_idx,
+            env_response_generation_idx, tool_name, arguments, raw_text, result,
+            success, error, exit_code, truncated, result_tokens, sandbox_id
+        )
+        SELECT
+            d.run_id, d.step, d.group_id, d.sample_id, d.agent_id, d.generation_idx, d.tool_call_idx,
+            d.env_response_generation_idx, d.tool_name, d.arguments, d.raw_text, d.result,
+            d.success, d.error, d.exit_code, d.truncated, d.result_tokens, d.sandbox_id
+        FROM df d
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM tool_calls tc
+            WHERE tc.run_id = d.run_id
+              AND tc.step = d.step
+              AND tc.group_id = d.group_id
+              AND tc.sample_id = d.sample_id
+              AND tc.agent_id = d.agent_id
+              AND tc.generation_idx = d.generation_idx
+              AND tc.tool_call_idx = d.tool_call_idx
+        )
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tool_calls)} tool calls in {elapsed:.2f}s")
+
+
+def insert_turn_metrics(con: duckdb.DuckDBPyConnection, run_id: str, metrics: list[dict]):
+    """Insert turn-level metrics into the database using fast bulk insert."""
+    if not metrics:
+        return
+
+    log.info(f"[DB] Inserting {len(metrics)} turn metrics...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": m.get("step"),
+            "sample_id": m.get("sample_id"),
+            "agent_id": m.get("agent_id", 0),
+            "generation_idx": m.get("generation_idx"),
+            "turn_type": m.get("turn_type"),
+            "env": m.get("env"),
+            "metric_name": m.get("metric_name"),
+            "value": m.get("value"),
+        }
+        for m in metrics
+    ])
+
+    # Insert metrics - duplicates are avoided by filtering on ingested_steps before calling this
+    con.execute("""
+        INSERT INTO turn_metrics (
+            run_id, step, sample_id, agent_id, generation_idx, turn_type, env, metric_name, value
+        )
+        SELECT
+            run_id, step, sample_id, agent_id, generation_idx, turn_type, env, metric_name, value
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(metrics)} turn metrics in {elapsed:.2f}s")
 
 
 def insert_samples_data(con: duckdb.DuckDBPyConnection, run_id: str, samples_data: list[dict]):
     """Insert sample-level data into the database using fast bulk insert."""
     if not samples_data:
         return
-    
+
     log.info(f"[DB] Inserting {len(samples_data)} samples data...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
             "step": s.get("step"),
             "group_id": s.get("group_id"),
-            "sample_idx": s.get("sample_idx"),
+            "sample_id": s.get("sample_id"),
             "reward": s.get("reward"),
             "advantage": s.get("advantage"),
-            "turns": s.get("turns"),
+            "num_generations": s.get("num_generations"),
             "total_tokens": s.get("total_tokens"),
             "raw_string": s.get("raw_string"),
             "compute_reward_time": s.get("compute_reward_time"),
+            "stop_reason": s.get("stop_reason"),
         }
         for s in samples_data
     ])
 
     # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
-    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_idx"])
+    df = df.drop_duplicates(subset=["run_id", "step", "group_id", "sample_id"])
     con.execute("""
-        INSERT INTO samples_data
-        SELECT d.*
+        INSERT INTO samples_data (
+            run_id, step, group_id, sample_id, reward, advantage,
+            num_generations, total_tokens, raw_string, compute_reward_time, stop_reason
+        )
+        SELECT
+            d.run_id, d.step, d.group_id, d.sample_id, d.reward, d.advantage,
+            d.num_generations, d.total_tokens, d.raw_string, d.compute_reward_time, d.stop_reason
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
@@ -1021,10 +1409,10 @@ def insert_samples_data(con: duckdb.DuckDBPyConnection, run_id: str, samples_dat
             WHERE s.run_id = d.run_id
               AND s.step = d.step
               AND s.group_id = d.group_id
-              AND s.sample_idx = d.sample_idx
+              AND s.sample_id = d.sample_id
         )
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(samples_data)} samples data in {elapsed:.2f}s")
 
@@ -1033,40 +1421,40 @@ def insert_rollouts_metrics(con: duckdb.DuckDBPyConnection, run_id: str, metrics
     """Insert rollouts metrics into the database, ignoring duplicates using fast bulk insert."""
     if not metrics:
         return
-    
+
     log.info(f"[DB] Inserting {len(metrics)} rollouts metrics...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
             "step": m.get("step"),
-            "sample_idx": m.get("sample_idx"),
+            "sample_id": m.get("sample_id"),
             "env": m.get("env"),
             "metric_name": m.get("metric_name"),
             "value": m.get("value"),
         }
         for m in metrics
     ])
-    
+
     # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
-    df = df.drop_duplicates(subset=["run_id", "step", "sample_idx", "env", "metric_name"])
+    df = df.drop_duplicates(subset=["run_id", "step", "sample_id", "env", "metric_name"])
     con.execute("""
-        INSERT INTO rollouts_metrics (run_id, step, sample_idx, env, metric_name, value)
-        SELECT d.run_id, d.step, d.sample_idx, d.env, d.metric_name, d.value
+        INSERT INTO rollouts_metrics (run_id, step, sample_id, env, metric_name, value)
+        SELECT d.run_id, d.step, d.sample_id, d.env, d.metric_name, d.value
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
             FROM rollouts_metrics gm
             WHERE gm.run_id = d.run_id
               AND gm.step = d.step
-              AND gm.sample_idx = d.sample_idx
+              AND gm.sample_id = d.sample_id
               AND gm.env = d.env
               AND gm.metric_name = d.metric_name
         )
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(metrics)} rollouts metrics in {elapsed:.2f}s")
 
@@ -1075,40 +1463,40 @@ def insert_golden_answers(con: duckdb.DuckDBPyConnection, run_id: str, answers: 
     """Insert golden answers into the database, ignoring duplicates using fast bulk insert."""
     if not answers:
         return
-    
+
     log.info(f"[DB] Inserting {len(answers)} golden answers...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
             "step": a.get("step"),
-            "sample_idx": a.get("sample_idx"),
+            "sample_id": a.get("sample_id"),
             "env": a.get("env"),
             "key": a.get("key"),
             "value": a.get("value"),
         }
         for a in answers
     ])
-    
+
     # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
-    df = df.drop_duplicates(subset=["run_id", "step", "sample_idx", "env", "key"])
+    df = df.drop_duplicates(subset=["run_id", "step", "sample_id", "env", "key"])
     con.execute("""
-        INSERT INTO golden_answers (run_id, step, sample_idx, env, key, value)
-        SELECT d.run_id, d.step, d.sample_idx, d.env, d.key, d.value
+        INSERT INTO golden_answers (run_id, step, sample_id, env, key, value)
+        SELECT d.run_id, d.step, d.sample_id, d.env, d.key, d.value
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
             FROM golden_answers ga
             WHERE ga.run_id = d.run_id
               AND ga.step = d.step
-              AND ga.sample_idx = d.sample_idx
+              AND ga.sample_id = d.sample_id
               AND ga.env = d.env
               AND ga.key = d.key
         )
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(answers)} golden answers in {elapsed:.2f}s")
 
@@ -1126,7 +1514,7 @@ def insert_sample_tags(con: duckdb.DuckDBPyConnection, run_id: str, tags: list[d
         {
             "run_id": run_id,
             "step": t.get("step"),
-            "sample_idx": t.get("sample_idx"),
+            "sample_id": t.get("sample_id"),
             "env": t.get("env"),
             "tag_name": t.get("tag_name"),
             "tag_value": t.get("tag_value"),
@@ -1135,17 +1523,17 @@ def insert_sample_tags(con: duckdb.DuckDBPyConnection, run_id: str, tags: list[d
     ])
 
     # De-dupe within this batch, then make the insert idempotent (no UNIQUE constraints required).
-    df = df.drop_duplicates(subset=["run_id", "step", "sample_idx", "env", "tag_name"])
+    df = df.drop_duplicates(subset=["run_id", "step", "sample_id", "env", "tag_name"])
     con.execute("""
-        INSERT INTO sample_tags (run_id, step, sample_idx, env, tag_name, tag_value)
-        SELECT d.run_id, d.step, d.sample_idx, d.env, d.tag_name, d.tag_value
+        INSERT INTO sample_tags (run_id, step, sample_id, env, tag_name, tag_value)
+        SELECT d.run_id, d.step, d.sample_id, d.env, d.tag_name, d.tag_value
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
             FROM sample_tags st
             WHERE st.run_id = d.run_id
               AND st.step = d.step
-              AND st.sample_idx = d.sample_idx
+              AND st.sample_id = d.sample_id
               AND st.env = d.env
               AND st.tag_name = d.tag_name
         )
@@ -1324,59 +1712,166 @@ def insert_prompts_discarded(con: duckdb.DuckDBPyConnection, run_id: str, prompt
     log.info(f"[DB] Inserted {len(prompts)} discarded prompts in {elapsed:.2f}s")
 
 
-def insert_rollouts_discarded(con: duckdb.DuckDBPyConnection, run_id: str, rollouts: list[dict]):
-    """Insert discarded rollouts (turns) into the database."""
-    if not rollouts:
+def insert_generations_discarded(con: duckdb.DuckDBPyConnection, run_id: str, generations: list[dict]):
+    """Insert discarded generations into the database."""
+    if not generations:
         return
-    
-    log.info(f"[DB] Inserting {len(rollouts)} discarded rollout turns...")
+
+    log.info(f"[DB] Inserting {len(generations)} discarded generations...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "trainer_step": gen.get("trainer_step"),
-            "inference_step": gen.get("inference_step"),
-            "group_id": gen.get("group_id"),
-            "sample_idx": gen.get("sample_idx"),
-            "turn_order": gen.get("turn_order"),
-            "turn_type": gen.get("turn_type"),
-            "content": gen.get("content"),
-            "tokens": gen.get("tokens"),
-            "stop_reason": gen.get("stop_reason"),
-            "tail_idx": gen.get("tail_idx"),
-            "environment_response_time": gen.get("environment_response_time"),
+            "trainer_step": g.get("trainer_step"),
+            "inference_step": g.get("inference_step"),
+            "group_id": g.get("group_id"),
+            "sample_id": g.get("sample_id"),
+            "agent_id": g.get("agent_id", 0),
+            "generation_idx": g.get("generation_idx"),
+            "content": g.get("content"),
+            "tokens": g.get("tokens"),
+            "prompt_tokens": g.get("prompt_tokens"),
+            "tool_call_count": g.get("tool_call_count"),
+            "stop_reason": g.get("stop_reason"),
+            "queue_time": g.get("queue_time"),
+            "ttft": g.get("ttft"),
+            "prefill_time": g.get("prefill_time"),
+            "decode_time": g.get("decode_time"),
+            "inference_time": g.get("inference_time"),
+            "e2e_latency": g.get("e2e_latency"),
+            "server_id": g.get("server_id"),
+            "vllm_request_id": g.get("vllm_request_id"),
+            "tail_idx": g.get("tail_idx"),
         }
-        for gen in rollouts
+        for g in generations
     ])
-    
-    # Insert rollouts - duplicates are avoided by filtering on ingested_tails before calling this
+
+    # Insert generations - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
-        INSERT INTO rollouts_discarded (
-            run_id, trainer_step, inference_step, group_id, sample_idx,
-            turn_order, turn_type, content, tokens, stop_reason, tail_idx,
-            environment_response_time
+        INSERT INTO generations_discarded (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, tokens, prompt_tokens, tool_call_count, stop_reason,
+            queue_time, ttft, prefill_time, decode_time, inference_time, e2e_latency,
+            server_id, vllm_request_id, tail_idx
         )
         SELECT
-            run_id, trainer_step, inference_step, group_id, sample_idx,
-            turn_order, turn_type, content, tokens, stop_reason, tail_idx,
-            environment_response_time
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, tokens, prompt_tokens, tool_call_count, stop_reason,
+            queue_time, ttft, prefill_time, decode_time, inference_time, e2e_latency,
+            server_id, vllm_request_id, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
-    log.info(f"[DB] Inserted {len(rollouts)} discarded rollout turns in {elapsed:.2f}s")
+    log.info(f"[DB] Inserted {len(generations)} discarded generations in {elapsed:.2f}s")
+
+
+def insert_env_responses_discarded(con: duckdb.DuckDBPyConnection, run_id: str, env_responses: list[dict]):
+    """Insert discarded environment responses into the database."""
+    if not env_responses:
+        return
+
+    log.info(f"[DB] Inserting {len(env_responses)} discarded env responses...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "trainer_step": e.get("trainer_step"),
+            "inference_step": e.get("inference_step"),
+            "group_id": e.get("group_id"),
+            "sample_id": e.get("sample_id"),
+            "agent_id": e.get("agent_id", 0),
+            "generation_idx": e.get("generation_idx"),
+            "content": e.get("content"),
+            "turn_type": e.get("turn_type"),
+            "tokens": e.get("tokens"),
+            "response_time": e.get("response_time"),
+            "tail_idx": e.get("tail_idx"),
+        }
+        for e in env_responses
+    ])
+
+    # Insert env responses - duplicates are avoided by filtering on ingested_tails before calling this
+    con.execute("""
+        INSERT INTO env_responses_discarded (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, turn_type, tokens, response_time, tail_idx
+        )
+        SELECT
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, turn_type, tokens, response_time, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(env_responses)} discarded env responses in {elapsed:.2f}s")
+
+
+def insert_tool_calls_discarded(con: duckdb.DuckDBPyConnection, run_id: str, tool_calls: list[dict]):
+    """Insert discarded tool calls into the database."""
+    if not tool_calls:
+        return
+
+    log.info(f"[DB] Inserting {len(tool_calls)} discarded tool calls...")
+    start = time.time()
+
+    # Create DataFrame for fast bulk insert
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "trainer_step": tc.get("trainer_step"),
+            "inference_step": tc.get("inference_step"),
+            "group_id": tc.get("group_id"),
+            "sample_id": tc.get("sample_id"),
+            "agent_id": tc.get("agent_id", 0),
+            "generation_idx": tc.get("generation_idx"),
+            "tool_call_idx": tc.get("tool_call_idx"),
+            "env_response_generation_idx": tc.get("env_response_generation_idx"),
+            "tool_name": tc.get("tool_name"),
+            "arguments": tc.get("arguments"),
+            "raw_text": tc.get("raw_text"),
+            "result": tc.get("result"),
+            "success": tc.get("success"),
+            "error": tc.get("error"),
+            "exit_code": tc.get("exit_code"),
+            "truncated": tc.get("truncated"),
+            "result_tokens": tc.get("result_tokens"),
+            "sandbox_id": tc.get("sandbox_id"),
+            "tail_idx": tc.get("tail_idx"),
+        }
+        for tc in tool_calls
+    ])
+
+    # Insert tool calls - duplicates are avoided by filtering on ingested_tails before calling this
+    con.execute("""
+        INSERT INTO tool_calls_discarded (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            tool_call_idx, env_response_generation_idx, tool_name, arguments, raw_text, result,
+            success, error, exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        )
+        SELECT
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            tool_call_idx, env_response_generation_idx, tool_name, arguments, raw_text, result,
+            success, error, exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tool_calls)} discarded tool calls in {elapsed:.2f}s")
 
 
 def insert_samples_data_discarded(con: duckdb.DuckDBPyConnection, run_id: str, samples_data: list[dict]):
     """Insert discarded sample-level data into the database."""
     if not samples_data:
         return
-    
+
     log.info(f"[DB] Inserting {len(samples_data)} discarded samples data...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
@@ -1386,24 +1881,33 @@ def insert_samples_data_discarded(con: duckdb.DuckDBPyConnection, run_id: str, s
             "trainer_step": s.get("trainer_step"),
             "inference_step": s.get("inference_step"),
             "group_id": s.get("group_id"),
-            "sample_idx": s.get("sample_idx"),
+            "sample_id": s.get("sample_id"),
             "reward": s.get("reward"),
             "advantage": s.get("advantage"),
-            "turns": s.get("turns"),
+            "num_generations": s.get("num_generations"),
             "total_tokens": s.get("total_tokens"),
             "raw_string": s.get("raw_string"),
             "tail_idx": s.get("tail_idx"),
             "compute_reward_time": s.get("compute_reward_time"),
+            "stop_reason": s.get("stop_reason"),
         }
         for s in samples_data
     ])
 
     # Insert samples data - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
-        INSERT INTO samples_data_discarded 
-        SELECT * FROM df
+        INSERT INTO samples_data_discarded (
+            run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+            reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
+            compute_reward_time, stop_reason
+        )
+        SELECT
+            run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+            reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
+            compute_reward_time, stop_reason
+        FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(samples_data)} discarded samples data in {elapsed:.2f}s")
 
@@ -1416,15 +1920,15 @@ def insert_rollouts_metrics_discarded(
     """Insert discarded rollouts metrics into the database."""
     if not metrics:
         return
-    
+
     log.info(f"[DB] Inserting {len(metrics)} discarded rollouts metrics...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "sample_idx": m.get("sample_idx"),
+            "sample_id": m.get("sample_id"),
             "env": m.get("env"),
             "metric_name": m.get("metric_name"),
             "value": m.get("value"),
@@ -1432,16 +1936,16 @@ def insert_rollouts_metrics_discarded(
         }
         for m in metrics
     ])
-    
+
     # Insert metrics - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
         INSERT INTO rollouts_metrics_discarded (
-            run_id, sample_idx, env, metric_name, value, tail_idx
+            run_id, sample_id, env, metric_name, value, tail_idx
         )
-        SELECT run_id, sample_idx, env, metric_name, value, tail_idx
+        SELECT run_id, sample_id, env, metric_name, value, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(metrics)} discarded rollouts metrics in {elapsed:.2f}s")
 
@@ -1454,15 +1958,15 @@ def insert_golden_answers_discarded(
     """Insert discarded golden answers into the database."""
     if not answers:
         return
-    
+
     log.info(f"[DB] Inserting {len(answers)} discarded golden answers...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "sample_idx": a.get("sample_idx"),
+            "sample_id": a.get("sample_id"),
             "env": a.get("env"),
             "key": a.get("key"),
             "value": a.get("value"),
@@ -1470,16 +1974,16 @@ def insert_golden_answers_discarded(
         }
         for a in answers
     ])
-    
+
     # Insert answers - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
         INSERT INTO golden_answers_discarded (
-            run_id, sample_idx, env, key, value, tail_idx
+            run_id, sample_id, env, key, value, tail_idx
         )
-        SELECT run_id, sample_idx, env, key, value, tail_idx
+        SELECT run_id, sample_id, env, key, value, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(answers)} discarded golden answers in {elapsed:.2f}s")
 
@@ -1500,7 +2004,7 @@ def insert_sample_tags_discarded(
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "sample_idx": t.get("sample_idx"),
+            "sample_id": t.get("sample_id"),
             "env": t.get("env"),
             "tag_name": t.get("tag_name"),
             "tag_value": t.get("tag_value"),
@@ -1512,9 +2016,9 @@ def insert_sample_tags_discarded(
     # Insert tags - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
         INSERT INTO sample_tags_discarded (
-            run_id, sample_idx, env, tag_name, tag_value, tail_idx
+            run_id, sample_id, env, tag_name, tag_value, tail_idx
         )
-        SELECT run_id, sample_idx, env, tag_name, tag_value, tail_idx
+        SELECT run_id, sample_id, env, tag_name, tag_value, tail_idx
         FROM df
     """)
 
@@ -1526,17 +2030,19 @@ def insert_info_turns(con: duckdb.DuckDBPyConnection, run_id: str, info_turns: l
     """Insert info turns into the database, ignoring duplicates using fast bulk insert."""
     if not info_turns:
         return
-    
+
     log.info(f"[DB] Inserting {len(info_turns)} info turns...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
             "step": it.get("step"),
-            "sample_idx": it.get("sample_idx"),
-            "turn_order": it.get("turn_order"),
+            "sample_id": it.get("sample_id"),
+            "agent_id": it.get("agent_id", 0),
+            "generation_idx": it.get("generation_idx"),
+            "tool_call_idx": it.get("tool_call_idx"),
             "env": it.get("env"),
             "info_key": it.get("info_key"),
             "info_value": it.get("info_value"),
@@ -1544,25 +2050,32 @@ def insert_info_turns(con: duckdb.DuckDBPyConnection, run_id: str, info_turns: l
         }
         for it in info_turns
     ])
-    
+
     # De-dupe within this batch, then make the insert idempotent
-    df = df.drop_duplicates(subset=["run_id", "step", "sample_idx", "turn_order", "env", "info_key"])
+    df = df.drop_duplicates(subset=["run_id", "step", "sample_id", "agent_id", "generation_idx", "tool_call_idx", "env", "info_key"])
     con.execute("""
-        INSERT INTO info_turns
-        SELECT d.*
+        INSERT INTO info_turns (
+            run_id, step, sample_id, agent_id, generation_idx, tool_call_idx,
+            env, info_key, info_value, info_type
+        )
+        SELECT
+            d.run_id, d.step, d.sample_id, d.agent_id, d.generation_idx, d.tool_call_idx,
+            d.env, d.info_key, d.info_value, d.info_type
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
             FROM info_turns it
             WHERE it.run_id = d.run_id
               AND it.step = d.step
-              AND it.sample_idx = d.sample_idx
-              AND it.turn_order = d.turn_order
+              AND it.sample_id = d.sample_id
+              AND it.agent_id = d.agent_id
+              AND it.generation_idx = d.generation_idx
+              AND it.tool_call_idx = d.tool_call_idx
               AND it.env = d.env
               AND it.info_key = d.info_key
         )
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(info_turns)} info turns in {elapsed:.2f}s")
 
@@ -1575,16 +2088,18 @@ def insert_info_turns_discarded(
     """Insert discarded info turns into the database."""
     if not info_turns:
         return
-    
+
     log.info(f"[DB] Inserting {len(info_turns)} discarded info turns...")
     start = time.time()
-    
+
     # Create DataFrame for fast bulk insert
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "sample_idx": it.get("sample_idx"),
-            "turn_order": it.get("turn_order"),
+            "sample_id": it.get("sample_id"),
+            "agent_id": it.get("agent_id", 0),
+            "generation_idx": it.get("generation_idx"),
+            "tool_call_idx": it.get("tool_call_idx"),
             "env": it.get("env"),
             "info_key": it.get("info_key"),
             "info_value": it.get("info_value"),
@@ -1593,16 +2108,19 @@ def insert_info_turns_discarded(
         }
         for it in info_turns
     ])
-    
+
     # Insert - duplicates are avoided by filtering on ingested_tails before calling this
     con.execute("""
         INSERT INTO info_turns_discarded (
-            run_id, sample_idx, turn_order, env, info_key, info_value, info_type, tail_idx
+            run_id, sample_id, agent_id, generation_idx, tool_call_idx,
+            env, info_key, info_value, info_type, tail_idx
         )
-        SELECT run_id, sample_idx, turn_order, env, info_key, info_value, info_type, tail_idx
+        SELECT
+            run_id, sample_id, agent_id, generation_idx, tool_call_idx,
+            env, info_key, info_value, info_type, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(info_turns)} discarded info turns in {elapsed:.2f}s")
 
@@ -1641,58 +2159,155 @@ def insert_prompts_eval(con: duckdb.DuckDBPyConnection, run_id: str, prompts: li
     log.info(f"[DB] Inserted {len(prompts)} eval prompts in {elapsed:.2f}s")
 
 
-def insert_rollouts_eval(con: duckdb.DuckDBPyConnection, run_id: str, rollouts: list[dict]):
-    """Insert eval rollouts (turns) into the database."""
-    if not rollouts:
+def insert_generations_eval(con: duckdb.DuckDBPyConnection, run_id: str, generations: list[dict]):
+    """Insert eval generations into the database."""
+    if not generations:
         return
-    
-    log.info(f"[DB] Inserting {len(rollouts)} eval rollout turns...")
+
+    log.info(f"[DB] Inserting {len(generations)} eval generations...")
     start = time.time()
-    
+
     df = pd.DataFrame([
         {
             "run_id": run_id,
-            "step": r.get("step"),
-            "eval_name": r.get("eval_name"),
-            "model_step": r.get("model_step"),
-            "sample_idx": r.get("sample_idx"),
-            "completion_idx": r.get("completion_idx"),
-            "turn_order": r.get("turn_order"),
-            "turn_type": r.get("turn_type"),
-            "content": r.get("content"),
-            "tokens": r.get("tokens"),
-            "stop_reason": r.get("stop_reason"),
-            "environment_response_time": r.get("environment_response_time"),
-            "tail_idx": r.get("tail_idx"),
+            "step": g.get("step"),
+            "eval_name": g.get("eval_name"),
+            "model_step": g.get("model_step"),
+            "sample_idx": g.get("sample_idx"),
+            "completion_idx": g.get("completion_idx"),
+            "agent_id": g.get("agent_id", 0),
+            "generation_idx": g.get("generation_idx"),
+            "content": g.get("content"),
+            "tokens": g.get("tokens"),
+            "prompt_tokens": g.get("prompt_tokens"),
+            "tool_call_count": g.get("tool_call_count"),
+            "stop_reason": g.get("stop_reason"),
+            "tail_idx": g.get("tail_idx"),
         }
-        for r in rollouts
+        for g in generations
     ])
-    
+
     con.execute("""
-        INSERT INTO rollouts_eval (
+        INSERT INTO generations_eval (
             run_id, step, eval_name, model_step, sample_idx, completion_idx,
-            turn_order, turn_type, content, tokens, stop_reason,
-            environment_response_time, tail_idx
+            agent_id, generation_idx, content, tokens, prompt_tokens,
+            tool_call_count, stop_reason, tail_idx
         )
         SELECT
             run_id, step, eval_name, model_step, sample_idx, completion_idx,
-            turn_order, turn_type, content, tokens, stop_reason,
-            environment_response_time, tail_idx
+            agent_id, generation_idx, content, tokens, prompt_tokens,
+            tool_call_count, stop_reason, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
-    log.info(f"[DB] Inserted {len(rollouts)} eval rollout turns in {elapsed:.2f}s")
+    log.info(f"[DB] Inserted {len(generations)} eval generations in {elapsed:.2f}s")
+
+
+def insert_env_responses_eval(con: duckdb.DuckDBPyConnection, run_id: str, env_responses: list[dict]):
+    """Insert eval environment responses into the database."""
+    if not env_responses:
+        return
+
+    log.info(f"[DB] Inserting {len(env_responses)} eval env responses...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": e.get("step"),
+            "eval_name": e.get("eval_name"),
+            "model_step": e.get("model_step"),
+            "sample_idx": e.get("sample_idx"),
+            "completion_idx": e.get("completion_idx"),
+            "agent_id": e.get("agent_id", 0),
+            "generation_idx": e.get("generation_idx"),
+            "content": e.get("content"),
+            "turn_type": e.get("turn_type"),
+            "tokens": e.get("tokens"),
+            "response_time": e.get("response_time"),
+            "tail_idx": e.get("tail_idx"),
+        }
+        for e in env_responses
+    ])
+
+    con.execute("""
+        INSERT INTO env_responses_eval (
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            agent_id, generation_idx, content, turn_type, tokens, response_time, tail_idx
+        )
+        SELECT
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            agent_id, generation_idx, content, turn_type, tokens, response_time, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(env_responses)} eval env responses in {elapsed:.2f}s")
+
+
+def insert_tool_calls_eval(con: duckdb.DuckDBPyConnection, run_id: str, tool_calls: list[dict]):
+    """Insert eval tool calls into the database."""
+    if not tool_calls:
+        return
+
+    log.info(f"[DB] Inserting {len(tool_calls)} eval tool calls...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "step": tc.get("step"),
+            "eval_name": tc.get("eval_name"),
+            "model_step": tc.get("model_step"),
+            "sample_idx": tc.get("sample_idx"),
+            "completion_idx": tc.get("completion_idx"),
+            "agent_id": tc.get("agent_id", 0),
+            "generation_idx": tc.get("generation_idx"),
+            "tool_call_idx": tc.get("tool_call_idx"),
+            "env_response_generation_idx": tc.get("env_response_generation_idx"),
+            "tool_name": tc.get("tool_name"),
+            "arguments": tc.get("arguments"),
+            "raw_text": tc.get("raw_text"),
+            "result": tc.get("result"),
+            "success": tc.get("success"),
+            "error": tc.get("error"),
+            "exit_code": tc.get("exit_code"),
+            "truncated": tc.get("truncated"),
+            "result_tokens": tc.get("result_tokens"),
+            "sandbox_id": tc.get("sandbox_id"),
+            "tail_idx": tc.get("tail_idx"),
+        }
+        for tc in tool_calls
+    ])
+
+    con.execute("""
+        INSERT INTO tool_calls_eval (
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            agent_id, generation_idx, tool_call_idx, env_response_generation_idx,
+            tool_name, arguments, raw_text, result, success, error,
+            exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        )
+        SELECT
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            agent_id, generation_idx, tool_call_idx, env_response_generation_idx,
+            tool_name, arguments, raw_text, result, success, error,
+            exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tool_calls)} eval tool calls in {elapsed:.2f}s")
 
 
 def insert_samples_data_eval(con: duckdb.DuckDBPyConnection, run_id: str, samples_data: list[dict]):
     """Insert eval sample-level data into the database."""
     if not samples_data:
         return
-    
+
     log.info(f"[DB] Inserting {len(samples_data)} eval samples data...")
     start = time.time()
-    
+
     df = pd.DataFrame([
         {
             "run_id": run_id,
@@ -1702,18 +2317,25 @@ def insert_samples_data_eval(con: duckdb.DuckDBPyConnection, run_id: str, sample
             "sample_idx": s.get("sample_idx"),
             "completion_idx": s.get("completion_idx"),
             "env": s.get("env"),
-            "turns": s.get("turns"),
+            "num_generations": s.get("num_generations"),
             "compute_eval_metrics_time": s.get("compute_eval_metrics_time"),
+            "stop_reason": s.get("stop_reason"),
             "tail_idx": s.get("tail_idx"),
         }
         for s in samples_data
     ])
-    
+
     con.execute("""
-        INSERT INTO samples_data_eval
-        SELECT * FROM df
+        INSERT INTO samples_data_eval (
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            env, num_generations, compute_eval_metrics_time, stop_reason, tail_idx
+        )
+        SELECT
+            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            env, num_generations, compute_eval_metrics_time, stop_reason, tail_idx
+        FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(samples_data)} eval samples data in {elapsed:.2f}s")
 
@@ -1846,10 +2468,10 @@ def insert_info_turns_eval(
     """Insert eval info turns into the database."""
     if not info_turns:
         return
-    
+
     log.info(f"[DB] Inserting {len(info_turns)} eval info turns...")
     start = time.time()
-    
+
     df = pd.DataFrame([
         {
             "run_id": run_id,
@@ -1857,7 +2479,9 @@ def insert_info_turns_eval(
             "eval_name": it.get("eval_name"),
             "sample_idx": it.get("sample_idx"),
             "completion_idx": it.get("completion_idx"),
-            "turn_order": it.get("turn_order"),
+            "agent_id": it.get("agent_id", 0),
+            "generation_idx": it.get("generation_idx"),
+            "tool_call_idx": it.get("tool_call_idx"),
             "env": it.get("env"),
             "info_key": it.get("info_key"),
             "info_value": it.get("info_value"),
@@ -1866,18 +2490,20 @@ def insert_info_turns_eval(
         }
         for it in info_turns
     ])
-    
+
     con.execute("""
         INSERT INTO info_turns_eval (
-            run_id, step, eval_name, sample_idx, completion_idx, turn_order,
+            run_id, step, eval_name, sample_idx, completion_idx,
+            agent_id, generation_idx, tool_call_idx,
             env, info_key, info_value, info_type, tail_idx
         )
         SELECT
-            run_id, step, eval_name, sample_idx, completion_idx, turn_order,
+            run_id, step, eval_name, sample_idx, completion_idx,
+            agent_id, generation_idx, tool_call_idx,
             env, info_key, info_value, info_type, tail_idx
         FROM df
     """)
-    
+
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(info_turns)} eval info turns in {elapsed:.2f}s")
 

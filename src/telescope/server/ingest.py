@@ -27,7 +27,10 @@ from .db import (
     get_ingest_state,
     update_ingest_state,
     insert_prompts,
-    insert_rollouts,
+    insert_generations,
+    insert_env_responses,
+    insert_tool_calls,
+    insert_turn_metrics,
     insert_samples_data,
     insert_rollouts_metrics,
     insert_golden_answers,
@@ -36,12 +39,15 @@ from .db import (
     insert_logs,
     insert_events_orchestrator,
     insert_events_trainer,
-    insert_events_inference,
+    insert_events_rollout,
+    insert_events_infra,
     insert_system_metrics_gpu,
     insert_system_metrics_cpu,
     insert_vllm_metrics,
     insert_prompts_discarded,
-    insert_rollouts_discarded,
+    insert_generations_discarded,
+    insert_env_responses_discarded,
+    insert_tool_calls_discarded,
     insert_samples_data_discarded,
     insert_rollouts_metrics_discarded,
     insert_golden_answers_discarded,
@@ -49,7 +55,9 @@ from .db import (
     insert_info_turns,
     insert_info_turns_discarded,
     insert_prompts_eval,
-    insert_rollouts_eval,
+    insert_generations_eval,
+    insert_env_responses_eval,
+    insert_tool_calls_eval,
     insert_samples_data_eval,
     insert_rollouts_metrics_eval,
     insert_golden_answers_eval,
@@ -96,7 +104,7 @@ EMPTY_KNOWN_PROJECTS_DISCOVERY_SECONDS = 60
 # Runs must have a schema_version tag that exactly matches this value.
 # Runs without a schema_version tag or with a different value are skipped
 # during initial discovery and polling (similar to telescope-ignore).
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
 # In-memory store for inflight generation snapshots (per run).
 # Updated on each tail.zip ingest, not persisted to DB.
@@ -106,9 +114,13 @@ inflight_by_run: dict[str, dict] = {}
 TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "events_orchestrator": "0.1",
     "events_trainer": "0.2",
-    "events_inference": "0.6",
+    "events_rollout": "0.1",
+    "events_infra": "0.1",
     "prompts": "0.1",
-    "rollouts": "0.1",
+    "generations": "0.1",
+    "env_responses": "0.1",
+    "tool_calls": "0.1",
+    "turn_metrics": "0.1",
     "samples_data": "0.2",
     "rollouts_metrics": "0.1",
     "golden_answers": "0.1",
@@ -118,7 +130,9 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "vllm_metrics": "0.1",
     "step_metrics": "0.2",
     "prompts_discarded": "0.1",
-    "rollouts_discarded": "0.1",
+    "generations_discarded": "0.1",
+    "env_responses_discarded": "0.1",
+    "tool_calls_discarded": "0.1",
     "samples_data_discarded": "0.2",
     "rollouts_metrics_discarded": "0.1",
     "golden_answers_discarded": "0.1",
@@ -126,7 +140,9 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "info_turns": "0.1",
     "info_turns_discarded": "0.1",
     "prompts_eval": "0.1",
-    "rollouts_eval": "0.1",
+    "generations_eval": "0.1",
+    "env_responses_eval": "0.1",
+    "tool_calls_eval": "0.1",
     "samples_data_eval": "0.1",
     "rollouts_metrics_eval": "0.1",
     "golden_answers_eval": "0.1",
@@ -690,13 +706,16 @@ class EventZipData:
     def __init__(self):
         self.orchestrator: list[dict] | None = None
         self.trainer: list[dict] | None = None
-        self.inference: list[dict] | None = None
+        self.events_rollout: list[dict] | None = None
+        self.events_infra: list[dict] | None = None
         self.gpu: list[dict] | None = None
         self.cpu: list[dict] | None = None
         self.vllm: list[dict] | None = None
         # Discarded data (from event zips)
         self.prompts_discarded: list[dict] | None = None
-        self.rollouts_discarded: list[dict] | None = None
+        self.generations_discarded: list[dict] | None = None
+        self.env_responses_discarded: list[dict] | None = None
+        self.tool_calls_discarded: list[dict] | None = None
         self.samples_data_discarded: list[dict] | None = None
         self.rollouts_metrics_discarded: list[dict] | None = None
         self.golden_answers_discarded: list[dict] | None = None
@@ -704,7 +723,9 @@ class EventZipData:
         self.info_turns_discarded: list[dict] | None = None
         # Kept rollout data (from event zips, same tail_idx lifecycle as discarded)
         self.prompts_kept: list[dict] | None = None
-        self.rollouts_kept: list[dict] | None = None
+        self.generations_kept: list[dict] | None = None
+        self.env_responses_kept: list[dict] | None = None
+        self.tool_calls_kept: list[dict] | None = None
         self.samples_data_kept: list[dict] | None = None
         self.rollouts_metrics_kept: list[dict] | None = None
         self.golden_answers_kept: list[dict] | None = None
@@ -712,7 +733,9 @@ class EventZipData:
         self.info_turns_kept: list[dict] | None = None
         # Eval data (from event zips, same tail_idx lifecycle as discarded)
         self.prompts_eval: list[dict] | None = None
-        self.rollouts_eval: list[dict] | None = None
+        self.generations_eval: list[dict] | None = None
+        self.env_responses_eval: list[dict] | None = None
+        self.tool_calls_eval: list[dict] | None = None
         self.samples_data_eval: list[dict] | None = None
         self.rollouts_metrics_eval: list[dict] | None = None
         self.golden_answers_eval: list[dict] | None = None
@@ -743,26 +766,33 @@ class EventZipData:
         return any([
             self.orchestrator,
             self.trainer,
-            self.inference,
+            self.events_rollout,
+            self.events_infra,
             self.gpu,
             self.cpu,
             self.vllm,
             self.prompts_discarded,
-            self.rollouts_discarded,
+            self.generations_discarded,
+            self.env_responses_discarded,
+            self.tool_calls_discarded,
             self.samples_data_discarded,
             self.rollouts_metrics_discarded,
             self.golden_answers_discarded,
             self.sample_tags_discarded,
             self.info_turns_discarded,
             self.prompts_kept,
-            self.rollouts_kept,
+            self.generations_kept,
+            self.env_responses_kept,
+            self.tool_calls_kept,
             self.samples_data_kept,
             self.rollouts_metrics_kept,
             self.golden_answers_kept,
             self.sample_tags_kept,
             self.info_turns_kept,
             self.prompts_eval,
-            self.rollouts_eval,
+            self.generations_eval,
+            self.env_responses_eval,
+            self.tool_calls_eval,
             self.samples_data_eval,
             self.rollouts_metrics_eval,
             self.golden_answers_eval,
@@ -779,12 +809,15 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
     - metadata.json (contains min_tail_idx, max_tail_idx)
     - orchestrator.parquet (instant events with tail_idx column)
     - trainer.parquet (duration events with tail_idx column)
-    - inference.parquet (duration events with tail_idx column)
+    - events_rollout.parquet (per-sample rollout lifecycle events with tail_idx column)
+    - events_infra.parquet (infrastructure events with tail_idx column)
     - gpu.parquet (GPU metrics with tail_idx column)
     - cpu.parquet (CPU metrics with tail_idx column)
     - vllm.parquet (vLLM inference server metrics with tail_idx column)
     - logs.parquet (log records with tail_idx column)
-    - rollouts_discarded.parquet (discarded rollouts with tail_idx column)
+    - generations_discarded.parquet (discarded generations with tail_idx column)
+    - env_responses_discarded.parquet (discarded env responses with tail_idx column)
+    - tool_calls_discarded.parquet (discarded tool calls with tail_idx column)
     - rollouts_metrics_discarded.parquet (discarded rollout metrics with tail_idx column)
     - golden_answers_discarded.parquet (discarded golden answers with tail_idx column)
 
@@ -799,7 +832,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                 # Extract zip file
                 with zipfile.ZipFile(local_file.name, 'r') as zf:
                     zf.extractall(tmpdir)
-                    
+
                     # Read metadata.json if it exists
                     metadata_path = f"{tmpdir}/metadata.json"
                     try:
@@ -808,7 +841,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted metadata: {data.metadata}")
                     except Exception as e:
                         log.debug(f"[WANDB] No metadata.json in {file_path}: {e}")
-                    
+
                     # Read orchestrator.parquet if it exists
                     orchestrator_path = f"{tmpdir}/orchestrator.parquet"
                     try:
@@ -817,7 +850,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted orchestrator: {len(data.orchestrator)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No orchestrator.parquet in {file_path}: {e}")
-                    
+
                     # Read trainer.parquet if it exists
                     trainer_path = f"{tmpdir}/trainer.parquet"
                     try:
@@ -826,22 +859,35 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted trainer: {len(data.trainer)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No trainer.parquet in {file_path}: {e}")
-                    
-                    # Read inference.parquet if it exists
-                    inference_path = f"{tmpdir}/inference.parquet"
+
+                    # Read events_rollout.parquet if it exists
+                    events_rollout_path = f"{tmpdir}/events_rollout.parquet"
                     try:
-                        table = pq.read_table(inference_path)
-                        data.inference = table.to_pylist()
-                        log.info(f"[WANDB] Extracted inference: {len(data.inference)} rows")
+                        table = pq.read_table(events_rollout_path)
+                        data.events_rollout = table.to_pylist()
+                        log.info(f"[WANDB] Extracted events_rollout: {len(data.events_rollout)} rows")
                     except Exception as e:
-                        log.debug(f"[WANDB] No inference.parquet in {file_path}: {e}")
+                        log.debug(f"[WANDB] No events_rollout.parquet in {file_path}: {e}")
+
+                    # Read events_infra.parquet if it exists
+                    events_infra_path = f"{tmpdir}/events_infra.parquet"
+                    try:
+                        table = pq.read_table(events_infra_path)
+                        data.events_infra = table.to_pylist()
+                        log.info(f"[WANDB] Extracted events_infra: {len(data.events_infra)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No events_infra.parquet in {file_path}: {e}")
 
                     # Read inflight.json if it exists (snapshot of running generations)
                     inflight_path = f"{tmpdir}/inflight.json"
                     try:
                         with open(inflight_path) as f:
                             data.inflight = json.load(f)
-                        log.info(f"[WANDB] Extracted inflight: {len(data.inflight.get('running', []))} running")
+                        log.info(
+                            f"[WANDB] Extracted inflight: "
+                            f"{len(data.inflight.get('inflight_generations', []))} generations, "
+                            f"{len(data.inflight.get('inflight_tool_executions', []))} tool executions"
+                        )
                     except Exception:
                         data.inflight = None
 
@@ -853,7 +899,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted gpu: {len(data.gpu)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No gpu.parquet in {file_path}: {e}")
-                    
+
                     # Read cpu.parquet if it exists
                     cpu_path = f"{tmpdir}/cpu.parquet"
                     try:
@@ -862,7 +908,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted cpu: {len(data.cpu)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No cpu.parquet in {file_path}: {e}")
-                    
+
                     # Read vllm.parquet if it exists
                     vllm_path = f"{tmpdir}/vllm.parquet"
                     try:
@@ -871,7 +917,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted vllm: {len(data.vllm)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No vllm.parquet in {file_path}: {e}")
-                    
+
                     # Read prompts_discarded.parquet if it exists
                     prompts_discarded_path = f"{tmpdir}/prompts_discarded.parquet"
                     try:
@@ -880,16 +926,34 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted prompts_discarded: {len(data.prompts_discarded)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No prompts_discarded.parquet in {file_path}: {e}")
-                    
-                    # Read rollouts_discarded.parquet if it exists
-                    gen_discarded_path = f"{tmpdir}/rollouts_discarded.parquet"
+
+                    # Read generations_discarded.parquet if it exists
+                    gen_discarded_path = f"{tmpdir}/generations_discarded.parquet"
                     try:
                         table = pq.read_table(gen_discarded_path)
-                        data.rollouts_discarded = table.to_pylist()
-                        log.info(f"[WANDB] Extracted rollouts_discarded: {len(data.rollouts_discarded)} rows")
+                        data.generations_discarded = table.to_pylist()
+                        log.info(f"[WANDB] Extracted generations_discarded: {len(data.generations_discarded)} rows")
                     except Exception as e:
-                        log.debug(f"[WANDB] No rollouts_discarded.parquet in {file_path}: {e}")
-                    
+                        log.debug(f"[WANDB] No generations_discarded.parquet in {file_path}: {e}")
+
+                    # Read env_responses_discarded.parquet if it exists
+                    env_responses_discarded_path = f"{tmpdir}/env_responses_discarded.parquet"
+                    try:
+                        table = pq.read_table(env_responses_discarded_path)
+                        data.env_responses_discarded = table.to_pylist()
+                        log.info(f"[WANDB] Extracted env_responses_discarded: {len(data.env_responses_discarded)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No env_responses_discarded.parquet in {file_path}: {e}")
+
+                    # Read tool_calls_discarded.parquet if it exists
+                    tool_calls_discarded_path = f"{tmpdir}/tool_calls_discarded.parquet"
+                    try:
+                        table = pq.read_table(tool_calls_discarded_path)
+                        data.tool_calls_discarded = table.to_pylist()
+                        log.info(f"[WANDB] Extracted tool_calls_discarded: {len(data.tool_calls_discarded)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No tool_calls_discarded.parquet in {file_path}: {e}")
+
                     # Read samples_data_discarded.parquet if it exists
                     samples_data_discarded_path = f"{tmpdir}/samples_data_discarded.parquet"
                     try:
@@ -898,7 +962,7 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted samples_data_discarded: {len(data.samples_data_discarded)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No samples_data_discarded.parquet in {file_path}: {e}")
-                    
+
                     # Read rollouts_metrics_discarded.parquet if it exists
                     metrics_discarded_path = f"{tmpdir}/rollouts_metrics_discarded.parquet"
                     try:
@@ -955,10 +1019,12 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                             f"[WANDB] No info_turns_discarded.parquet in {file_path}: {e}"
                         )
 
-                    # Read kept rollout parquet files
+                    # Read kept parquet files
                     for kept_name, attr in [
                         ("prompts_kept", "prompts_kept"),
-                        ("rollouts_kept", "rollouts_kept"),
+                        ("generations_kept", "generations_kept"),
+                        ("env_responses_kept", "env_responses_kept"),
+                        ("tool_calls_kept", "tool_calls_kept"),
                         ("samples_data_kept", "samples_data_kept"),
                         ("rollouts_metrics_kept", "rollouts_metrics_kept"),
                         ("golden_answers_kept", "golden_answers_kept"),
@@ -981,7 +1047,9 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                     # Read eval parquet files
                     for eval_name, attr in [
                         ("prompts_eval", "prompts_eval"),
-                        ("rollouts_eval", "rollouts_eval"),
+                        ("generations_eval", "generations_eval"),
+                        ("env_responses_eval", "env_responses_eval"),
+                        ("tool_calls_eval", "tool_calls_eval"),
                         ("samples_data_eval", "samples_data_eval"),
                         ("rollouts_metrics_eval", "rollouts_metrics_eval"),
                         ("golden_answers_eval", "golden_answers_eval"),
@@ -1058,7 +1126,10 @@ class RolloutZipData:
     """Container for data extracted from a rollout zip file."""
     def __init__(self):
         self.prompts: list[dict] | None = None
-        self.rollouts: list[dict] | None = None
+        self.generations: list[dict] | None = None
+        self.env_responses: list[dict] | None = None
+        self.tool_calls: list[dict] | None = None
+        self.turn_metrics: list[dict] | None = None
         self.samples_data: list[dict] | None = None
         self.rollouts_metrics: list[dict] | None = None
         self.golden_answers: list[dict] | None = None
@@ -1099,7 +1170,10 @@ class RolloutZipData:
     def has_any_data(self) -> bool:
         return (
             self.prompts is not None
-            or self.rollouts is not None
+            or self.generations is not None
+            or self.env_responses is not None
+            or self.tool_calls is not None
+            or self.turn_metrics is not None
             or self.samples_data is not None
             or self.rollouts_metrics is not None
             or self.golden_answers is not None
@@ -1110,7 +1184,8 @@ class RolloutZipData:
 
 
 def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZipData]:
-    """Download a rollout zip file and extract prompts.parquet, rollouts.parquet,
+    """Download a rollout zip file and extract prompts.parquet, generations.parquet,
+    env_responses.parquet, tool_calls.parquet, turn_metrics.parquet,
     rollouts_metrics.parquet, golden_answers.parquet, and metadata.json.
     Returns (file_path, RolloutZipData)."""
     data = RolloutZipData()
@@ -1122,7 +1197,7 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                 # Extract zip file
                 with zipfile.ZipFile(local_file.name, 'r') as zf:
                     zf.extractall(tmpdir)
-                    
+
                     # Read metadata.json if it exists
                     metadata_path = f"{tmpdir}/metadata.json"
                     try:
@@ -1131,8 +1206,8 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                         log.info(f"[WANDB] Extracted rollout metadata: {data.metadata}")
                     except Exception as e:
                         log.debug(f"[WANDB] No metadata.json in {file_path}: {e}")
-                    
-                    # Read prompts.parquet if it exists (new schema)
+
+                    # Read prompts.parquet if it exists
                     prompts_path = f"{tmpdir}/prompts.parquet"
                     try:
                         table = pq.read_table(prompts_path)
@@ -1140,16 +1215,43 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                         log.info(f"[WANDB] Extracted prompts: {len(data.prompts)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No prompts.parquet in {file_path}: {e}")
-                    
-                    # Read rollouts.parquet if it exists
-                    rollouts_path = f"{tmpdir}/rollouts.parquet"
+
+                    # Read generations.parquet if it exists
+                    generations_path = f"{tmpdir}/generations.parquet"
                     try:
-                        table = pq.read_table(rollouts_path)
-                        data.rollouts = table.to_pylist()
-                        log.info(f"[WANDB] Extracted rollouts: {len(data.rollouts)} rows")
+                        table = pq.read_table(generations_path)
+                        data.generations = table.to_pylist()
+                        log.info(f"[WANDB] Extracted generations: {len(data.generations)} rows")
                     except Exception as e:
-                        log.warning(f"[WANDB] No rollouts.parquet in {file_path}: {e}")
-                    
+                        log.warning(f"[WANDB] No generations.parquet in {file_path}: {e}")
+
+                    # Read env_responses.parquet if it exists
+                    env_responses_path = f"{tmpdir}/env_responses.parquet"
+                    try:
+                        table = pq.read_table(env_responses_path)
+                        data.env_responses = table.to_pylist()
+                        log.info(f"[WANDB] Extracted env_responses: {len(data.env_responses)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No env_responses.parquet in {file_path}: {e}")
+
+                    # Read tool_calls.parquet if it exists
+                    tool_calls_path = f"{tmpdir}/tool_calls.parquet"
+                    try:
+                        table = pq.read_table(tool_calls_path)
+                        data.tool_calls = table.to_pylist()
+                        log.info(f"[WANDB] Extracted tool_calls: {len(data.tool_calls)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No tool_calls.parquet in {file_path}: {e}")
+
+                    # Read turn_metrics.parquet if it exists
+                    turn_metrics_path = f"{tmpdir}/turn_metrics.parquet"
+                    try:
+                        table = pq.read_table(turn_metrics_path)
+                        data.turn_metrics = table.to_pylist()
+                        log.info(f"[WANDB] Extracted turn_metrics: {len(data.turn_metrics)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No turn_metrics.parquet in {file_path}: {e}")
+
                     # Read samples_data.parquet if it exists
                     samples_data_path = f"{tmpdir}/samples_data.parquet"
                     try:
@@ -1158,7 +1260,7 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                         log.info(f"[WANDB] Extracted samples_data: {len(data.samples_data)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No samples_data.parquet in {file_path}: {e}")
-                    
+
                     # Read rollouts_metrics.parquet if it exists
                     rollouts_metrics_path = f"{tmpdir}/rollouts_metrics.parquet"
                     try:
@@ -1223,7 +1325,7 @@ def _download_rollout_zip_sync(run: Any, file_path: str) -> tuple[str, RolloutZi
                         log.info(f"[WANDB] Extracted metrics: {len(data.metrics)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No metrics.parquet in {file_path}: {e}")
-                
+
                 elapsed = time.time() - start
                 log.info(f"[WANDB] Downloaded {file_path} in {elapsed:.2f}s")
                 return (file_path, data)
@@ -1404,26 +1506,33 @@ def _insert_event_zip_data(
     counts = {
         "orchestrator": 0,
         "trainer": 0,
-        "inference": 0,
+        "events_rollout": 0,
+        "events_infra": 0,
         "gpu": 0,
         "cpu": 0,
         "vllm": 0,
         "prompts_discarded": 0,
-        "rollouts_discarded": 0,
+        "generations_discarded": 0,
+        "env_responses_discarded": 0,
+        "tool_calls_discarded": 0,
         "samples_data_discarded": 0,
         "rollouts_metrics_discarded": 0,
         "golden_answers_discarded": 0,
         "sample_tags_discarded": 0,
         "info_turns_discarded": 0,
         "prompts_kept": 0,
-        "rollouts_kept": 0,
+        "generations_kept": 0,
+        "env_responses_kept": 0,
+        "tool_calls_kept": 0,
         "samples_data_kept": 0,
         "rollouts_metrics_kept": 0,
         "golden_answers_kept": 0,
         "sample_tags_kept": 0,
         "info_turns_kept": 0,
         "prompts_eval": 0,
-        "rollouts_eval": 0,
+        "generations_eval": 0,
+        "env_responses_eval": 0,
+        "tool_calls_eval": 0,
         "samples_data_eval": 0,
         "rollouts_metrics_eval": 0,
         "golden_answers_eval": 0,
@@ -1432,17 +1541,20 @@ def _insert_event_zip_data(
         "logs": 0,
     }
     inserted_tails: set[int] = set()
-    
+
     # If missing_tails is provided, filter events; otherwise use all events
     if missing_tails is not None:
         orchestrator = _filter_events_by_tails(data.orchestrator, missing_tails)
         trainer = _filter_events_by_tails(data.trainer, missing_tails)
-        inference = _filter_events_by_tails(data.inference, missing_tails)
+        events_rollout = _filter_events_by_tails(data.events_rollout, missing_tails)
+        events_infra = _filter_events_by_tails(data.events_infra, missing_tails)
         gpu = _filter_events_by_tails(data.gpu, missing_tails)
         cpu = _filter_events_by_tails(data.cpu, missing_tails)
         vllm = _filter_events_by_tails(data.vllm, missing_tails)
         prompts_discarded = _filter_events_by_tails(data.prompts_discarded, missing_tails)
-        rollouts_discarded = _filter_events_by_tails(data.rollouts_discarded, missing_tails)
+        generations_discarded = _filter_events_by_tails(data.generations_discarded, missing_tails)
+        env_responses_discarded = _filter_events_by_tails(data.env_responses_discarded, missing_tails)
+        tool_calls_discarded = _filter_events_by_tails(data.tool_calls_discarded, missing_tails)
         samples_data_discarded = _filter_events_by_tails(data.samples_data_discarded, missing_tails)
         rollouts_metrics_discarded = _filter_events_by_tails(
             data.rollouts_metrics_discarded, missing_tails
@@ -1457,7 +1569,9 @@ def _insert_event_zip_data(
             data.info_turns_discarded, missing_tails
         )
         prompts_kept = _filter_events_by_tails(data.prompts_kept, missing_tails)
-        rollouts_kept = _filter_events_by_tails(data.rollouts_kept, missing_tails)
+        generations_kept = _filter_events_by_tails(data.generations_kept, missing_tails)
+        env_responses_kept = _filter_events_by_tails(data.env_responses_kept, missing_tails)
+        tool_calls_kept = _filter_events_by_tails(data.tool_calls_kept, missing_tails)
         samples_data_kept = _filter_events_by_tails(data.samples_data_kept, missing_tails)
         rollouts_metrics_kept = _filter_events_by_tails(
             data.rollouts_metrics_kept, missing_tails
@@ -1472,7 +1586,9 @@ def _insert_event_zip_data(
             data.info_turns_kept, missing_tails
         )
         prompts_eval = _filter_events_by_tails(data.prompts_eval, missing_tails)
-        rollouts_eval = _filter_events_by_tails(data.rollouts_eval, missing_tails)
+        generations_eval = _filter_events_by_tails(data.generations_eval, missing_tails)
+        env_responses_eval = _filter_events_by_tails(data.env_responses_eval, missing_tails)
+        tool_calls_eval = _filter_events_by_tails(data.tool_calls_eval, missing_tails)
         samples_data_eval = _filter_events_by_tails(data.samples_data_eval, missing_tails)
         rollouts_metrics_eval = _filter_events_by_tails(data.rollouts_metrics_eval, missing_tails)
         golden_answers_eval = _filter_events_by_tails(data.golden_answers_eval, missing_tails)
@@ -1482,26 +1598,33 @@ def _insert_event_zip_data(
     else:
         orchestrator = data.orchestrator
         trainer = data.trainer
-        inference = data.inference
+        events_rollout = data.events_rollout
+        events_infra = data.events_infra
         gpu = data.gpu
         cpu = data.cpu
         vllm = data.vllm
         prompts_discarded = data.prompts_discarded
-        rollouts_discarded = data.rollouts_discarded
+        generations_discarded = data.generations_discarded
+        env_responses_discarded = data.env_responses_discarded
+        tool_calls_discarded = data.tool_calls_discarded
         samples_data_discarded = data.samples_data_discarded
         rollouts_metrics_discarded = data.rollouts_metrics_discarded
         golden_answers_discarded = data.golden_answers_discarded
         sample_tags_discarded = data.sample_tags_discarded
         info_turns_discarded = data.info_turns_discarded
         prompts_kept = data.prompts_kept
-        rollouts_kept = data.rollouts_kept
+        generations_kept = data.generations_kept
+        env_responses_kept = data.env_responses_kept
+        tool_calls_kept = data.tool_calls_kept
         samples_data_kept = data.samples_data_kept
         rollouts_metrics_kept = data.rollouts_metrics_kept
         golden_answers_kept = data.golden_answers_kept
         sample_tags_kept = data.sample_tags_kept
         info_turns_kept = data.info_turns_kept
         prompts_eval = data.prompts_eval
-        rollouts_eval = data.rollouts_eval
+        generations_eval = data.generations_eval
+        env_responses_eval = data.env_responses_eval
+        tool_calls_eval = data.tool_calls_eval
         samples_data_eval = data.samples_data_eval
         rollouts_metrics_eval = data.rollouts_metrics_eval
         golden_answers_eval = data.golden_answers_eval
@@ -1514,31 +1637,37 @@ def _insert_event_zip_data(
         counts["orchestrator"] = len(orchestrator)
         inserted_tails.update(_get_tail_indices_from_events(orchestrator))
         log.info(f"[EVENTS] Synced {source_name} orchestrator: {counts['orchestrator']} events")
-    
+
     if trainer:
         insert_events_trainer(con, run_path, trainer)
         counts["trainer"] = len(trainer)
         inserted_tails.update(_get_tail_indices_from_events(trainer))
         log.info(f"[EVENTS] Synced {source_name} trainer: {counts['trainer']} events")
-    
-    if inference:
-        insert_events_inference(con, run_path, inference)
-        counts["inference"] = len(inference)
-        inserted_tails.update(_get_tail_indices_from_events(inference))
-        log.info(f"[EVENTS] Synced {source_name} inference: {counts['inference']} events")
-    
+
+    if events_rollout:
+        insert_events_rollout(con, run_path, events_rollout)
+        counts["events_rollout"] = len(events_rollout)
+        inserted_tails.update(_get_tail_indices_from_events(events_rollout))
+        log.info(f"[EVENTS] Synced {source_name} events_rollout: {counts['events_rollout']} events")
+
+    if events_infra:
+        insert_events_infra(con, run_path, events_infra)
+        counts["events_infra"] = len(events_infra)
+        inserted_tails.update(_get_tail_indices_from_events(events_infra))
+        log.info(f"[EVENTS] Synced {source_name} events_infra: {counts['events_infra']} events")
+
     if gpu:
         insert_system_metrics_gpu(con, run_path, gpu)
         counts["gpu"] = len(gpu)
         inserted_tails.update(_get_tail_indices_from_events(gpu))
         log.info(f"[EVENTS] Synced {source_name} gpu: {counts['gpu']} metrics")
-    
+
     if cpu:
         insert_system_metrics_cpu(con, run_path, cpu)
         counts["cpu"] = len(cpu)
         inserted_tails.update(_get_tail_indices_from_events(cpu))
         log.info(f"[EVENTS] Synced {source_name} cpu: {counts['cpu']} metrics")
-    
+
     if vllm:
         insert_vllm_metrics(con, run_path, vllm)
         counts["vllm"] = len(vllm)
@@ -1556,19 +1685,31 @@ def _insert_event_zip_data(
         counts["prompts_discarded"] = len(prompts_discarded)
         inserted_tails.update(_get_tail_indices_from_events(prompts_discarded))
         log.info(f"[EVENTS] Synced {source_name} prompts_discarded: {counts['prompts_discarded']} prompts")
-    
-    if rollouts_discarded:
-        insert_rollouts_discarded(con, run_path, rollouts_discarded)
-        counts["rollouts_discarded"] = len(rollouts_discarded)
-        inserted_tails.update(_get_tail_indices_from_events(rollouts_discarded))
-        log.info(f"[EVENTS] Synced {source_name} rollouts_discarded: {counts['rollouts_discarded']} rollout turns")
-    
+
+    if generations_discarded:
+        insert_generations_discarded(con, run_path, generations_discarded)
+        counts["generations_discarded"] = len(generations_discarded)
+        inserted_tails.update(_get_tail_indices_from_events(generations_discarded))
+        log.info(f"[EVENTS] Synced {source_name} generations_discarded: {counts['generations_discarded']} generations")
+
+    if env_responses_discarded:
+        insert_env_responses_discarded(con, run_path, env_responses_discarded)
+        counts["env_responses_discarded"] = len(env_responses_discarded)
+        inserted_tails.update(_get_tail_indices_from_events(env_responses_discarded))
+        log.info(f"[EVENTS] Synced {source_name} env_responses_discarded: {counts['env_responses_discarded']} env responses")
+
+    if tool_calls_discarded:
+        insert_tool_calls_discarded(con, run_path, tool_calls_discarded)
+        counts["tool_calls_discarded"] = len(tool_calls_discarded)
+        inserted_tails.update(_get_tail_indices_from_events(tool_calls_discarded))
+        log.info(f"[EVENTS] Synced {source_name} tool_calls_discarded: {counts['tool_calls_discarded']} tool calls")
+
     if samples_data_discarded:
         insert_samples_data_discarded(con, run_path, samples_data_discarded)
         counts["samples_data_discarded"] = len(samples_data_discarded)
         inserted_tails.update(_get_tail_indices_from_events(samples_data_discarded))
         log.info(f"[EVENTS] Synced {source_name} samples_data_discarded: {counts['samples_data_discarded']} samples")
-    
+
     if rollouts_metrics_discarded:
         insert_rollouts_metrics_discarded(con, run_path, rollouts_metrics_discarded)
         counts["rollouts_metrics_discarded"] = len(rollouts_metrics_discarded)
@@ -1611,11 +1752,23 @@ def _insert_event_zip_data(
         inserted_tails.update(_get_tail_indices_from_events(prompts_kept))
         log.info(f"[EVENTS] Synced {source_name} prompts_kept: {counts['prompts_kept']} prompts")
 
-    if rollouts_kept:
-        insert_rollouts(con, run_path, rollouts_kept)
-        counts["rollouts_kept"] = len(rollouts_kept)
-        inserted_tails.update(_get_tail_indices_from_events(rollouts_kept))
-        log.info(f"[EVENTS] Synced {source_name} rollouts_kept: {counts['rollouts_kept']} rollout turns")
+    if generations_kept:
+        insert_generations(con, run_path, generations_kept)
+        counts["generations_kept"] = len(generations_kept)
+        inserted_tails.update(_get_tail_indices_from_events(generations_kept))
+        log.info(f"[EVENTS] Synced {source_name} generations_kept: {counts['generations_kept']} generations")
+
+    if env_responses_kept:
+        insert_env_responses(con, run_path, env_responses_kept)
+        counts["env_responses_kept"] = len(env_responses_kept)
+        inserted_tails.update(_get_tail_indices_from_events(env_responses_kept))
+        log.info(f"[EVENTS] Synced {source_name} env_responses_kept: {counts['env_responses_kept']} env responses")
+
+    if tool_calls_kept:
+        insert_tool_calls(con, run_path, tool_calls_kept)
+        counts["tool_calls_kept"] = len(tool_calls_kept)
+        inserted_tails.update(_get_tail_indices_from_events(tool_calls_kept))
+        log.info(f"[EVENTS] Synced {source_name} tool_calls_kept: {counts['tool_calls_kept']} tool calls")
 
     if samples_data_kept:
         insert_samples_data(con, run_path, samples_data_kept)
@@ -1665,11 +1818,23 @@ def _insert_event_zip_data(
         inserted_tails.update(_get_tail_indices_from_events(prompts_eval))
         log.info(f"[EVENTS] Synced {source_name} prompts_eval: {counts['prompts_eval']} prompts")
 
-    if rollouts_eval:
-        insert_rollouts_eval(con, run_path, rollouts_eval)
-        counts["rollouts_eval"] = len(rollouts_eval)
-        inserted_tails.update(_get_tail_indices_from_events(rollouts_eval))
-        log.info(f"[EVENTS] Synced {source_name} rollouts_eval: {counts['rollouts_eval']} turns")
+    if generations_eval:
+        insert_generations_eval(con, run_path, generations_eval)
+        counts["generations_eval"] = len(generations_eval)
+        inserted_tails.update(_get_tail_indices_from_events(generations_eval))
+        log.info(f"[EVENTS] Synced {source_name} generations_eval: {counts['generations_eval']} generations")
+
+    if env_responses_eval:
+        insert_env_responses_eval(con, run_path, env_responses_eval)
+        counts["env_responses_eval"] = len(env_responses_eval)
+        inserted_tails.update(_get_tail_indices_from_events(env_responses_eval))
+        log.info(f"[EVENTS] Synced {source_name} env_responses_eval: {counts['env_responses_eval']} env responses")
+
+    if tool_calls_eval:
+        insert_tool_calls_eval(con, run_path, tool_calls_eval)
+        counts["tool_calls_eval"] = len(tool_calls_eval)
+        inserted_tails.update(_get_tail_indices_from_events(tool_calls_eval))
+        log.info(f"[EVENTS] Synced {source_name} tool_calls_eval: {counts['tool_calls_eval']} tool calls")
 
     if samples_data_eval:
         insert_samples_data_eval(con, run_path, samples_data_eval)
@@ -1712,10 +1877,10 @@ def _insert_event_zip_data(
             f"[EVENTS] Synced {source_name} info_turns_eval: "
             f"{counts['info_turns_eval']} info turns"
         )
-    
-    # Collect steps from kept rollouts for ingested_steps tracking
+
+    # Collect steps from kept generations for ingested_steps tracking
     kept_steps: set[int] = set()
-    for r in (rollouts_kept or []):
+    for r in (generations_kept or []):
         step = r.get("step")
         if step is not None:
             kept_steps.add(step)
@@ -1749,7 +1914,7 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
     
     Each zip contains:
     - metadata.json (min_tail_idx, max_tail_idx)
-    - orchestrator.parquet, trainer.parquet, inference.parquet, gpu.parquet, cpu.parquet, vllm.parquet
+    - orchestrator.parquet, trainer.parquet, events_rollout.parquet, events_infra.parquet, gpu.parquet, cpu.parquet, vllm.parquet
     
     All DB inserts are batched in a single transaction to avoid row-group fragmentation.
     """
@@ -1762,24 +1927,31 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
         totals = {
             "orchestrator": 0,
             "trainer": 0,
-            "inference": 0,
+            "events_rollout": 0,
+            "events_infra": 0,
             "gpu": 0,
             "cpu": 0,
             "vllm": 0,
             "prompts_discarded": 0,
-            "rollouts_discarded": 0,
+            "generations_discarded": 0,
+            "env_responses_discarded": 0,
+            "tool_calls_discarded": 0,
             "samples_data_discarded": 0,
             "rollouts_metrics_discarded": 0,
             "golden_answers_discarded": 0,
             "info_turns_discarded": 0,
             "prompts_kept": 0,
-            "rollouts_kept": 0,
+            "generations_kept": 0,
+            "env_responses_kept": 0,
+            "tool_calls_kept": 0,
             "samples_data_kept": 0,
             "rollouts_metrics_kept": 0,
             "golden_answers_kept": 0,
             "info_turns_kept": 0,
             "prompts_eval": 0,
-            "rollouts_eval": 0,
+            "generations_eval": 0,
+            "env_responses_eval": 0,
+            "tool_calls_eval": 0,
             "samples_data_eval": 0,
             "rollouts_metrics_eval": 0,
             "golden_answers_eval": 0,
@@ -1919,25 +2091,31 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
                 con.close()
         
         elapsed = time.time() - events_start
-        total_events = totals["orchestrator"] + totals["trainer"] + totals["inference"]
+        total_events = totals["orchestrator"] + totals["trainer"] + totals["events_rollout"] + totals["events_infra"]
         total_metrics = totals["gpu"] + totals["cpu"] + totals["vllm"]
         total_discarded = (
             totals["prompts_discarded"]
-            + totals["rollouts_discarded"]
+            + totals["generations_discarded"]
+            + totals["env_responses_discarded"]
+            + totals["tool_calls_discarded"]
             + totals["samples_data_discarded"]
             + totals["rollouts_metrics_discarded"]
             + totals["golden_answers_discarded"]
         )
         total_kept = (
             totals["prompts_kept"]
-            + totals["rollouts_kept"]
+            + totals["generations_kept"]
+            + totals["env_responses_kept"]
+            + totals["tool_calls_kept"]
             + totals["samples_data_kept"]
             + totals["rollouts_metrics_kept"]
             + totals["golden_answers_kept"]
         )
         total_eval = (
             totals["prompts_eval"]
-            + totals["rollouts_eval"]
+            + totals["generations_eval"]
+            + totals["env_responses_eval"]
+            + totals["tool_calls_eval"]
             + totals["samples_data_eval"]
             + totals["rollouts_metrics_eval"]
             + totals["golden_answers_eval"]
@@ -1953,12 +2131,19 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             con.close()
 
         log.info(f"[EVENTS] Completed event sync for {run_path} in {elapsed:.2f}s")
-        log.info(f"[EVENTS] Events: {totals['orchestrator']} orchestrator, {totals['trainer']} trainer, {totals['inference']} inference")
+        log.info(
+            f"[EVENTS] Events: {totals['orchestrator']} orchestrator, "
+            f"{totals['trainer']} trainer, "
+            f"{totals['events_rollout']} rollout, "
+            f"{totals['events_infra']} infra"
+        )
         log.info(f"[EVENTS] Metrics: {totals['gpu']} gpu, {totals['cpu']} cpu, {totals['vllm']} vllm")
         log.info(
             "[EVENTS] Discarded: "
             f"{totals['prompts_discarded']} prompts, "
-            f"{totals['rollouts_discarded']} rollout turns, "
+            f"{totals['generations_discarded']} generations, "
+            f"{totals['env_responses_discarded']} env responses, "
+            f"{totals['tool_calls_discarded']} tool calls, "
             f"{totals['samples_data_discarded']} samples_data, "
             f"{totals['rollouts_metrics_discarded']} metrics, "
             f"{totals['golden_answers_discarded']} golden answers"
@@ -1967,7 +2152,9 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             log.info(
                 "[EVENTS] Kept: "
                 f"{totals['prompts_kept']} prompts, "
-                f"{totals['rollouts_kept']} rollout turns, "
+                f"{totals['generations_kept']} generations, "
+                f"{totals['env_responses_kept']} env responses, "
+                f"{totals['tool_calls_kept']} tool calls, "
                 f"{totals['samples_data_kept']} samples_data, "
                 f"{totals['rollouts_metrics_kept']} metrics, "
                 f"{totals['golden_answers_kept']} golden answers, "
@@ -1978,7 +2165,9 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             log.info(
                 "[EVENTS] Eval: "
                 f"{totals['prompts_eval']} prompts, "
-                f"{totals['rollouts_eval']} rollout turns, "
+                f"{totals['generations_eval']} generations, "
+                f"{totals['env_responses_eval']} env responses, "
+                f"{totals['tool_calls_eval']} tool calls, "
                 f"{totals['samples_data_eval']} samples_data, "
                 f"{totals['rollouts_metrics_eval']} metrics, "
                 f"{totals['golden_answers_eval']} golden answers, "
@@ -2120,25 +2309,27 @@ def _insert_rollout_zip_data(
     missing_steps: set[int] | None = None,
     missing_metric_steps: set[int] | None = None,
 ) -> tuple[int, int, int, int, int, int, set[int], set[int]]:
-    """Insert prompts, rollouts, samples_data, rollout metrics, golden answers,
-    and step metrics from a RolloutZipData into the database.
-    
+    """Insert prompts, generations, env_responses, tool_calls, turn_metrics,
+    samples_data, rollout metrics, golden answers, and step metrics from a
+    RolloutZipData into the database.
+
     Args:
         con: Database connection
         run_path: The run ID
-        data: RolloutZipData containing prompts, rollouts, samples_data, rollout metrics,
+        data: RolloutZipData containing prompts, generations, env_responses,
+              tool_calls, turn_metrics, samples_data, rollout metrics,
               golden answers, step metrics, and metadata
         source_name: Name for logging (e.g., "block_0", "last.zip")
         missing_steps: Optional set of steps to filter by for rollouts/metrics/etc.
         missing_metric_steps: Optional set of steps to filter by for step metrics.
-    
+
     Returns:
-        Tuple of (prompts_count, rollouts_count, samples_data_count, rollouts_metrics_count,
-                 golden_answers_count, step_metrics_count, set of rollout steps inserted,
-                 set of metric steps inserted)
+        Tuple of (prompts_count, generations_count, samples_data_count,
+                 rollouts_metrics_count, golden_answers_count, step_metrics_count,
+                 set of rollout steps inserted, set of metric steps inserted)
     """
     prompts_count = 0
-    rollouts_count = 0
+    generations_count = 0
     samples_data_count = 0
     rollouts_metrics_count = 0
     golden_answers_count = 0
@@ -2146,11 +2337,14 @@ def _insert_rollout_zip_data(
     step_metrics_count = 0
     inserted_steps: set[int] = set()
     inserted_metric_steps: set[int] = set()
-    
+
     # If missing_steps is provided, filter data; otherwise use all data
     if missing_steps is not None:
         prompts = _filter_prompts_by_steps(data.prompts, missing_steps)
-        rollouts = _filter_rollouts_by_steps(data.rollouts, missing_steps)
+        generations_list = _filter_rollouts_by_steps(data.generations, missing_steps)
+        env_responses_list = _filter_rollouts_by_steps(data.env_responses, missing_steps)
+        tool_calls_list = _filter_rollouts_by_steps(data.tool_calls, missing_steps)
+        turn_metrics_list = _filter_rollouts_by_steps(data.turn_metrics, missing_steps)
         samples_data_list = _filter_samples_data_by_steps(data.samples_data, missing_steps)
         rollouts_metrics = _filter_rollouts_metrics_by_steps(
             data.rollouts_metrics, missing_steps
@@ -2164,34 +2358,49 @@ def _insert_rollout_zip_data(
             metrics = _filter_metrics_by_steps(data.metrics, missing_metric_steps)
     else:
         prompts = data.prompts
-        rollouts = data.rollouts
+        generations_list = data.generations
+        env_responses_list = data.env_responses
+        tool_calls_list = data.tool_calls
+        turn_metrics_list = data.turn_metrics
         samples_data_list = data.samples_data
         rollouts_metrics = data.rollouts_metrics
         golden_answers = data.golden_answers
         sample_tags = data.sample_tags
         info_turns = data.info_turns
         metrics = data.metrics
-    
+
     if prompts:
         insert_prompts(con, run_path, prompts)
         prompts_count = len(prompts)
         log.info(f"[ROLLOUTS] Synced {source_name}: {prompts_count} prompts")
-    
-    if rollouts:
-        insert_rollouts(con, run_path, rollouts)
-        rollouts_count = len(rollouts)
-        inserted_steps.update(_get_steps_from_rollouts(rollouts))
-        log.info(f"[ROLLOUTS] Synced {source_name}: {rollouts_count} rollout turns")
-    
+
+    if generations_list:
+        insert_generations(con, run_path, generations_list)
+        generations_count = len(generations_list)
+        inserted_steps.update(_get_steps_from_rollouts(generations_list))
+        log.info(f"[ROLLOUTS] Synced {source_name}: {generations_count} generations")
+
+    if env_responses_list:
+        insert_env_responses(con, run_path, env_responses_list)
+        log.info(f"[ROLLOUTS] Synced {source_name}: {len(env_responses_list)} env responses")
+
+    if tool_calls_list:
+        insert_tool_calls(con, run_path, tool_calls_list)
+        log.info(f"[ROLLOUTS] Synced {source_name}: {len(tool_calls_list)} tool calls")
+
+    if turn_metrics_list:
+        insert_turn_metrics(con, run_path, turn_metrics_list)
+        log.info(f"[ROLLOUTS] Synced {source_name}: {len(turn_metrics_list)} turn metrics")
+
     if samples_data_list:
         insert_samples_data(con, run_path, samples_data_list)
         samples_data_count = len(samples_data_list)
         log.info(f"[ROLLOUTS] Synced {source_name}: {samples_data_count} samples data")
-    
+
     if rollouts_metrics:
         insert_rollouts_metrics(con, run_path, rollouts_metrics)
         rollouts_metrics_count = len(rollouts_metrics)
-        # Also track steps from metrics (should be same as rollouts)
+        # Also track steps from metrics (should be same as generations)
         inserted_steps.update(_get_steps_from_rollouts_metrics(rollouts_metrics))
         log.info(
             f"[ROLLOUTS] Synced {source_name}: {rollouts_metrics_count} metrics"
@@ -2217,16 +2426,16 @@ def _insert_rollout_zip_data(
         log.info(
             f"[ROLLOUTS] Synced {source_name}: {info_turns_count} info turns"
         )
-    
+
     if metrics:
         insert_step_metrics(con, run_path, metrics)
         step_metrics_count = len(metrics)
         inserted_metric_steps.update(_get_steps_from_metrics(metrics))
         log.info(f"[ROLLOUTS] Synced {source_name}: {step_metrics_count} step metrics")
-    
+
     return (
         prompts_count,
-        rollouts_count,
+        generations_count,
         samples_data_count,
         rollouts_metrics_count,
         golden_answers_count,
@@ -2237,27 +2446,31 @@ def _insert_rollout_zip_data(
 
 
 async def sync_rollouts_blocks(run_path: str, api_key: str, run: Any, summary: dict):
-    """Background sync of rollouts - downloads zip files containing rollouts.parquet,
+    """Background sync of rollouts - downloads zip files containing generations.parquet,
+    env_responses.parquet, tool_calls.parquet, turn_metrics.parquet,
     rollouts_metrics.parquet, and golden_answers.parquet.
-    
+
     Simple approach (matching events pattern):
     1. Download tail.zip (last 5 steps)
     2. Check its metadata (min_step, max_step)
     3. Check ingested_steps table for what we're missing in that range
     4. Insert missing steps from tail.zip
     5. If we need older steps (before tail.min_step), download from block_live.zip and finalized blocks
-    
+
     File structure:
     - rollouts/block_*.zip: Finalized blocks (every 500 steps) with metadata {block_idx, start_step, end_step}
     - rollouts/block_live.zip: Current block being built with metadata {block_idx, min_step, max_step}
     - rollouts/tail.zip: Last 5 training steps with metadata {min_step, max_step}
-    
+
     Each zip contains:
     - metadata.json: Block metadata
-    - rollouts.parquet: Main rollout data (step, sample_idx, env, prompt, completion, reward, advantage, tokens_*)
-    - rollouts_metrics.parquet: Normalized rollout metrics table (step, sample_idx, env, metric_name, value)
-    - golden_answers.parquet: Golden answers table (step, sample_idx, env, key, value)
-    
+    - generations.parquet: Generation data (step, sample_id, generation_idx, content, tokens, ...)
+    - env_responses.parquet: Environment response data (step, sample_id, generation_idx, content, ...)
+    - tool_calls.parquet: Tool call data (step, sample_id, generation_idx, tool_call_idx, ...)
+    - turn_metrics.parquet: Turn-level metrics (step, sample_id, generation_idx, metric_name, value)
+    - rollouts_metrics.parquet: Normalized rollout metrics table (step, sample_id, env, metric_name, value)
+    - golden_answers.parquet: Golden answers table (step, sample_id, env, key, value)
+
     All DB inserts are batched in a single transaction to avoid row-group fragmentation.
     """
     log.info(f"[ROLLOUTS] Starting rollout sync for: {run_path}")
@@ -2540,10 +2753,10 @@ async def sync_rollouts_background(run_path: str, api_key: str):
                 return
 
             # === SYNC EVENTS (unified - includes all events, metrics, and kept rollouts) ===
-            event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
+            event_totals = {"orchestrator": 0, "trainer": 0, "events_rollout": 0, "events_infra": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
                 event_totals = await sync_events_background(run_path, api_key, run, summary)
-                total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["inference"]
+                total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["events_rollout"] + event_totals["events_infra"]
                 _sync_status[run_path]["events_fetched"] = total_events
                 _sync_status[run_path]["gpu_metrics_fetched"] = event_totals["gpu"]
                 _sync_status[run_path]["cpu_metrics_fetched"] = event_totals["cpu"]
@@ -2565,16 +2778,16 @@ async def sync_rollouts_background(run_path: str, api_key: str):
             except Exception as e:
                 log.error(f"[SYNC] Error syncing rollouts: {repr(e)}")
                 # Continue - don't fail the whole sync if rollouts fail
-            
+
             # Save summary_id after successful sync so we can skip unchanged summaries
             fresh_summary_id = summary.get("summary_id")
             if fresh_summary_id is not None:
                 con = connect()
                 update_ingest_state(con, run_path, summary_id=fresh_summary_id)
                 con.close()
-            
+
             elapsed = time.time() - sync_start
-            total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["inference"]
+            total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["events_rollout"] + event_totals["events_infra"]
             total_metrics = event_totals["gpu"] + event_totals["cpu"] + event_totals["vllm"]
             log.info(f"[SYNC] Completed sync for {run_path} in {elapsed:.2f}s - {total_rollouts} rollouts, {total_events} events, {total_metrics} metrics")
             
@@ -2621,18 +2834,23 @@ def _download_evals_after_training_zip_sync(
     """Download an evals_after_training zip and extract eval parquet files.
 
     Each zip may contain:
-    - rollouts_eval.parquet
+    - prompts_eval.parquet
+    - generations_eval.parquet
+    - env_responses_eval.parquet
+    - tool_calls_eval.parquet
     - samples_data_eval.parquet
     - golden_answers_eval.parquet
-    - prompts_eval.parquet
     - rollouts_metrics_eval.parquet
+    - sample_tags_eval.parquet
     - info_turns_eval.parquet
 
     Returns (file_path, dict of table_name -> list of row dicts).
     """
     result: dict[str, list[dict] | None] = {
         "prompts_eval": None,
-        "rollouts_eval": None,
+        "generations_eval": None,
+        "env_responses_eval": None,
+        "tool_calls_eval": None,
         "samples_data_eval": None,
         "rollouts_metrics_eval": None,
         "golden_answers_eval": None,
@@ -2780,9 +2998,15 @@ async def sync_evals_after_training_background(run_path: str, api_key: str):
                             if data.get("prompts_eval"):
                                 insert_prompts_eval(con, run_path, data["prompts_eval"])
                                 zip_rows += len(data["prompts_eval"])
-                            if data.get("rollouts_eval"):
-                                insert_rollouts_eval(con, run_path, data["rollouts_eval"])
-                                zip_rows += len(data["rollouts_eval"])
+                            if data.get("generations_eval"):
+                                insert_generations_eval(con, run_path, data["generations_eval"])
+                                zip_rows += len(data["generations_eval"])
+                            if data.get("env_responses_eval"):
+                                insert_env_responses_eval(con, run_path, data["env_responses_eval"])
+                                zip_rows += len(data["env_responses_eval"])
+                            if data.get("tool_calls_eval"):
+                                insert_tool_calls_eval(con, run_path, data["tool_calls_eval"])
+                                zip_rows += len(data["tool_calls_eval"])
                             if data.get("samples_data_eval"):
                                 insert_samples_data_eval(
                                     con, run_path, data["samples_data_eval"]
@@ -2922,7 +3146,7 @@ async def ingest_rollouts(run_path: str, api_key: str):
             con.close()
             
             # === SYNC EVENTS (unified - includes all events, metrics, and kept rollouts) ===
-            event_totals = {"orchestrator": 0, "trainer": 0, "inference": 0, "gpu": 0, "cpu": 0, "vllm": 0}
+            event_totals = {"orchestrator": 0, "trainer": 0, "events_rollout": 0, "events_infra": 0, "gpu": 0, "cpu": 0, "vllm": 0}
             try:
                 event_totals = await sync_events_background(run_path, api_key, run, summary)
             except Exception as e:
@@ -2936,16 +3160,16 @@ async def ingest_rollouts(run_path: str, api_key: str):
             except Exception as e:
                 log.error(f"[INGEST] Error syncing rollouts: {repr(e)}")
                 # Continue - don't fail the whole ingest if rollouts fail
-            
+
             # Save summary_id after successful sync so we can skip unchanged summaries
             fresh_summary_id = summary.get("summary_id")
             if fresh_summary_id is not None:
                 con = connect()
                 update_ingest_state(con, run_path, summary_id=fresh_summary_id)
                 con.close()
-            
+
             elapsed = time.time() - ingest_start
-            total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["inference"]
+            total_events = event_totals["orchestrator"] + event_totals["trainer"] + event_totals["events_rollout"] + event_totals["events_infra"]
             total_metrics = event_totals["gpu"] + event_totals["cpu"] + event_totals["vllm"]
             log.info(f"[INGEST] Completed for {run_path} in {elapsed:.2f}s - {total_rollouts} rollouts, {total_events} events, {total_metrics} metrics")
 
