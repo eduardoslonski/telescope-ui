@@ -128,6 +128,10 @@ _TABLES_WITH_RUN_ID = [
     "rollouts_metrics_eval",
     "golden_answers_eval",
     "info_turns_eval",
+    "turn_metrics",
+    "sandboxes",
+    "sample_tags_discarded",
+    "sample_tags_eval",
     "logs",
     "ingest_state",
     "ingested_tails",
@@ -1392,7 +1396,7 @@ def get_rollouts(req: RolloutsRequest):
     # Fetch samples data (reward, advantage per sample)
     samples_rows = con.execute(
         """
-        SELECT step, group_id, sample_id, reward, advantage, num_generations, total_tokens, raw_string, stop_reason
+        SELECT step, group_id, sample_id, reward, advantage, num_generations, total_tokens, raw_string, stop_reason, compute_reward_time
         FROM samples_data
         WHERE run_id = ? AND step = ?
         ORDER BY sample_id
@@ -1411,6 +1415,7 @@ def get_rollouts(req: RolloutsRequest):
             "total_tokens": row[6],
             "raw_string": decompress_blob(row[7]),
             "stop_reason": row[8],
+            "compute_reward_time": row[9],
         }
         for row in samples_rows
     ]
@@ -2001,7 +2006,7 @@ def get_evals(req: EvalsRequest):
     gen_rows = con.execute(
         """
         SELECT step, eval_name, model_step, sample_idx, completion_idx,
-               generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+               generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason, agent_id
         FROM generations_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
         ORDER BY sample_idx, completion_idx, generation_idx
@@ -2022,6 +2027,7 @@ def get_evals(req: EvalsRequest):
             "prompt_tokens": row[8],
             "tool_call_count": row[9],
             "stop_reason": row[10],
+            "agent_id": row[11],
         }
         for row in gen_rows
     ]
@@ -2030,7 +2036,7 @@ def get_evals(req: EvalsRequest):
     env_resp_rows = con.execute(
         """
         SELECT step, eval_name, model_step, sample_idx, completion_idx,
-               generation_idx, content, turn_type, tokens, response_time
+               generation_idx, content, turn_type, tokens, response_time, agent_id
         FROM env_responses_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
         ORDER BY sample_idx, completion_idx, generation_idx
@@ -2050,6 +2056,7 @@ def get_evals(req: EvalsRequest):
             "turn_type": row[7],
             "tokens": row[8],
             "response_time": row[9],
+            "agent_id": row[10],
         }
         for row in env_resp_rows
     ]
@@ -2096,7 +2103,7 @@ def get_evals(req: EvalsRequest):
     samples_rows = con.execute(
         """
         SELECT step, eval_name, model_step, sample_idx, completion_idx, env,
-               num_generations, compute_eval_metrics_time
+               num_generations, compute_eval_metrics_time, stop_reason
         FROM samples_data_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
         ORDER BY sample_idx, completion_idx
@@ -2114,6 +2121,7 @@ def get_evals(req: EvalsRequest):
             "env": row[5],
             "num_generations": row[6],
             "compute_eval_metrics_time": row[7],
+            "stop_reason": row[8],
         }
         for row in samples_rows
     ]
@@ -2520,14 +2528,17 @@ def get_sample_details(req: SampleDetailsRequest):
     # then walking through eval steps to find (step, eval_name, sample_idx).
     if req.is_eval:
         # All eval group_ids for this run, sorted
+        # events_rollout doesn't have is_eval; use events_rollout group_ids
+        # that also appear in prompts_eval (via the orchestrator's group_id mapping)
         all_eval_groups = con.execute(
             """
-            SELECT DISTINCT group_id
-            FROM events_rollout
-            WHERE run_id = ? AND is_eval = TRUE
-            ORDER BY group_id
+            SELECT DISTINCT er.group_id
+            FROM events_rollout er
+            WHERE er.run_id = ?
+              AND er.group_id IN (SELECT DISTINCT group_id FROM events_orchestrator WHERE run_id = ? AND event_type = 'rollouts_group_done' AND is_eval = TRUE)
+            ORDER BY er.group_id
             """,
-            [req.run_path],
+            [req.run_path, req.run_path],
         ).fetchall()
 
         group_ids = [r[0] for r in all_eval_groups]
@@ -2783,7 +2794,7 @@ def get_sample_details(req: SampleDetailsRequest):
                 "eval_name": eval_name,
                 "model_step": model_step,
                 "group_id": req.group_id,
-                "sample_idx": req.sample_idx,
+                "sample_id": req.sample_idx,
                 "prompts": prompts,
                 "generations": generations,
                 "env_responses": env_responses,
@@ -3026,7 +3037,7 @@ def get_sample_details(req: SampleDetailsRequest):
             "kind": "rollouts",
             "step": step,
             "group_id": req.group_id,
-            "sample_idx": req.sample_idx,
+            "sample_id": req.sample_idx,
             "prompts": prompts,
             "generations": generations,
             "env_responses": env_responses,
@@ -3066,7 +3077,7 @@ def get_sample_details(req: SampleDetailsRequest):
         return {
             "kind": None,
             "group_id": req.group_id,
-            "sample_idx": req.sample_idx,
+            "sample_id": req.sample_idx,
             "prompts": [],
             "generations": [],
             "env_responses": [],
@@ -3301,7 +3312,7 @@ def get_sample_details(req: SampleDetailsRequest):
         "inference_step": inference_step,
         "discard_reason": discard_reason,
         "group_id": req.group_id,
-        "sample_idx": req.sample_idx,
+        "sample_id": req.sample_idx,
         "prompts": prompts,
         "generations": generations,
         "env_responses": env_responses,
@@ -3369,53 +3380,74 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
     log.info(f"[API] Getting inference events for group {req.group_id} in {req.run_path}")
     con = connect()
 
-    # Fetch rollout events from events_rollout (server_lane is now directly on this table).
+    # Fetch rollout events from events_rollout (thin schema -- only has timestamps and IDs).
+    # Start/end events are separate rows with phase='start' and phase='end'.
+    # We pivot start/end timestamps per (event_type, sample_id, generation_idx).
     rows = con.execute(
         """
-        SELECT event_type, server, node_id, tp_group_id, tp_size,
-               start_time, end_time, prompt_tokens, rollout_tokens,
-               sample_id, group_id,
-               vllm_request_id, queue_time, time_to_first_token, prefill_time,
-               decode_time, inference_time, e2e_latency, max_tokens,
-               server_lane as lane, is_eval, step, is_canceled, off_policy_steps
+        SELECT event_type, sample_id, group_id, agent_id, generation_idx,
+               tool_call_idx, server_id, phase, timestamp
         FROM events_rollout
-        WHERE run_id = ? AND group_id = ? AND event_type = 'request' AND (phase IS NULL OR phase != 'start')
-        ORDER BY start_time ASC
+        WHERE run_id = ? AND group_id = ?
+        ORDER BY timestamp ASC
         """,
         [req.run_path, req.group_id],
     ).fetchall()
 
-    events = [
-        {
-            "event_type": row[0],
-            "server": row[1],
-            "node_id": row[2],
-            "tp_group_id": row[3],
-            "tp_size": row[4],
-            "start_time": row[5],
-            "end_time": row[6],
-            "prompt_tokens": row[7],
-            "rollout_tokens": row[8],
-            "sample_id": row[9],
-            "group_id": row[10],
-            "vllm_request_id": row[11],
-            "queue_time": row[12],
-            "time_to_first_token": row[13],
-            "prefill_time": row[14],
-            "decode_time": row[15],
-            "inference_time": row[16],
-            "e2e_latency": row[17],
-            "max_tokens": row[18],
-            "lane": row[19],
-            "is_eval": bool(row[20]) if row[20] is not None else False,
-            "step": row[21],
-            "is_canceled": bool(row[22]) if row[22] is not None else False,
-            "off_policy_steps": row[23],
-            "environment_response_time": None,
-            "compute_reward_time": None,
-        }
-        for row in rows
-    ]
+    # Build events by pivoting start/end phases
+    events_by_key: dict[tuple, dict] = {}
+    for row in rows:
+        event_type = row[0]
+        sample_id = row[1]
+        group_id = row[2]
+        agent_id = row[3]
+        generation_idx = row[4]
+        tool_call_idx = row[5]
+        server_id = row[6]
+        phase = row[7]
+        timestamp = row[8]
+
+        key = (event_type, sample_id, generation_idx, tool_call_idx)
+        if key not in events_by_key:
+            events_by_key[key] = {
+                "event_type": event_type,
+                "server": server_id,
+                "node_id": None,
+                "tp_group_id": None,
+                "tp_size": None,
+                "start_time": None,
+                "end_time": None,
+                "prompt_tokens": None,
+                "rollout_tokens": None,
+                "sample_id": sample_id,
+                "group_id": group_id,
+                "agent_id": agent_id,
+                "generation_idx": generation_idx,
+                "vllm_request_id": None,
+                "queue_time": None,
+                "time_to_first_token": None,
+                "prefill_time": None,
+                "decode_time": None,
+                "inference_time": None,
+                "e2e_latency": None,
+                "max_tokens": None,
+                "lane": None,
+                "is_eval": False,
+                "step": None,
+                "is_canceled": False,
+                "off_policy_steps": None,
+                "environment_response_time": None,
+                "compute_reward_time": None,
+            }
+        if phase == 'start':
+            events_by_key[key]["start_time"] = timestamp
+        elif phase == 'end':
+            events_by_key[key]["end_time"] = timestamp
+        elif phase is None:
+            # Legacy single-row event: timestamp is the end_time
+            events_by_key[key]["end_time"] = timestamp
+
+    events = list(events_by_key.values())
 
     # Fetch environment response_time from env_responses (including discarded) for this group
     env_time_rows = con.execute(
@@ -3469,12 +3501,13 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
     if not compute_reward_times and any(e.get("is_eval") for e in events):
         all_eval_groups = con.execute(
             """
-            SELECT DISTINCT group_id
-            FROM events_rollout
-            WHERE run_id = ? AND is_eval = TRUE
-            ORDER BY group_id
+            SELECT DISTINCT er.group_id
+            FROM events_rollout er
+            WHERE er.run_id = ?
+              AND er.group_id IN (SELECT DISTINCT group_id FROM events_orchestrator WHERE run_id = ? AND event_type = 'rollouts_group_done' AND is_eval = TRUE)
+            ORDER BY er.group_id
             """,
-            [req.run_path],
+            [req.run_path, req.run_path],
         ).fetchall()
         group_ids = [r[0] for r in all_eval_groups]
         try:
@@ -3630,18 +3663,18 @@ def get_run_summary(run_path: str):
             "trainer_commit": trainer_commit,
             "schema_version": schema_version,
             "last_rollout_step": -1,
-            "local_rollout_count": 0,
-            "local_rollout_steps": 0,
+            "local_generation_count": 0,
+            "local_generation_steps": 0,
             "local_rollout_metrics_count": 0,
             "available_rollout_metric_names": [],
             "available_envs": [],
             "local_orchestrator_event_count": 0,
             "local_trainer_event_count": 0,
-            "local_inference_event_count": 0,
+            "local_rollout_event_count": 0,
             "local_gpu_metrics_count": 0,
             "local_cpu_metrics_count": 0,
             "local_vllm_metrics_count": 0,
-            "local_discarded_rollout_count": 0,
+            "local_discarded_generation_count": 0,
             "local_discarded_rollout_metrics_count": 0,
             "local_discarded_trainer_steps": 0,
             "trainer_info": {},
@@ -3869,18 +3902,18 @@ def get_run_summary(run_path: str):
         "trainer_commit": trainer_commit,
         "schema_version": schema_version,
         "last_rollout_step": result[2] if result[2] is not None else -1,
-        "local_rollout_count": rollout_count,
-        "local_rollout_steps": rollout_steps,
+        "local_generation_count": rollout_count,
+        "local_generation_steps": rollout_steps,
         "local_rollout_metrics_count": rollout_metrics_count,
         "available_rollout_metric_names": available_rollout_metric_names,
         "available_envs": available_envs,
         "local_orchestrator_event_count": orchestrator_event_count,
         "local_trainer_event_count": trainer_event_count,
-        "local_inference_event_count": inference_event_count,
+        "local_rollout_event_count": inference_event_count,
         "local_gpu_metrics_count": gpu_metrics_count,
         "local_cpu_metrics_count": cpu_metrics_count,
         "local_vllm_metrics_count": vllm_metrics_count,
-        "local_discarded_rollout_count": discarded_rollout_count,
+        "local_discarded_generation_count": discarded_rollout_count,
         "local_discarded_rollout_metrics_count": discarded_rollout_metrics_count,
         "local_discarded_trainer_steps": discarded_trainer_steps,
         "trainer_info": trainer_info,
@@ -4029,7 +4062,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
             FROM events_trainer WHERE run_id = ?
             UNION ALL
-            SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
+            SELECT MIN(timestamp) as min_time, MAX(timestamp) as max_time
             FROM events_rollout WHERE run_id = ?
             UNION ALL
             SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
@@ -4116,47 +4149,63 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         for row in trainer_rows
     ]
 
-    # Fetch rollout events from events_rollout (thin events -- timing data is in generations table)
+    # Fetch rollout events from events_rollout (thin schema with start/end phase rows).
+    # Pivot start/end into a single row per event for timeline display.
     rollout_rows = con.execute(
         """
-        SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time,
-               prompt_tokens, rollout_tokens, sample_id, group_id,
-               vllm_request_id, queue_time, time_to_first_token, prefill_time,
-               decode_time, inference_time, e2e_latency, max_tokens,
-               server_lane, is_eval, step, is_canceled, off_policy_steps
-        FROM events_rollout
-        WHERE run_id = ? AND start_time < ? AND end_time > ?
-        ORDER BY start_time ASC
+        WITH starts AS (
+            SELECT event_type, sample_id, group_id, agent_id, generation_idx,
+                   tool_call_idx, server_id, timestamp as start_time
+            FROM events_rollout
+            WHERE run_id = ? AND phase = 'start'
+        ),
+        ends AS (
+            SELECT event_type, sample_id, group_id, generation_idx,
+                   tool_call_idx, timestamp as end_time
+            FROM events_rollout
+            WHERE run_id = ? AND phase = 'end'
+        )
+        SELECT s.event_type, s.sample_id, s.group_id, s.agent_id, s.generation_idx,
+               s.tool_call_idx, s.server_id, s.start_time, e.end_time
+        FROM starts s
+        LEFT JOIN ends e ON s.event_type = e.event_type AND s.sample_id IS NOT DISTINCT FROM e.sample_id
+            AND s.group_id IS NOT DISTINCT FROM e.group_id
+            AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
+            AND s.tool_call_idx IS NOT DISTINCT FROM e.tool_call_idx
+        WHERE s.start_time < ? AND (e.end_time > ? OR e.end_time IS NULL)
+        ORDER BY s.start_time ASC
         """,
-        [req.run_path, interval_end, interval_start],
+        [req.run_path, req.run_path, interval_end, interval_start],
     ).fetchall()
 
     rollout_events = [
         {
             "event_type": row[0],
-            "server": row[1],
-            "node_id": row[2],
-            "tp_group_id": row[3],
-            "tp_size": row[4],
-            "start_time": row[5],
-            "end_time": row[6],
-            "prompt_tokens": row[7],
-            "rollout_tokens": row[8],
-            "sample_id": row[9],
-            "group_id": row[10],
-            "vllm_request_id": row[11],
-            "queue_time": row[12],
-            "time_to_first_token": row[13],
-            "prefill_time": row[14],
-            "decode_time": row[15],
-            "inference_time": row[16],
-            "e2e_latency": row[17],
-            "max_tokens": row[18],
-            "lane": row[19],
-            "is_eval": bool(row[20]) if row[20] is not None else False,
-            "step": row[21],
-            "is_canceled": bool(row[22]) if row[22] is not None else False,
-            "off_policy_steps": row[23],
+            "server": row[6],
+            "node_id": None,
+            "tp_group_id": None,
+            "tp_size": None,
+            "start_time": row[7],
+            "end_time": row[8],
+            "prompt_tokens": None,
+            "rollout_tokens": None,
+            "sample_id": row[1],
+            "group_id": row[2],
+            "agent_id": row[3],
+            "generation_idx": row[4],
+            "vllm_request_id": None,
+            "queue_time": None,
+            "time_to_first_token": None,
+            "prefill_time": None,
+            "decode_time": None,
+            "inference_time": None,
+            "e2e_latency": None,
+            "max_tokens": None,
+            "lane": None,
+            "is_eval": False,
+            "step": None,
+            "is_canceled": False,
+            "off_policy_steps": None,
         }
         for row in rollout_rows
     ]
@@ -5241,23 +5290,10 @@ def get_step_metrics(req: StepMetricsRequest):
     gini_rows = con.execute(gini_query, params + tag_filter_params + env_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
 
-    # Compute off-policy steps stats from events_rollout table
-    # off_policy_steps = number of weight updates while rollout was in-flight
-    # Join with prompts to get the training step (events_rollout.step may be NULL)
-    off_policy_query = f"""
-        SELECT
-            p.step,
-            AVG(ei.off_policy_steps) as off_policy_steps_mean,
-            STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
-        FROM events_rollout ei
-        JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
-        WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
-            {step_filter.replace("step", "p.step")}
-        GROUP BY p.step
-        ORDER BY p.step ASC
-    """
-    off_policy_rows = con.execute(off_policy_query, params).fetchall()
-    off_policy_by_step = {row[0]: (row[1], row[2]) for row in off_policy_rows}
+    # Compute off-policy steps stats
+    # off_policy_steps is no longer stored in events_rollout (thin schema).
+    # This data is not currently available in the new schema.
+    off_policy_by_step: dict[int, tuple[float | None, float | None]] = {}
 
     # Base column names for samples_data-based metrics
     base_columns = [
@@ -5963,31 +5999,8 @@ def get_step_metrics(req: StepMetricsRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
         discarded_gen_metric_names = set()
     
-    # Compute discarded off-policy steps (join events_rollout with prompts_discarded)
-    try:
-        discarded_off_policy_query = f"""
-            SELECT
-                pd.trainer_step,
-                AVG(ei.off_policy_steps) as off_policy_steps_mean,
-                STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
-            FROM events_rollout ei
-            JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
-            WHERE ei.run_id = ? AND ei.event_type = 'request'
-                AND ei.off_policy_steps IS NOT NULL {discarded_step_filter}
-            GROUP BY pd.trainer_step
-            ORDER BY pd.trainer_step ASC
-        """
-        discarded_off_policy_rows = con.execute(discarded_off_policy_query, discarded_params).fetchall()
-        for row in discarded_off_policy_rows:
-            step = row[0]
-            if metrics_to_include is None or "discarded_off_policy_steps_mean" in metrics_to_include:
-                if row[1] is not None:
-                    metrics.append({"step": step, "metric_name": "discarded_off_policy_steps_mean", "value": float(row[1])})
-            if metrics_to_include is None or "discarded_off_policy_steps_std" in metrics_to_include:
-                if row[2] is not None:
-                    metrics.append({"step": step, "metric_name": "discarded_off_policy_steps_std", "value": float(row[2])})
-    except Exception as e:
-        log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
+    # Discarded off-policy steps: off_policy_steps is no longer in events_rollout (thin schema).
+    # This data is not currently available in the new schema.
 
     # Add discarded metrics to available metrics list
     discarded_metrics_list = [
@@ -6012,30 +6025,35 @@ def get_step_metrics(req: StepMetricsRequest):
 
     # Compute canceled count per step from events_rollout
     # Canceled samples are attributed to the step of the weight_broadcast that follows them.
-    # i.e. canceled samples between broadcast(step N-1) and broadcast(step N) → step N
+    # With thin schema: weight_broadcast events have phase='start'/'end' with timestamps.
+    # Canceled events are event_type='canceled'.
     try:
         canceled_count_query = f"""
-            WITH broadcasts AS (
-                SELECT
-                    step,
-                    MIN(start_time) as broadcast_time,
-                    LAG(MIN(start_time)) OVER (ORDER BY step) as prev_broadcast_time
-                FROM events_rollout
-                WHERE run_id = ? AND event_type = 'weight_broadcast' AND step IS NOT NULL
+            WITH save_batches AS (
+                SELECT step, MIN(timestamp) as batch_time
+                FROM events_orchestrator
+                WHERE run_id = ? AND event_type = 'save_batch' AND step IS NOT NULL
                 GROUP BY step
             ),
+            broadcasts AS (
+                SELECT
+                    step,
+                    batch_time as broadcast_time,
+                    LAG(batch_time) OVER (ORDER BY step) as prev_broadcast_time
+                FROM save_batches
+            ),
             canceled AS (
-                SELECT DISTINCT sample_id, end_time
+                SELECT DISTINCT sample_id, timestamp as cancel_time
                 FROM events_rollout
-                WHERE run_id = ? AND event_type = 'request' AND is_canceled = true
+                WHERE run_id = ? AND event_type = 'canceled'
             )
             SELECT
                 b.step,
                 COUNT(DISTINCT c.sample_id) as canceled_count
             FROM broadcasts b
             LEFT JOIN canceled c
-                ON c.end_time > COALESCE(b.prev_broadcast_time, -1e18)
-                AND c.end_time <= b.broadcast_time
+                ON c.cancel_time > COALESCE(b.prev_broadcast_time, -1e18)
+                AND c.cancel_time <= b.broadcast_time
             WHERE 1=1 {step_filter}
             GROUP BY b.step
             ORDER BY b.step ASC
@@ -6445,20 +6463,37 @@ def get_step_metrics(req: StepMetricsRequest):
         log.warning(f"[API] Could not compute trainer weight_broadcast metric: {e}")
     
     # Compute inference weight_broadcast timing (from events_rollout table)
-    # Uses the stored step column to group weight_broadcast events per step
+    # With thin schema: pivot start/end phases to get wall clock time.
+    # events_rollout doesn't have a step column; use group_id to group broadcast events.
     try:
         weight_broadcast_inference_query = """
-            SELECT
-                step,
-                (MAX(end_time) - MIN(start_time)) as wall_clock_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'weight_broadcast' AND step IS NOT NULL
+            WITH wb_starts AS (
+                SELECT group_id, MIN(timestamp) as start_time
+                FROM events_rollout
+                WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'start'
+                GROUP BY group_id
+            ),
+            wb_ends AS (
+                SELECT group_id, MAX(timestamp) as end_time
+                FROM events_rollout
+                WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'end'
+                GROUP BY group_id
+            ),
+            wb_with_step AS (
+                SELECT p.step, s.start_time, e.end_time
+                FROM wb_starts s
+                JOIN wb_ends e ON s.group_id = e.group_id
+                LEFT JOIN prompts p ON p.run_id = ? AND p.group_id = s.group_id
+                WHERE p.step IS NOT NULL
+            )
+            SELECT step, MAX(end_time) - MIN(start_time) as wall_clock_time
+            FROM wb_with_step
             GROUP BY step
             ORDER BY step ASC
         """
         weight_broadcast_inference_rows = con.execute(
-            weight_broadcast_inference_query, 
-            [req.run_path]
+            weight_broadcast_inference_query,
+            [req.run_path, req.run_path, req.run_path]
         ).fetchall()
         
         for row in weight_broadcast_inference_rows:
@@ -6533,12 +6568,30 @@ def get_step_metrics(req: StepMetricsRequest):
                            batch_time as step_end
                     FROM batch_events CROSS JOIN training_start t
                 ),
-                request_events AS (
-                    SELECT sample_id, group_id, start_time, end_time,
-                           inference_time, is_canceled
+                -- Pivot start/end phases into request events with start_time/end_time
+                request_starts AS (
+                    SELECT sample_id, group_id, generation_idx, timestamp as start_time
                     FROM events_rollout
-                    WHERE run_id = ? AND event_type = 'request'
-                      AND (is_eval = false OR is_eval IS NULL)
+                    WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+                ),
+                request_ends AS (
+                    SELECT sample_id, group_id, generation_idx, timestamp as end_time
+                    FROM events_rollout
+                    WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+                ),
+                canceled_samples AS (
+                    SELECT DISTINCT sample_id, group_id
+                    FROM events_rollout
+                    WHERE run_id = ? AND event_type = 'canceled'
+                ),
+                request_events AS (
+                    SELECT rs.sample_id, rs.group_id, rs.start_time, re.end_time,
+                           CASE WHEN cs.sample_id IS NOT NULL THEN true ELSE false END as is_canceled
+                    FROM request_starts rs
+                    LEFT JOIN request_ends re ON rs.sample_id IS NOT DISTINCT FROM re.sample_id
+                        AND rs.group_id IS NOT DISTINCT FROM re.group_id
+                        AND rs.generation_idx IS NOT DISTINCT FROM re.generation_idx
+                    LEFT JOIN canceled_samples cs ON rs.sample_id = cs.sample_id AND rs.group_id = cs.group_id
                 ),
                 -- last event per sample (for compute_reward attribution)
                 last_event_per_sample AS (
@@ -6559,7 +6612,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     SELECT
                         sw.step,
                         GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
-                        re.inference_time,
+                        NULL as inference_time,
                         CASE
                             WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
                             WHEN si.status IS NOT NULL THEN si.status
@@ -6621,7 +6674,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 LEFT JOIN cr_agg c ON c.step = sw.step
                 WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
                 ORDER BY sw.step ASC
-            """, [req.run_path, req.run_path, req.run_path, req.run_path, req.run_path]).fetchall()
+            """, [req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path]).fetchall()
 
             for row in timing_rows:
                 step = row[0]
@@ -7138,27 +7191,8 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         gini_map[(row[0], row[1])] = row[2]
 
     # =====================================================================
-    # 7c. Off-policy steps (from events_rollout)
+    # 7c. Off-policy steps -- no longer available in events_rollout (thin schema)
     # =====================================================================
-    off_policy_map: dict[tuple[str, int], tuple[float | None, float | None]] = {}
-    for row in con.execute(f"""
-        SELECT
-            p.run_id, p.step,
-            AVG(ei.off_policy_steps),
-            STDDEV_SAMP(ei.off_policy_steps)
-        FROM events_rollout ei
-        JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
-        WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
-            AND ei.off_policy_steps IS NOT NULL {step_filter.replace("step", "p.step")}
-        GROUP BY p.run_id, p.step
-        ORDER BY p.run_id, p.step ASC
-    """, a_params).fetchall():
-        off_policy_map[(row[0], row[1])] = (row[2], row[3])
-
-    # Emit off-policy metrics (independent of base_keys since they come from events_rollout)
-    for (rid, step), (op_mean, op_std) in off_policy_map.items():
-        _add(rid, step, "off_policy_steps_mean", op_mean)
-        _add(rid, step, "off_policy_steps_std", op_std)
 
     # Emit joined metrics for each base-row step
     for key in base_keys:
@@ -7498,45 +7532,32 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
 
     # =====================================================================
-    # 17a. Discarded off-policy steps (join events_rollout with prompts_discarded)
+    # 17a. Discarded off-policy steps -- no longer available in events_rollout (thin schema)
     # =====================================================================
-    try:
-        for row in con.execute(f"""
-            SELECT
-                pd.run_id, pd.trainer_step,
-                AVG(ei.off_policy_steps),
-                STDDEV_SAMP(ei.off_policy_steps)
-            FROM events_rollout ei
-            JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
-            WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
-                AND ei.off_policy_steps IS NOT NULL {discarded_step_filter.replace("trainer_step", "pd.trainer_step")}
-            GROUP BY pd.run_id, pd.trainer_step
-            ORDER BY pd.run_id, pd.trainer_step ASC
-        """, active_runs + discarded_step_params).fetchall():
-            _add(row[0], row[1], "discarded_off_policy_steps_mean", row[2])
-            _add(row[0], row[1], "discarded_off_policy_steps_std", row[3])
-    except Exception as e:
-        log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
 
     # =====================================================================
     # 17b. Canceled count per step (from events_rollout)
     # =====================================================================
     try:
         for row in con.execute(f"""
-            WITH broadcasts AS (
+            WITH save_batches AS (
+                SELECT run_id, step, MIN(timestamp) as batch_time
+                FROM events_orchestrator
+                WHERE run_id IN ({a_in_ph}) AND event_type = 'save_batch' AND step IS NOT NULL
+                GROUP BY run_id, step
+            ),
+            broadcasts AS (
                 SELECT
                     run_id,
                     step,
-                    MIN(start_time) as broadcast_time,
-                    LAG(MIN(start_time)) OVER (PARTITION BY run_id ORDER BY step) as prev_broadcast_time
-                FROM events_rollout
-                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND step IS NOT NULL
-                GROUP BY run_id, step
+                    batch_time as broadcast_time,
+                    LAG(batch_time) OVER (PARTITION BY run_id ORDER BY step) as prev_broadcast_time
+                FROM save_batches
             ),
             canceled AS (
-                SELECT DISTINCT run_id, sample_id, end_time
+                SELECT DISTINCT run_id, sample_id, timestamp as cancel_time
                 FROM events_rollout
-                WHERE run_id IN ({a_in_ph}) AND event_type = 'request' AND is_canceled = true
+                WHERE run_id IN ({a_in_ph}) AND event_type = 'canceled'
             )
             SELECT
                 b.run_id,
@@ -7545,8 +7566,8 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             FROM broadcasts b
             LEFT JOIN canceled c
                 ON c.run_id = b.run_id
-                AND c.end_time > COALESCE(b.prev_broadcast_time, -1e18)
-                AND c.end_time <= b.broadcast_time
+                AND c.cancel_time > COALESCE(b.prev_broadcast_time, -1e18)
+                AND c.cancel_time <= b.broadcast_time
             WHERE 1=1 {step_filter}
             GROUP BY b.run_id, b.step
             ORDER BY b.run_id, b.step ASC
@@ -7769,16 +7790,34 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute trainer weight_broadcast metric: {e}")
 
     # =====================================================================
-    # 23. Inference weight_broadcast timing
+    # 23. Inference weight_broadcast timing (thin schema: pivot start/end phases)
     # =====================================================================
     try:
         for row in con.execute(f"""
-            SELECT run_id, step, (MAX(end_time) - MIN(start_time)) as wall_clock_time
-            FROM events_rollout
-            WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND step IS NOT NULL
+            WITH wb_starts AS (
+                SELECT run_id, group_id, MIN(timestamp) as start_time
+                FROM events_rollout
+                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND phase = 'start'
+                GROUP BY run_id, group_id
+            ),
+            wb_ends AS (
+                SELECT run_id, group_id, MAX(timestamp) as end_time
+                FROM events_rollout
+                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND phase = 'end'
+                GROUP BY run_id, group_id
+            ),
+            wb_with_step AS (
+                SELECT s.run_id, p.step, s.start_time, e.end_time
+                FROM wb_starts s
+                JOIN wb_ends e ON s.run_id = e.run_id AND s.group_id = e.group_id
+                LEFT JOIN prompts p ON p.run_id = s.run_id AND p.group_id = s.group_id
+                WHERE p.step IS NOT NULL
+            )
+            SELECT run_id, step, MAX(end_time) - MIN(start_time) as wall_clock_time
+            FROM wb_with_step
             GROUP BY run_id, step
             ORDER BY run_id, step ASC
-        """, active_runs).fetchall():
+        """, active_runs + active_runs).fetchall():
             rid, step, wc_time = row
             if req.start_step is not None and step < req.start_step:
                 continue
@@ -7843,12 +7882,30 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                                batch_time as step_end
                         FROM batch_events CROSS JOIN training_start t
                     ),
-                    request_events AS (
-                        SELECT sample_id, group_id, start_time, end_time,
-                               inference_time, is_canceled
+                    -- Pivot start/end phases into request events
+                    request_starts AS (
+                        SELECT sample_id, group_id, generation_idx, timestamp as start_time
                         FROM events_rollout
-                        WHERE run_id = ? AND event_type = 'request'
-                          AND (is_eval = false OR is_eval IS NULL)
+                        WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+                    ),
+                    request_ends AS (
+                        SELECT sample_id, group_id, generation_idx, timestamp as end_time
+                        FROM events_rollout
+                        WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+                    ),
+                    canceled_samples AS (
+                        SELECT DISTINCT sample_id, group_id
+                        FROM events_rollout
+                        WHERE run_id = ? AND event_type = 'canceled'
+                    ),
+                    request_events AS (
+                        SELECT rs.sample_id, rs.group_id, rs.start_time, re.end_time,
+                               CASE WHEN cs.sample_id IS NOT NULL THEN true ELSE false END as is_canceled
+                        FROM request_starts rs
+                        LEFT JOIN request_ends re ON rs.sample_id IS NOT DISTINCT FROM re.sample_id
+                            AND rs.group_id IS NOT DISTINCT FROM re.group_id
+                            AND rs.generation_idx IS NOT DISTINCT FROM re.generation_idx
+                        LEFT JOIN canceled_samples cs ON rs.sample_id = cs.sample_id AND rs.group_id = cs.group_id
                     ),
                     last_event_per_sample AS (
                         SELECT group_id, sample_id, MAX(end_time) as last_end
@@ -7856,17 +7913,17 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         GROUP BY group_id, sample_id
                     ),
                     sample_info AS (
-                        SELECT group_id, sample_idx, compute_reward_time, 'normal' as status
+                        SELECT group_id, sample_id, compute_reward_time, 'normal' as status
                         FROM samples_data WHERE run_id = ?
                         UNION ALL
-                        SELECT group_id, sample_idx, compute_reward_time, 'discarded' as status
+                        SELECT group_id, sample_id, compute_reward_time, 'discarded' as status
                         FROM samples_data_discarded WHERE run_id = ?
                     ),
                     gen_attributed AS (
                         SELECT
                             sw.step,
                             GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
-                            re.inference_time,
+                            NULL as inference_time,
                             CASE
                                 WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
                                 WHEN si.status IS NOT NULL THEN si.status
@@ -7876,7 +7933,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         JOIN step_windows sw
                             ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
                         LEFT JOIN sample_info si
-                            ON si.group_id = re.group_id AND si.sample_idx = re.sample_id
+                            ON si.group_id = re.group_id AND si.sample_id = re.sample_id
                     ),
                     cr_attributed AS (
                         SELECT
@@ -7887,7 +7944,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         JOIN step_windows sw
                             ON le.last_end > sw.step_start AND le.last_end <= sw.step_end
                         LEFT JOIN sample_info si
-                            ON si.group_id = le.group_id AND si.sample_idx = le.sample_id
+                            ON si.group_id = le.group_id AND si.sample_id = le.sample_id
                         WHERE NOT EXISTS (
                             SELECT 1 FROM request_events re2
                             WHERE re2.group_id = le.group_id AND re2.sample_id = le.sample_id
@@ -7927,7 +7984,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                     LEFT JOIN cr_agg c ON c.step = sw.step
                     WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
                     ORDER BY sw.step ASC
-                """, [run_id, run_id, run_id, run_id, run_id]).fetchall()
+                """, [run_id, run_id, run_id, run_id, run_id, run_id, run_id]).fetchall()
 
                 for row in timing_rows:
                     step = row[0]
@@ -8118,39 +8175,68 @@ def get_inference_performance(req: InferencePerformanceRequest):
     con = connect()
     bucket = req.bucket_seconds
 
+    # Build pivoted request events CTE for reuse across queries.
+    # events_rollout thin schema: separate start/end rows with phase column.
+    # canceled events have event_type='canceled'.
+    _pivoted_cte = """
+        WITH request_starts AS (
+            SELECT sample_id, group_id, generation_idx, timestamp as start_time
+            FROM events_rollout
+            WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+        ),
+        request_ends AS (
+            SELECT sample_id, group_id, generation_idx, timestamp as end_time
+            FROM events_rollout
+            WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+        ),
+        canceled_samples AS (
+            SELECT DISTINCT sample_id, group_id
+            FROM events_rollout
+            WHERE run_id = ? AND event_type = 'canceled'
+        ),
+        pivoted_requests AS (
+            SELECT rs.sample_id, rs.group_id, rs.start_time, re.end_time,
+                   CASE WHEN cs.sample_id IS NOT NULL THEN true ELSE false END as is_canceled
+            FROM request_starts rs
+            LEFT JOIN request_ends re ON rs.sample_id IS NOT DISTINCT FROM re.sample_id
+                AND rs.group_id IS NOT DISTINCT FROM re.group_id
+                AND rs.generation_idx IS NOT DISTINCT FROM re.generation_idx
+            LEFT JOIN canceled_samples cs ON rs.sample_id = cs.sample_id AND rs.group_id = cs.group_id
+        )
+    """
+    _rp3 = [req.run_path, req.run_path, req.run_path]
+
     # Inference calls per bucket (all inference requests by end_time)
     inference_calls = con.execute(
-        """
+        _pivoted_cte + """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
+        FROM pivoted_requests
+        WHERE end_time IS NOT NULL
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket],
     ).fetchall()
 
     # Requests done per bucket (non-canceled completed requests)
     requests_done = con.execute(
-        """
+        _pivoted_cte + """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
+        FROM pivoted_requests
+        WHERE end_time IS NOT NULL AND is_canceled = false
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket],
     ).fetchall()
 
     # Rollouts group done kept per bucket (groups that appear in samples_data)
     rollouts_group_done_kept = con.execute(
-        """
-        WITH group_completion AS (
+        _pivoted_cte + """
+        , group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-              AND (is_canceled = false OR is_canceled IS NULL)
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = false
             GROUP BY group_id
         )
         SELECT FLOOR(gc.completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
@@ -8162,17 +8248,16 @@ def get_inference_performance(req: InferencePerformanceRequest):
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [req.run_path, bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket, req.run_path],
     ).fetchall()
 
     # Rollouts group done discarded per bucket (groups that appear in samples_data_discarded)
     rollouts_group_done_discarded = con.execute(
-        """
-        WITH group_completion AS (
+        _pivoted_cte + """
+        , group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-              AND (is_canceled = false OR is_canceled IS NULL)
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = false
             GROUP BY group_id
         )
         SELECT FLOOR(gc.completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
@@ -8184,17 +8269,16 @@ def get_inference_performance(req: InferencePerformanceRequest):
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [req.run_path, bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket, req.run_path],
     ).fetchall()
 
     # Rollouts group done per bucket (kept + discarded combined)
     rollouts_group_done = con.execute(
-        """
-        WITH group_completion AS (
+        _pivoted_cte + """
+        , group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-              AND (is_canceled = false OR is_canceled IS NULL)
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = false
             GROUP BY group_id
         ),
         kept_and_discarded AS (
@@ -8217,17 +8301,16 @@ def get_inference_performance(req: InferencePerformanceRequest):
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [req.run_path, req.run_path, req.run_path, bucket, bucket],
+        _rp3 + [req.run_path, req.run_path, bucket, bucket],
     ).fetchall()
 
     # Rollouts group done canceled per bucket (groups with any canceled request)
     rollouts_group_done_canceled = con.execute(
-        """
-        WITH canceled_groups AS (
+        _pivoted_cte + """
+        , canceled_groups AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-              AND is_canceled = true
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = true
             GROUP BY group_id
         )
         SELECT FLOOR(completion_time / ?) * ? as bucket_time, COUNT(*) as cnt
@@ -8235,48 +8318,28 @@ def get_inference_performance(req: InferencePerformanceRequest):
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [req.run_path, bucket, bucket],
+        _rp3 + [bucket, bucket],
     ).fetchall()
 
-    # Average prefill time per bucket (non-canceled requests with prefill_time)
-    avg_time_prefill = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(prefill_time) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND prefill_time IS NOT NULL AND prefill_time > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Average decode time per bucket (non-canceled requests with decode_time)
-    avg_time_decode = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(decode_time) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND decode_time IS NOT NULL AND decode_time > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
+    # vLLM timing metrics (prefill, decode, queue, ttft, inference, e2e) are no longer
+    # in events_rollout (thin schema). Return empty results for these.
+    avg_time_prefill = []
+    avg_time_decode = []
+    avg_time_queue = []
+    avg_time_ttft = []
+    avg_time_inference = []
+    avg_time_e2e = []
 
     # Average compute reward time per bucket
     # compute_reward_time lives in samples_data / samples_data_discarded,
     # keyed by group_id. We join with group completion time from events_rollout
     # to bucket it by time.
     avg_time_compute_reward = con.execute(
-        """
-        WITH group_completion AS (
+        _pivoted_cte + """
+        , group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-              AND (is_canceled = false OR is_canceled IS NULL)
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = false
             GROUP BY group_id
         ),
         sample_cr AS (
@@ -8299,109 +8362,27 @@ def get_inference_performance(req: InferencePerformanceRequest):
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [req.run_path, req.run_path, req.run_path, bucket, bucket],
+        _rp3 + [req.run_path, req.run_path, bucket, bucket],
     ).fetchall()
 
-    # Average queue time per bucket
-    avg_time_queue = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(queue_time) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND queue_time IS NOT NULL AND queue_time > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Average time to first token per bucket
-    avg_time_ttft = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(time_to_first_token) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND time_to_first_token IS NOT NULL AND time_to_first_token > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Average inference time per bucket
-    avg_time_inference = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(inference_time) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND inference_time IS NOT NULL AND inference_time > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Average e2e latency per bucket
-    avg_time_e2e = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(e2e_latency) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND e2e_latency IS NOT NULL AND e2e_latency > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Average full generation duration per bucket (end_time - start_time)
+    # Average full generation duration per bucket (end_time - start_time from pivoted events)
     avg_time_generation = con.execute(
-        """
+        _pivoted_cte + """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(end_time - start_time) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
+        FROM pivoted_requests
+        WHERE end_time IS NOT NULL AND start_time IS NOT NULL
+            AND is_canceled = false
             AND (end_time - start_time) > 0
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
         """,
-        [bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket],
     ).fetchall()
 
-    # Average tokens per second per generation (avg of rollout_tokens / request_duration per request)
-    avg_tokens_per_second_generation = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time,
-               AVG(CAST(rollout_tokens AS DOUBLE) / (end_time - start_time)) as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
-            AND (end_time - start_time) > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, req.run_path],
-    ).fetchall()
-
-    # Tokens per second throughput (total tokens in interval / interval duration)
-    tokens_per_second_throughput = con.execute(
-        """
-        SELECT FLOOR(end_time / ?) * ? as bucket_time,
-               CAST(SUM(rollout_tokens) AS DOUBLE) / ? as avg_val
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-            AND (is_canceled = false OR is_canceled IS NULL)
-            AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
-        GROUP BY bucket_time
-        ORDER BY bucket_time ASC
-        """,
-        [bucket, bucket, bucket, req.run_path],
-    ).fetchall()
+    # Tokens per second metrics are not available from events_rollout thin schema
+    # (rollout_tokens is not stored). Return empty results.
+    avg_tokens_per_second_generation = []
+    tokens_per_second_throughput = []
 
     # --- vLLM metrics bucketed for inference performance ---
     # Requests running per bucket: average per server within bucket, then sum across servers
@@ -8462,9 +8443,10 @@ def get_inference_performance(req: InferencePerformanceRequest):
     ).fetchall()
 
     # Preemptions per request: preemptions in interval / requests done in interval
+    # Use pivoted request events for the requests_per_bucket CTE
     vllm_preemptions_per_request = con.execute(
-        """
-        WITH per_server_bucket AS (
+        _pivoted_cte + """
+        , per_server_bucket AS (
             SELECT FLOOR(timestamp / ?) * ? as bucket_time,
                    server,
                    arg_max(value, timestamp) - arg_min(value, timestamp) as delta
@@ -8479,9 +8461,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
         ),
         requests_per_bucket AS (
             SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
-                AND (is_canceled = false OR is_canceled IS NULL)
+            FROM pivoted_requests
+            WHERE end_time IS NOT NULL AND is_canceled = false
             GROUP BY bucket_time
         )
         SELECT p.bucket_time, CAST(p.preemptions AS DOUBLE) / r.cnt as avg_val
@@ -8490,7 +8471,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         WHERE r.cnt > 0
         ORDER BY p.bucket_time ASC
         """,
-        [bucket, bucket, req.run_path, bucket, bucket, req.run_path],
+        _rp3 + [bucket, bucket, req.run_path, bucket, bucket],
     ).fetchall()
 
     # TTFT mean average per bucket
@@ -8506,28 +8487,26 @@ def get_inference_performance(req: InferencePerformanceRequest):
     ).fetchall()
 
     # --- Inference utilization (idle vs working) ---
-    # Total number of lanes = distinct (server, server_lane) combinations
+    # Total number of lanes = distinct server_id values (server_lane not in thin schema)
     num_lanes_row = con.execute(
         """
-        SELECT COUNT(DISTINCT (COALESCE(server, 0) * 100000 + COALESCE(server_lane, 0)))
+        SELECT COUNT(DISTINCT COALESCE(server_id, 0))
         FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request'
-            AND start_time IS NOT NULL AND end_time IS NOT NULL
+        WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
         """,
         [req.run_path],
     ).fetchone()
     num_lanes = num_lanes_row[0] if num_lanes_row and num_lanes_row[0] else 0
 
-    # Fetch all request events with start/end times for overlap computation
+    # Fetch all request events with start/end times for overlap computation (pivoted)
     inference_events = con.execute(
-        """
+        _pivoted_cte + """
         SELECT start_time, end_time
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request'
-            AND start_time IS NOT NULL AND end_time IS NOT NULL
+        FROM pivoted_requests
+        WHERE start_time IS NOT NULL AND end_time IS NOT NULL
         ORDER BY start_time ASC
         """,
-        [req.run_path],
+        _rp3,
     ).fetchall()
 
     # Include in-flight generations as synthetic events (start_time -> snapshot_time)
@@ -8542,15 +8521,27 @@ def get_inference_performance(req: InferencePerformanceRequest):
         ]
 
     # Fetch weight_broadcast events for generating vs weight sync breakdown
+    # Fetch weight_broadcast events (pivoted from start/end phases)
     weight_broadcast_events = con.execute(
         """
-        SELECT start_time, end_time
-        FROM events_rollout
-        WHERE run_id = ? AND event_type = 'weight_broadcast'
-            AND start_time IS NOT NULL AND end_time IS NOT NULL
-        ORDER BY start_time ASC
+        WITH wb_starts AS (
+            SELECT group_id, generation_idx, timestamp as start_time
+            FROM events_rollout
+            WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'start'
+        ),
+        wb_ends AS (
+            SELECT group_id, generation_idx, timestamp as end_time
+            FROM events_rollout
+            WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'end'
+        )
+        SELECT s.start_time, e.end_time
+        FROM wb_starts s
+        JOIN wb_ends e ON s.group_id IS NOT DISTINCT FROM e.group_id
+            AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
+        WHERE s.start_time IS NOT NULL AND e.end_time IS NOT NULL
+        ORDER BY s.start_time ASC
         """,
-        [req.run_path],
+        [req.run_path, req.run_path],
     ).fetchall()
 
     # Step times (for vertical lines)
@@ -8568,8 +8559,8 @@ def get_inference_performance(req: InferencePerformanceRequest):
     # Last event time (for detecting unfinished intervals)
     last_time_row = con.execute(
         """
-        SELECT MAX(end_time) FROM events_rollout
-        WHERE run_id = ? AND end_time IS NOT NULL
+        SELECT MAX(timestamp) FROM events_rollout
+        WHERE run_id = ? AND phase = 'end'
         """,
         [req.run_path],
     ).fetchone()
@@ -9126,14 +9117,10 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
         """
         params = [req.run_path]
     elif metric_type == "off_policy_steps":
-        all_values_query = f"""
-            SELECT p.{step_col} as step, ei.off_policy_steps as value
-            FROM events_rollout ei
-            JOIN {prompts_table} p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
-            WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
-            ORDER BY p.{step_col}
-        """
-        params = [req.run_path]
+        # off_policy_steps is no longer in events_rollout (thin schema).
+        # Return empty result (query will return no rows via WHERE 1=0).
+        all_values_query = "SELECT NULL as step, NULL as value WHERE 1=0"
+        params = []
     elif metric_type.startswith("reward_"):
         metric_name = metric_type[7:]
         if is_discarded:
