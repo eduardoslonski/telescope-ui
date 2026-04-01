@@ -98,9 +98,12 @@ MAX_CODE_FILE_BYTES = 2 * 1024 * 1024
 _TABLES_WITH_RUN_ID = [
     "events_orchestrator",
     "events_trainer",
-    "events_inference",
+    "events_rollout",
+    "events_infra",
     "prompts",
-    "rollouts",
+    "generations",
+    "env_responses",
+    "tool_calls",
     "samples_data",
     "rollouts_metrics",
     "golden_answers",
@@ -110,13 +113,17 @@ _TABLES_WITH_RUN_ID = [
     "vllm_metrics",
     "step_metrics",
     "prompts_discarded",
-    "rollouts_discarded",
+    "generations_discarded",
+    "env_responses_discarded",
+    "tool_calls_discarded",
     "samples_data_discarded",
     "rollouts_metrics_discarded",
     "golden_answers_discarded",
     "info_turns_discarded",
     "prompts_eval",
-    "rollouts_eval",
+    "generations_eval",
+    "env_responses_eval",
+    "tool_calls_eval",
     "samples_data_eval",
     "rollouts_metrics_eval",
     "golden_answers_eval",
@@ -1229,30 +1236,34 @@ def search_runs_by_config(req: ConfigSearchRequest):
 @app.post("/rollouts")
 def get_rollouts(req: RolloutsRequest):
     """Get rollouts data for a run, including prompts and rollout metrics.
-    
+
     Returns:
     - prompts: One row per prompt group (step, group_id, env, prompt, tokens_prompt)
-    - rollouts: One row per turn per sample (step, group_id, sample_idx, turn_order, turn_type, content, tokens)
-    - samples_data: One row per sample (step, group_id, sample_idx, reward, advantage, turns, total_tokens)
-    - rollout_metrics: One row per metric per sample (step, sample_idx, env, metric_name, value)
-    - golden_answers: One row per golden answer key per sample (step, sample_idx, env, key, value)
+    - generations: One row per generation (step, group_id, sample_id, agent_id, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason)
+    - env_responses: One row per env response (step, group_id, sample_id, agent_id, generation_idx, content, turn_type, tokens, response_time)
+    - tool_calls: One row per tool call (step, group_id, sample_id, agent_id, generation_idx, tool_call_idx, ...)
+    - samples_data: One row per sample (step, group_id, sample_id, reward, advantage, num_generations, total_tokens, stop_reason)
+    - rollout_metrics: One row per metric per sample (step, sample_id, env, metric_name, value)
+    - golden_answers: One row per golden answer key per sample (step, sample_id, env, key, value)
     """
     log.info(f"[API] Getting rollouts for {req.run_path}, step={req.step}")
     con = connect()
-    
+
     # Determine which step to fetch
     actual_step = req.step
     if actual_step is None:
         max_step_result = con.execute(
-            "SELECT MAX(step) FROM rollouts WHERE run_id = ?",
+            "SELECT MAX(step) FROM generations WHERE run_id = ?",
             [req.run_path],
         ).fetchone()
         actual_step = max_step_result[0] if max_step_result and max_step_result[0] is not None else None
-    
+
     if actual_step is None:
         return {
             "prompts": [],
-            "rollouts": [],
+            "generations": [],
+            "env_responses": [],
+            "tool_calls": [],
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
@@ -1275,7 +1286,7 @@ def get_rollouts(req: RolloutsRequest):
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
+
     prompts = [
         {
             "step": row[0],
@@ -1288,72 +1299,137 @@ def get_rollouts(req: RolloutsRequest):
         }
         for row in prompt_rows
     ]
-    
-    # Fetch rollout turns for this step (no limit — data is bounded by step)
-    rows = con.execute(
+
+    # Fetch generations for this step
+    gen_rows = con.execute(
         """
-        SELECT step, group_id, sample_idx, turn_order, turn_type, content, tokens, stop_reason
-        FROM rollouts
+        SELECT step, group_id, sample_id, agent_id, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+        FROM generations
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx, turn_order
+        ORDER BY sample_id, generation_idx
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
-    rollouts = [
+
+    generations = [
         {
             "step": row[0],
             "group_id": row[1],
-            "sample_idx": row[2],
-            "turn_order": row[3],
-            "turn_type": row[4],
+            "sample_id": row[2],
+            "agent_id": row[3],
+            "generation_idx": row[4],
             "content": decompress_blob(row[5]),
             "tokens": row[6],
-            "stop_reason": row[7],
+            "prompt_tokens": row[7],
+            "tool_call_count": row[8],
+            "stop_reason": row[9],
         }
-        for row in rows
+        for row in gen_rows
     ]
-    
-    # Fetch samples data (reward, advantage per sample)
-    samples_rows = con.execute(
+
+    # Fetch env_responses for this step
+    env_resp_rows = con.execute(
         """
-        SELECT step, group_id, sample_idx, reward, advantage, turns, total_tokens, raw_string
-        FROM samples_data
+        SELECT step, group_id, sample_id, agent_id, generation_idx, content, turn_type, tokens, response_time
+        FROM env_responses
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx
+        ORDER BY sample_id, generation_idx
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
+
+    env_responses = [
+        {
+            "step": row[0],
+            "group_id": row[1],
+            "sample_id": row[2],
+            "agent_id": row[3],
+            "generation_idx": row[4],
+            "content": decompress_blob(row[5]),
+            "turn_type": row[6],
+            "tokens": row[7],
+            "response_time": row[8],
+        }
+        for row in env_resp_rows
+    ]
+
+    # Fetch tool_calls for this step
+    tc_rows = con.execute(
+        """
+        SELECT step, group_id, sample_id, agent_id, generation_idx, tool_call_idx,
+               env_response_generation_idx, tool_name, arguments, raw_text, result,
+               success, error, exit_code, truncated, result_tokens, sandbox_id
+        FROM tool_calls
+        WHERE run_id = ? AND step = ?
+        ORDER BY sample_id, generation_idx, tool_call_idx
+        """,
+        [req.run_path, actual_step],
+    ).fetchall()
+
+    tool_calls = [
+        {
+            "step": row[0],
+            "group_id": row[1],
+            "sample_id": row[2],
+            "agent_id": row[3],
+            "generation_idx": row[4],
+            "tool_call_idx": row[5],
+            "env_response_generation_idx": row[6],
+            "tool_name": row[7],
+            "arguments": row[8],
+            "raw_text": row[9],
+            "result": row[10],
+            "success": row[11],
+            "error": row[12],
+            "exit_code": row[13],
+            "truncated": row[14],
+            "result_tokens": row[15],
+            "sandbox_id": row[16],
+        }
+        for row in tc_rows
+    ]
+
+    # Fetch samples data (reward, advantage per sample)
+    samples_rows = con.execute(
+        """
+        SELECT step, group_id, sample_id, reward, advantage, num_generations, total_tokens, raw_string, stop_reason
+        FROM samples_data
+        WHERE run_id = ? AND step = ?
+        ORDER BY sample_id
+        """,
+        [req.run_path, actual_step],
+    ).fetchall()
+
     samples_data = [
         {
             "step": row[0],
             "group_id": row[1],
-            "sample_idx": row[2],
+            "sample_id": row[2],
             "reward": row[3],
             "advantage": row[4],
-            "turns": row[5],
+            "num_generations": row[5],
             "total_tokens": row[6],
             "raw_string": decompress_blob(row[7]),
+            "stop_reason": row[8],
         }
         for row in samples_rows
     ]
-    
+
     # Fetch rollout metrics for this step
     metrics_rows = con.execute(
         """
-        SELECT step, sample_idx, env, metric_name, value
+        SELECT step, sample_id, env, metric_name, value
         FROM rollouts_metrics
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx, metric_name
+        ORDER BY sample_id, metric_name
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
+
     rollout_metrics = [
         {
             "step": row[0],
-            "sample_idx": row[1],
+            "sample_id": row[1],
             "env": row[2],
             "metric_name": row[3],
             "value": row[4],
@@ -1364,10 +1440,10 @@ def get_rollouts(req: RolloutsRequest):
     # Fetch golden answers for this step
     golden_rows = con.execute(
         """
-        SELECT step, sample_idx, env, key, value
+        SELECT step, sample_id, env, key, value
         FROM golden_answers
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx, key
+        ORDER BY sample_id, key
         """,
         [req.run_path, actual_step],
     ).fetchall()
@@ -1375,7 +1451,7 @@ def get_rollouts(req: RolloutsRequest):
     golden_answers = [
         {
             "step": row[0],
-            "sample_idx": row[1],
+            "sample_id": row[1],
             "env": row[2],
             "key": row[3],
             "value": row[4],
@@ -1386,10 +1462,10 @@ def get_rollouts(req: RolloutsRequest):
     # Fetch sample tags for this step
     tags_rows = con.execute(
         """
-        SELECT step, sample_idx, env, tag_name, tag_value
+        SELECT step, sample_id, env, tag_name, tag_value
         FROM sample_tags
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx, tag_name
+        ORDER BY sample_id, tag_name
         """,
         [req.run_path, actual_step],
     ).fetchall()
@@ -1397,7 +1473,7 @@ def get_rollouts(req: RolloutsRequest):
     sample_tags = [
         {
             "step": row[0],
-            "sample_idx": row[1],
+            "sample_id": row[1],
             "env": row[2],
             "tag_name": row[3],
             "tag_value": row[4],
@@ -1408,10 +1484,10 @@ def get_rollouts(req: RolloutsRequest):
     # Fetch info turns for this step
     info_rows = con.execute(
         """
-        SELECT step, sample_idx, turn_order, env, info_key, info_value, info_type
+        SELECT step, sample_id, generation_idx, env, info_key, info_value, info_type, agent_id, tool_call_idx
         FROM info_turns
         WHERE run_id = ? AND step = ?
-        ORDER BY sample_idx, turn_order, info_key
+        ORDER BY sample_id, generation_idx, info_key
         """,
         [req.run_path, actual_step],
     ).fetchall()
@@ -1419,25 +1495,27 @@ def get_rollouts(req: RolloutsRequest):
     info_turns = [
         {
             "step": row[0],
-            "sample_idx": row[1],
-            "turn_order": row[2],
+            "sample_id": row[1],
+            "generation_idx": row[2],
             "env": row[3],
             "info_key": row[4],
             "info_value": row[5],
             "info_type": row[6],
+            "agent_id": row[7],
+            "tool_call_idx": row[8],
         }
         for row in info_rows
     ]
-    
+
     # Get available steps
     steps_result = con.execute(
         """
-        SELECT DISTINCT step FROM rollouts WHERE run_id = ? ORDER BY step
+        SELECT DISTINCT step FROM generations WHERE run_id = ? ORDER BY step
         """,
         [req.run_path],
     ).fetchall()
     available_steps = [r[0] for r in steps_result]
-    
+
     # Get available rollout metric names across the entire run
     metric_names_result = con.execute(
         """
@@ -1446,7 +1524,7 @@ def get_rollouts(req: RolloutsRequest):
         [req.run_path],
     ).fetchall()
     available_rollout_metric_names = [r[0] for r in metric_names_result]
-    
+
     # Get available environments across the entire run (from prompts table)
     envs_result = con.execute(
         """
@@ -1455,9 +1533,10 @@ def get_rollouts(req: RolloutsRequest):
         [req.run_path],
     ).fetchall()
     available_envs = [r[0] for r in envs_result]
-    
+
     log.info(
-        f"[API] Returning {len(prompts)} prompts, {len(rollouts)} rollout turns, "
+        f"[API] Returning {len(prompts)} prompts, {len(generations)} generations, "
+        f"{len(env_responses)} env_responses, {len(tool_calls)} tool_calls, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
         f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
         f"{len(info_turns)} info turns, {len(available_steps)} steps available"
@@ -1465,7 +1544,9 @@ def get_rollouts(req: RolloutsRequest):
 
     return {
         "prompts": prompts,
-        "rollouts": rollouts,
+        "generations": generations,
+        "env_responses": env_responses,
+        "tool_calls": tool_calls,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
@@ -1482,30 +1563,34 @@ def get_rollouts(req: RolloutsRequest):
 @app.post("/rollouts-discarded")
 def get_rollouts_discarded(req: RolloutsDiscardedRequest):
     """Get discarded rollouts data for a run, paginated by trainer_step.
-    
+
     Returns:
     - prompts: Discarded prompts (step, group_id, env, prompt, tokens_prompt)
-    - rollouts: Discarded rollout turns (step, group_id, sample_idx, turn_order, turn_type, content, tokens)
-    - samples_data: Discarded samples data (sample_idx, reward, advantage, turns, total_tokens)
-    - rollout_metrics: Discarded rollout metrics (sample_idx, env, metric_name, value)
-    - golden_answers: Discarded golden answers (sample_idx, env, key, value)
+    - generations: Discarded generations (trainer_step, inference_step, group_id, sample_id, ...)
+    - env_responses: Discarded env responses
+    - tool_calls: Discarded tool calls
+    - samples_data: Discarded samples data (sample_id, reward, advantage, num_generations, total_tokens)
+    - rollout_metrics: Discarded rollout metrics (sample_id, env, metric_name, value)
+    - golden_answers: Discarded golden answers (sample_id, env, key, value)
     """
     log.info(f"[API] Getting discarded rollouts for {req.run_path}, trainer_step={req.trainer_step}")
     con = connect()
-    
+
     # Determine which trainer_step to fetch
     actual_step = req.trainer_step
     if actual_step is None:
         max_step_result = con.execute(
-            "SELECT MAX(trainer_step) FROM rollouts_discarded WHERE run_id = ?",
+            "SELECT MAX(trainer_step) FROM generations_discarded WHERE run_id = ?",
             [req.run_path],
         ).fetchone()
         actual_step = max_step_result[0] if max_step_result and max_step_result[0] is not None else None
-    
+
     if actual_step is None:
         return {
             "prompts": [],
-            "rollouts": [],
+            "generations": [],
+            "env_responses": [],
+            "tool_calls": [],
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
@@ -1521,7 +1606,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
     # Fetch discarded prompts
     prompt_rows = con.execute(
         """
-        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, env, 
+        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, env,
                system_prompt, tokens_system_prompt, prompt, tokens_prompt
         FROM prompts_discarded
         WHERE run_id = ? AND trainer_step = ?
@@ -1529,7 +1614,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
+
     prompts = [
         {
             "timestamp": row[0],
@@ -1545,46 +1630,114 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         }
         for row in prompt_rows
     ]
-    
-    # Fetch discarded rollout turns for this step (no limit — data is bounded by step)
-    rows = con.execute(
+
+    # Fetch discarded generations for this step
+    gen_rows = con.execute(
         """
-        SELECT trainer_step, inference_step, group_id, sample_idx,
-               turn_order, turn_type, content, tokens, stop_reason
-        FROM rollouts_discarded
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+        FROM generations_discarded
         WHERE run_id = ? AND trainer_step = ?
-        ORDER BY sample_idx, turn_order
+        ORDER BY sample_id, generation_idx
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
-    rollouts = [
+
+    generations = [
         {
             "trainer_step": row[0],
             "inference_step": row[1],
             "group_id": row[2],
-            "sample_idx": row[3],
-            "turn_order": row[4],
-            "turn_type": row[5],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
             "content": decompress_blob(row[6]),
             "tokens": row[7],
-            "stop_reason": row[8],
+            "prompt_tokens": row[8],
+            "tool_call_count": row[9],
+            "stop_reason": row[10],
         }
-        for row in rows
+        for row in gen_rows
     ]
-    
-    # Fetch discarded samples data (reward, advantage per sample)
-    samples_rows = con.execute(
+
+    # Fetch discarded env_responses for this step
+    env_resp_rows = con.execute(
         """
-        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, sample_idx, 
-               reward, advantage, turns, total_tokens, raw_string
-        FROM samples_data_discarded
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, content, turn_type, tokens, response_time
+        FROM env_responses_discarded
         WHERE run_id = ? AND trainer_step = ?
-        ORDER BY sample_idx
+        ORDER BY sample_id, generation_idx
         """,
         [req.run_path, actual_step],
     ).fetchall()
-    
+
+    env_responses = [
+        {
+            "trainer_step": row[0],
+            "inference_step": row[1],
+            "group_id": row[2],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
+            "content": decompress_blob(row[6]),
+            "turn_type": row[7],
+            "tokens": row[8],
+            "response_time": row[9],
+        }
+        for row in env_resp_rows
+    ]
+
+    # Fetch discarded tool_calls for this step
+    tc_rows = con.execute(
+        """
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, tool_call_idx,
+               env_response_generation_idx, tool_name, arguments, raw_text, result,
+               success, error, exit_code, truncated, result_tokens, sandbox_id
+        FROM tool_calls_discarded
+        WHERE run_id = ? AND trainer_step = ?
+        ORDER BY sample_id, generation_idx, tool_call_idx
+        """,
+        [req.run_path, actual_step],
+    ).fetchall()
+
+    tool_calls = [
+        {
+            "trainer_step": row[0],
+            "inference_step": row[1],
+            "group_id": row[2],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
+            "tool_call_idx": row[6],
+            "env_response_generation_idx": row[7],
+            "tool_name": row[8],
+            "arguments": row[9],
+            "raw_text": row[10],
+            "result": row[11],
+            "success": row[12],
+            "error": row[13],
+            "exit_code": row[14],
+            "truncated": row[15],
+            "result_tokens": row[16],
+            "sandbox_id": row[17],
+        }
+        for row in tc_rows
+    ]
+
+    # Fetch discarded samples data (reward, advantage per sample)
+    samples_rows = con.execute(
+        """
+        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+               reward, advantage, num_generations, total_tokens, raw_string
+        FROM samples_data_discarded
+        WHERE run_id = ? AND trainer_step = ?
+        ORDER BY sample_id
+        """,
+        [req.run_path, actual_step],
+    ).fetchall()
+
     samples_data = [
         {
             "timestamp": row[0],
@@ -1593,32 +1746,32 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
             "trainer_step": row[2],
             "inference_step": row[3],
             "group_id": row[4],
-            "sample_idx": row[5],
+            "sample_id": row[5],
             "reward": row[6],
             "advantage": row[7],
-            "turns": row[8],
+            "num_generations": row[8],
             "total_tokens": row[9],
         }
         for row in samples_rows
     ]
-    
-    # Fetch discarded rollout metrics for this trainer_step using sample_idx
+
+    # Fetch discarded rollout metrics for this trainer_step using sample_id
     metrics_rows = con.execute(
         """
-        SELECT sample_idx, env, metric_name, value, tail_idx
+        SELECT sample_id, env, metric_name, value, tail_idx
         FROM rollouts_metrics_discarded
-        WHERE run_id = ? AND sample_idx IN (
-            SELECT DISTINCT sample_idx FROM rollouts_discarded 
+        WHERE run_id = ? AND sample_id IN (
+            SELECT DISTINCT sample_id FROM generations_discarded
             WHERE run_id = ? AND trainer_step = ?
         )
-        ORDER BY sample_idx, metric_name
+        ORDER BY sample_id, metric_name
         """,
         [req.run_path, req.run_path, actual_step],
     ).fetchall()
-    
+
     rollout_metrics = [
         {
-            "sample_idx": row[0],
+            "sample_id": row[0],
             "env": row[1],
             "metric_name": row[2],
             "value": row[3],
@@ -1627,23 +1780,23 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         for row in metrics_rows
     ]
 
-    # Fetch discarded golden answers for this trainer_step using sample_idx
+    # Fetch discarded golden answers for this trainer_step using sample_id
     golden_rows = con.execute(
         """
-        SELECT sample_idx, env, key, value, tail_idx
+        SELECT sample_id, env, key, value, tail_idx
         FROM golden_answers_discarded
-        WHERE run_id = ? AND sample_idx IN (
-            SELECT DISTINCT sample_idx FROM rollouts_discarded
+        WHERE run_id = ? AND sample_id IN (
+            SELECT DISTINCT sample_id FROM generations_discarded
             WHERE run_id = ? AND trainer_step = ?
         )
-        ORDER BY sample_idx, key
+        ORDER BY sample_id, key
         """,
         [req.run_path, req.run_path, actual_step],
     ).fetchall()
 
     golden_answers = [
         {
-            "sample_idx": row[0],
+            "sample_id": row[0],
             "env": row[1],
             "key": row[2],
             "value": row[3],
@@ -1652,23 +1805,23 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         for row in golden_rows
     ]
 
-    # Fetch discarded sample tags for this trainer_step using sample_idx
+    # Fetch discarded sample tags for this trainer_step using sample_id
     tags_rows = con.execute(
         """
-        SELECT sample_idx, env, tag_name, tag_value, tail_idx
+        SELECT sample_id, env, tag_name, tag_value, tail_idx
         FROM sample_tags_discarded
-        WHERE run_id = ? AND sample_idx IN (
-            SELECT DISTINCT sample_idx FROM rollouts_discarded
+        WHERE run_id = ? AND sample_id IN (
+            SELECT DISTINCT sample_id FROM generations_discarded
             WHERE run_id = ? AND trainer_step = ?
         )
-        ORDER BY sample_idx, tag_name
+        ORDER BY sample_id, tag_name
         """,
         [req.run_path, req.run_path, actual_step],
     ).fetchall()
 
     sample_tags = [
         {
-            "sample_idx": row[0],
+            "sample_id": row[0],
             "env": row[1],
             "tag_name": row[2],
             "tag_value": row[3],
@@ -1677,29 +1830,31 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         for row in tags_rows
     ]
 
-    # Fetch discarded info turns for this trainer_step using sample_idx
+    # Fetch discarded info turns for this trainer_step using sample_id
     info_rows = con.execute(
         """
-        SELECT sample_idx, turn_order, env, info_key, info_value, info_type, tail_idx
+        SELECT sample_id, generation_idx, env, info_key, info_value, info_type, tail_idx, agent_id, tool_call_idx
         FROM info_turns_discarded
-        WHERE run_id = ? AND sample_idx IN (
-            SELECT DISTINCT sample_idx FROM rollouts_discarded
+        WHERE run_id = ? AND sample_id IN (
+            SELECT DISTINCT sample_id FROM generations_discarded
             WHERE run_id = ? AND trainer_step = ?
         )
-        ORDER BY sample_idx, turn_order, info_key
+        ORDER BY sample_id, generation_idx, info_key
         """,
         [req.run_path, req.run_path, actual_step],
     ).fetchall()
 
     info_turns = [
         {
-            "sample_idx": row[0],
-            "turn_order": row[1],
+            "sample_id": row[0],
+            "generation_idx": row[1],
             "env": row[2],
             "info_key": row[3],
             "info_value": row[4],
             "info_type": row[5],
             "tail_idx": row[6],
+            "agent_id": row[7],
+            "tool_call_idx": row[8],
         }
         for row in info_rows
     ]
@@ -1707,12 +1862,12 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
     # Get available trainer_steps
     steps_result = con.execute(
         """
-        SELECT DISTINCT trainer_step FROM rollouts_discarded WHERE run_id = ? ORDER BY trainer_step
+        SELECT DISTINCT trainer_step FROM generations_discarded WHERE run_id = ? ORDER BY trainer_step
         """,
         [req.run_path],
     ).fetchall()
     available_trainer_steps = [r[0] for r in steps_result]
-    
+
     # Get available discard reasons for this run
     reasons_result = con.execute(
         """
@@ -1721,7 +1876,7 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         [req.run_path],
     ).fetchall()
     available_discard_reasons = [r[0] for r in reasons_result]
-    
+
     # Get available environments across the entire run (from prompts_discarded table)
     envs_result = con.execute(
         """
@@ -1730,9 +1885,10 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
         [req.run_path],
     ).fetchall()
     available_envs = [r[0] for r in envs_result]
-    
+
     log.info(
-        f"[API] Returning {len(prompts)} discarded prompts, {len(rollouts)} discarded rollout turns, "
+        f"[API] Returning {len(prompts)} discarded prompts, {len(generations)} discarded generations, "
+        f"{len(env_responses)} discarded env_responses, {len(tool_calls)} discarded tool_calls, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
         f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
         f"{len(info_turns)} info turns, "
@@ -1741,7 +1897,9 @@ def get_rollouts_discarded(req: RolloutsDiscardedRequest):
 
     return {
         "prompts": prompts,
-        "rollouts": rollouts,
+        "generations": generations,
+        "env_responses": env_responses,
+        "tool_calls": tool_calls,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
@@ -1763,7 +1921,9 @@ def get_evals(req: EvalsRequest):
 
     empty_response = {
         "prompts": [],
-        "rollouts": [],
+        "generations": [],
+        "env_responses": [],
+        "tool_calls": [],
         "samples_data": [],
         "rollout_metrics": [],
         "golden_answers": [],
@@ -1837,40 +1997,106 @@ def get_evals(req: EvalsRequest):
         for row in prompt_rows
     ]
 
-    # Fetch eval rollout turns
-    rows = con.execute(
+    # Fetch eval generations
+    gen_rows = con.execute(
         """
         SELECT step, eval_name, model_step, sample_idx, completion_idx,
-               turn_order, turn_type, content, tokens, stop_reason, environment_response_time
-        FROM rollouts_eval
+               generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+        FROM generations_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
-        ORDER BY sample_idx, completion_idx, turn_order
+        ORDER BY sample_idx, completion_idx, generation_idx
         """,
         [req.run_path, actual_step, actual_eval_name],
     ).fetchall()
 
-    rollouts = [
+    generations = [
         {
             "step": row[0],
             "eval_name": row[1],
             "model_step": row[2],
             "sample_idx": row[3],
             "completion_idx": row[4],
-            "turn_order": row[5],
-            "turn_type": row[6],
-            "content": decompress_blob(row[7]),
-            "tokens": row[8],
-            "stop_reason": row[9],
-            "environment_response_time": row[10],
+            "generation_idx": row[5],
+            "content": decompress_blob(row[6]),
+            "tokens": row[7],
+            "prompt_tokens": row[8],
+            "tool_call_count": row[9],
+            "stop_reason": row[10],
         }
-        for row in rows
+        for row in gen_rows
+    ]
+
+    # Fetch eval env_responses
+    env_resp_rows = con.execute(
+        """
+        SELECT step, eval_name, model_step, sample_idx, completion_idx,
+               generation_idx, content, turn_type, tokens, response_time
+        FROM env_responses_eval
+        WHERE run_id = ? AND step = ? AND eval_name = ?
+        ORDER BY sample_idx, completion_idx, generation_idx
+        """,
+        [req.run_path, actual_step, actual_eval_name],
+    ).fetchall()
+
+    env_responses = [
+        {
+            "step": row[0],
+            "eval_name": row[1],
+            "model_step": row[2],
+            "sample_idx": row[3],
+            "completion_idx": row[4],
+            "generation_idx": row[5],
+            "content": decompress_blob(row[6]),
+            "turn_type": row[7],
+            "tokens": row[8],
+            "response_time": row[9],
+        }
+        for row in env_resp_rows
+    ]
+
+    # Fetch eval tool_calls
+    tc_rows = con.execute(
+        """
+        SELECT step, eval_name, model_step, sample_idx, completion_idx,
+               generation_idx, tool_call_idx, env_response_generation_idx,
+               tool_name, arguments, raw_text, result,
+               success, error, exit_code, truncated, result_tokens, sandbox_id
+        FROM tool_calls_eval
+        WHERE run_id = ? AND step = ? AND eval_name = ?
+        ORDER BY sample_idx, completion_idx, generation_idx, tool_call_idx
+        """,
+        [req.run_path, actual_step, actual_eval_name],
+    ).fetchall()
+
+    tool_calls = [
+        {
+            "step": row[0],
+            "eval_name": row[1],
+            "model_step": row[2],
+            "sample_idx": row[3],
+            "completion_idx": row[4],
+            "generation_idx": row[5],
+            "tool_call_idx": row[6],
+            "env_response_generation_idx": row[7],
+            "tool_name": row[8],
+            "arguments": row[9],
+            "raw_text": row[10],
+            "result": row[11],
+            "success": row[12],
+            "error": row[13],
+            "exit_code": row[14],
+            "truncated": row[15],
+            "result_tokens": row[16],
+            "sandbox_id": row[17],
+        }
+        for row in tc_rows
     ]
 
     # Fetch eval samples data
     samples_rows = con.execute(
         """
         SELECT step, eval_name, model_step, sample_idx, completion_idx, env,
-               turns, compute_eval_metrics_time
+               num_generations, compute_eval_metrics_time
         FROM samples_data_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
         ORDER BY sample_idx, completion_idx
@@ -1886,7 +2112,7 @@ def get_evals(req: EvalsRequest):
             "sample_idx": row[3],
             "completion_idx": row[4],
             "env": row[5],
-            "turns": row[6],
+            "num_generations": row[6],
             "compute_eval_metrics_time": row[7],
         }
         for row in samples_rows
@@ -1967,11 +2193,11 @@ def get_evals(req: EvalsRequest):
     # Fetch eval info turns
     info_rows = con.execute(
         """
-        SELECT step, eval_name, sample_idx, completion_idx, turn_order, env,
+        SELECT step, eval_name, sample_idx, completion_idx, generation_idx, env,
                info_key, info_value, info_type
         FROM info_turns_eval
         WHERE run_id = ? AND step = ? AND eval_name = ?
-        ORDER BY sample_idx, completion_idx, turn_order, info_key
+        ORDER BY sample_idx, completion_idx, generation_idx, info_key
         """,
         [req.run_path, actual_step, actual_eval_name],
     ).fetchall()
@@ -1982,7 +2208,7 @@ def get_evals(req: EvalsRequest):
             "eval_name": row[1],
             "sample_idx": row[2],
             "completion_idx": row[3],
-            "turn_order": row[4],
+            "generation_idx": row[4],
             "env": row[5],
             "info_key": row[6],
             "info_value": row[7],
@@ -2010,7 +2236,8 @@ def get_evals(req: EvalsRequest):
     available_rollout_metric_names = [r[0] for r in metric_names_result]
 
     log.info(
-        f"[API] Returning eval data: {len(prompts)} prompts, {len(rollouts)} rollout turns, "
+        f"[API] Returning eval data: {len(prompts)} prompts, {len(generations)} generations, "
+        f"{len(env_responses)} env_responses, {len(tool_calls)} tool_calls, "
         f"{len(samples_data)} samples data, {len(rollout_metrics)} metrics, "
         f"{len(golden_answers)} golden answers, {len(sample_tags)} sample tags, "
         f"{len(info_turns)} info turns "
@@ -2019,7 +2246,9 @@ def get_evals(req: EvalsRequest):
 
     return {
         "prompts": prompts,
-        "rollouts": rollouts,
+        "generations": generations,
+        "env_responses": env_responses,
+        "tool_calls": tool_calls,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
@@ -2040,8 +2269,8 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
     Computes aggregated stats (mean, std, min, max) per step for:
     - reward_<name>: dynamic metrics from rollouts_metrics_eval
     - length_prompt: prompt token count from prompts_eval
-    - length_completion: completion token count from rollouts_eval (model turns)
-    - length_sum: total token count from rollouts_eval (all turns)
+    - length_completion: completion token count from generations_eval (model turns)
+    - length_sum: total token count from generations_eval (all turns)
     - stop_reason_length_pct: % of completions hitting length limit
     - num_samples, num_completions: counts per step
     """
@@ -2049,7 +2278,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
     con = connect()
 
     count_result = con.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT step), MIN(step), MAX(step) FROM rollouts_eval WHERE run_id = ? AND eval_name = ?",
+        "SELECT COUNT(*), COUNT(DISTINCT step), MIN(step), MAX(step) FROM generations_eval WHERE run_id = ? AND eval_name = ?",
         [req.run_path, req.eval_name],
     ).fetchone()
 
@@ -2098,7 +2327,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
         # For tables with env column (prompts_eval, samples_data_eval, rollouts_metrics_eval)
         eval_env_filter_sql = f" AND env IN ({placeholders})"
         eval_env_filter_params = list(req.env_filters)
-        # For rollouts_eval (no env column), filter via prompts_eval
+        # For generations_eval (no env column), filter via prompts_eval
         eval_env_filter_rollouts_sql = (
             f" AND (step, sample_idx) IN ("
             f"SELECT step, sample_idx FROM prompts_eval "
@@ -2118,7 +2347,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             MAX(completion_tokens) as length_completion_max
         FROM (
             SELECT step, sample_idx, completion_idx, SUM(tokens) as completion_tokens
-            FROM rollouts_eval
+            FROM generations_eval
             WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
             GROUP BY step, sample_idx, completion_idx
         )
@@ -2166,7 +2395,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             MAX(total_tokens) as length_sum_max
         FROM (
             SELECT step, sample_idx, completion_idx, SUM(tokens) as total_tokens
-            FROM rollouts_eval
+            FROM generations_eval
             WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
             GROUP BY step, sample_idx, completion_idx
         )
@@ -2188,7 +2417,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             step,
             COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx * 10000 + completion_idx END) * 100.0 /
                 NULLIF(COUNT(DISTINCT sample_idx * 10000 + completion_idx), 0) as stop_reason_length_pct
-        FROM rollouts_eval
+        FROM generations_eval
         WHERE run_id = ? AND eval_name = ? AND turn_type = 'model' {step_filter} {eval_env_filter_rollouts_sql}
         GROUP BY step
         ORDER BY step ASC
@@ -2205,7 +2434,7 @@ def get_eval_step_metrics(req: EvalStepMetricsRequest):
             step,
             COUNT(DISTINCT sample_idx) as num_samples,
             COUNT(DISTINCT sample_idx * 10000 + completion_idx) as num_completions
-        FROM rollouts_eval
+        FROM generations_eval
         WHERE run_id = ? AND eval_name = ? {step_filter} {eval_env_filter_rollouts_sql}
         GROUP BY step
         ORDER BY step ASC
@@ -2294,7 +2523,7 @@ def get_sample_details(req: SampleDetailsRequest):
         all_eval_groups = con.execute(
             """
             SELECT DISTINCT group_id
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND is_eval = TRUE
             ORDER BY group_id
             """,
@@ -2372,33 +2601,92 @@ def get_sample_details(req: SampleDetailsRequest):
                 for row in prompt_rows
             ]
 
-            rollout_rows = con.execute(
+            gen_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, turn_order, turn_type, content, tokens, stop_reason
-                FROM rollouts_eval
+                SELECT step, sample_idx, completion_idx, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+                FROM generations_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
-                ORDER BY completion_idx, turn_order
+                ORDER BY completion_idx, generation_idx
                 """,
                 [req.run_path, step, eval_name, eval_sample_idx],
             ).fetchall()
 
-            rollouts = [
+            generations = [
                 {
                     "step": row[0],
-                    "group_id": row[1],
-                    "sample_idx": row[2],
-                    "turn_order": row[3],
-                    "turn_type": row[4],
-                    "content": decompress_blob(row[5]),
-                    "tokens": row[6],
-                    "stop_reason": row[7],
+                    "sample_idx": row[1],
+                    "completion_idx": row[2],
+                    "generation_idx": row[3],
+                    "content": decompress_blob(row[4]),
+                    "tokens": row[5],
+                    "prompt_tokens": row[6],
+                    "tool_call_count": row[7],
+                    "stop_reason": row[8],
                 }
-                for row in rollout_rows
+                for row in gen_rows
+            ]
+
+            env_resp_rows = con.execute(
+                """
+                SELECT step, sample_idx, completion_idx, generation_idx, content, turn_type, tokens, response_time
+                FROM env_responses_eval
+                WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
+                ORDER BY completion_idx, generation_idx
+                """,
+                [req.run_path, step, eval_name, eval_sample_idx],
+            ).fetchall()
+
+            env_responses = [
+                {
+                    "step": row[0],
+                    "sample_idx": row[1],
+                    "completion_idx": row[2],
+                    "generation_idx": row[3],
+                    "content": decompress_blob(row[4]),
+                    "turn_type": row[5],
+                    "tokens": row[6],
+                    "response_time": row[7],
+                }
+                for row in env_resp_rows
+            ]
+
+            tc_rows = con.execute(
+                """
+                SELECT step, sample_idx, completion_idx, generation_idx, tool_call_idx,
+                       env_response_generation_idx, tool_name, arguments, raw_text, result,
+                       success, error, exit_code, truncated, result_tokens, sandbox_id
+                FROM tool_calls_eval
+                WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
+                ORDER BY completion_idx, generation_idx, tool_call_idx
+                """,
+                [req.run_path, step, eval_name, eval_sample_idx],
+            ).fetchall()
+
+            tool_calls = [
+                {
+                    "step": row[0],
+                    "sample_idx": row[1],
+                    "completion_idx": row[2],
+                    "generation_idx": row[3],
+                    "tool_call_idx": row[4],
+                    "env_response_generation_idx": row[5],
+                    "tool_name": row[6],
+                    "arguments": row[7],
+                    "raw_text": row[8],
+                    "result": row[9],
+                    "success": row[10],
+                    "error": row[11],
+                    "exit_code": row[12],
+                    "truncated": row[13],
+                    "result_tokens": row[14],
+                    "sandbox_id": row[15],
+                }
+                for row in tc_rows
             ]
 
             samples_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, env, turns
+                SELECT step, sample_idx, completion_idx, env, num_generations
                 FROM samples_data_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 """,
@@ -2412,7 +2700,7 @@ def get_sample_details(req: SampleDetailsRequest):
                     "sample_idx": row[2],
                     "reward": None,
                     "advantage": None,
-                    "turns": row[4],
+                    "num_generations": row[4],
                     "total_tokens": None,
                     "raw_string": None,
                 }
@@ -2463,10 +2751,10 @@ def get_sample_details(req: SampleDetailsRequest):
 
             info_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, turn_order, env, info_key, info_value, info_type
+                SELECT step, sample_idx, completion_idx, generation_idx, env, info_key, info_value, info_type
                 FROM info_turns_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
-                ORDER BY completion_idx, turn_order, info_key
+                ORDER BY completion_idx, generation_idx, info_key
                 """,
                 [req.run_path, step, eval_name, eval_sample_idx],
             ).fetchall()
@@ -2475,7 +2763,7 @@ def get_sample_details(req: SampleDetailsRequest):
                 {
                     "step": row[0],
                     "sample_idx": row[2],
-                    "turn_order": row[3],
+                    "generation_idx": row[3],
                     "env": row[4],
                     "info_key": row[5],
                     "info_value": row[6],
@@ -2485,7 +2773,7 @@ def get_sample_details(req: SampleDetailsRequest):
             ]
 
             log.info(
-                f"[API] Resolved eval sample: group_id={req.group_id} → "
+                f"[API] Resolved eval sample: group_id={req.group_id} -> "
                 f"eval_name={eval_name}, sample_idx={eval_sample_idx}, step={step}"
             )
 
@@ -2497,7 +2785,9 @@ def get_sample_details(req: SampleDetailsRequest):
                 "group_id": req.group_id,
                 "sample_idx": req.sample_idx,
                 "prompts": prompts,
-                "rollouts": rollouts,
+                "generations": generations,
+                "env_responses": env_responses,
+                "tool_calls": tool_calls,
                 "samples_data": samples_data,
                 "rollout_metrics": rollout_metrics,
                 "golden_answers": golden_answers,
@@ -2509,7 +2799,7 @@ def get_sample_details(req: SampleDetailsRequest):
         """
         SELECT step
         FROM samples_data
-        WHERE run_id = ? AND group_id = ? AND sample_idx = ?
+        WHERE run_id = ? AND group_id = ? AND sample_id = ?
         ORDER BY step DESC
         LIMIT 1
         """,
@@ -2520,8 +2810,8 @@ def get_sample_details(req: SampleDetailsRequest):
         step_row = con.execute(
             """
             SELECT step
-            FROM rollouts
-            WHERE run_id = ? AND group_id = ? AND sample_idx = ?
+            FROM generations
+            WHERE run_id = ? AND group_id = ? AND sample_id = ?
             ORDER BY step DESC
             LIMIT 1
             """,
@@ -2554,35 +2844,98 @@ def get_sample_details(req: SampleDetailsRequest):
             for row in prompt_rows
         ]
 
-        rollout_rows = con.execute(
+        gen_rows = con.execute(
             """
-            SELECT step, group_id, sample_idx, turn_order, turn_type, content, tokens, stop_reason
-            FROM rollouts
-            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_idx = ?
-            ORDER BY turn_order
+            SELECT step, group_id, sample_id, agent_id, generation_idx, content, tokens,
+                   prompt_tokens, tool_call_count, stop_reason
+            FROM generations
+            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
+            ORDER BY generation_idx
             """,
             [req.run_path, step, req.group_id, req.sample_idx],
         ).fetchall()
 
-        rollouts = [
+        generations = [
             {
                 "step": row[0],
                 "group_id": row[1],
-                "sample_idx": row[2],
-                "turn_order": row[3],
-                "turn_type": row[4],
+                "sample_id": row[2],
+                "agent_id": row[3],
+                "generation_idx": row[4],
                 "content": decompress_blob(row[5]),
                 "tokens": row[6],
-                "stop_reason": row[7],
+                "prompt_tokens": row[7],
+                "tool_call_count": row[8],
+                "stop_reason": row[9],
             }
-            for row in rollout_rows
+            for row in gen_rows
+        ]
+
+        env_resp_rows = con.execute(
+            """
+            SELECT step, group_id, sample_id, agent_id, generation_idx, content, turn_type, tokens, response_time
+            FROM env_responses
+            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
+            ORDER BY generation_idx
+            """,
+            [req.run_path, step, req.group_id, req.sample_idx],
+        ).fetchall()
+
+        env_responses = [
+            {
+                "step": row[0],
+                "group_id": row[1],
+                "sample_id": row[2],
+                "agent_id": row[3],
+                "generation_idx": row[4],
+                "content": decompress_blob(row[5]),
+                "turn_type": row[6],
+                "tokens": row[7],
+                "response_time": row[8],
+            }
+            for row in env_resp_rows
+        ]
+
+        tc_rows = con.execute(
+            """
+            SELECT step, group_id, sample_id, agent_id, generation_idx, tool_call_idx,
+                   env_response_generation_idx, tool_name, arguments, raw_text, result,
+                   success, error, exit_code, truncated, result_tokens, sandbox_id
+            FROM tool_calls
+            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
+            ORDER BY generation_idx, tool_call_idx
+            """,
+            [req.run_path, step, req.group_id, req.sample_idx],
+        ).fetchall()
+
+        tool_calls = [
+            {
+                "step": row[0],
+                "group_id": row[1],
+                "sample_id": row[2],
+                "agent_id": row[3],
+                "generation_idx": row[4],
+                "tool_call_idx": row[5],
+                "env_response_generation_idx": row[6],
+                "tool_name": row[7],
+                "arguments": row[8],
+                "raw_text": row[9],
+                "result": row[10],
+                "success": row[11],
+                "error": row[12],
+                "exit_code": row[13],
+                "truncated": row[14],
+                "result_tokens": row[15],
+                "sandbox_id": row[16],
+            }
+            for row in tc_rows
         ]
 
         samples_rows = con.execute(
             """
-            SELECT step, group_id, sample_idx, reward, advantage, turns, total_tokens, raw_string
+            SELECT step, group_id, sample_id, reward, advantage, num_generations, total_tokens, raw_string, stop_reason
             FROM samples_data
-            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_idx = ?
+            WHERE run_id = ? AND step = ? AND group_id = ? AND sample_id = ?
             """,
             [req.run_path, step, req.group_id, req.sample_idx],
         ).fetchall()
@@ -2591,21 +2944,22 @@ def get_sample_details(req: SampleDetailsRequest):
             {
                 "step": row[0],
                 "group_id": row[1],
-                "sample_idx": row[2],
+                "sample_id": row[2],
                 "reward": row[3],
                 "advantage": row[4],
-                "turns": row[5],
+                "num_generations": row[5],
                 "total_tokens": row[6],
                 "raw_string": decompress_blob(row[7]),
+                "stop_reason": row[8],
             }
             for row in samples_rows
         ]
 
         metrics_rows = con.execute(
             """
-            SELECT step, sample_idx, env, metric_name, value
+            SELECT step, sample_id, env, metric_name, value
             FROM rollouts_metrics
-            WHERE run_id = ? AND step = ? AND sample_idx = ?
+            WHERE run_id = ? AND step = ? AND sample_id = ?
             ORDER BY metric_name
             """,
             [req.run_path, step, req.sample_idx],
@@ -2614,7 +2968,7 @@ def get_sample_details(req: SampleDetailsRequest):
         rollout_metrics = [
             {
                 "step": row[0],
-                "sample_idx": row[1],
+                "sample_id": row[1],
                 "env": row[2],
                 "metric_name": row[3],
                 "value": row[4],
@@ -2624,9 +2978,9 @@ def get_sample_details(req: SampleDetailsRequest):
 
         golden_rows = con.execute(
             """
-            SELECT step, sample_idx, env, key, value
+            SELECT step, sample_id, env, key, value
             FROM golden_answers
-            WHERE run_id = ? AND step = ? AND sample_idx = ?
+            WHERE run_id = ? AND step = ? AND sample_id = ?
             ORDER BY key
             """,
             [req.run_path, step, req.sample_idx],
@@ -2635,7 +2989,7 @@ def get_sample_details(req: SampleDetailsRequest):
         golden_answers = [
             {
                 "step": row[0],
-                "sample_idx": row[1],
+                "sample_id": row[1],
                 "env": row[2],
                 "key": row[3],
                 "value": row[4],
@@ -2645,10 +2999,10 @@ def get_sample_details(req: SampleDetailsRequest):
 
         info_rows = con.execute(
             """
-            SELECT step, sample_idx, turn_order, env, info_key, info_value, info_type
+            SELECT step, sample_id, generation_idx, env, info_key, info_value, info_type, agent_id, tool_call_idx
             FROM info_turns
-            WHERE run_id = ? AND step = ? AND sample_idx = ?
-            ORDER BY turn_order, info_key
+            WHERE run_id = ? AND step = ? AND sample_id = ?
+            ORDER BY generation_idx, info_key
             """,
             [req.run_path, step, req.sample_idx],
         ).fetchall()
@@ -2656,12 +3010,14 @@ def get_sample_details(req: SampleDetailsRequest):
         info_turns = [
             {
                 "step": row[0],
-                "sample_idx": row[1],
-                "turn_order": row[2],
+                "sample_id": row[1],
+                "generation_idx": row[2],
                 "env": row[3],
                 "info_key": row[4],
                 "info_value": row[5],
                 "info_type": row[6],
+                "agent_id": row[7],
+                "tool_call_idx": row[8],
             }
             for row in info_rows
         ]
@@ -2672,7 +3028,9 @@ def get_sample_details(req: SampleDetailsRequest):
             "group_id": req.group_id,
             "sample_idx": req.sample_idx,
             "prompts": prompts,
-            "rollouts": rollouts,
+            "generations": generations,
+            "env_responses": env_responses,
+            "tool_calls": tool_calls,
             "samples_data": samples_data,
             "rollout_metrics": rollout_metrics,
             "golden_answers": golden_answers,
@@ -2684,7 +3042,7 @@ def get_sample_details(req: SampleDetailsRequest):
         """
         SELECT trainer_step, inference_step, discard_reason
         FROM samples_data_discarded
-        WHERE run_id = ? AND group_id = ? AND sample_idx = ?
+        WHERE run_id = ? AND group_id = ? AND sample_id = ?
         ORDER BY timestamp DESC
         LIMIT 1
         """,
@@ -2695,8 +3053,8 @@ def get_sample_details(req: SampleDetailsRequest):
         gen_discarded_row = con.execute(
             """
             SELECT trainer_step, inference_step
-            FROM rollouts_discarded
-            WHERE run_id = ? AND group_id = ? AND sample_idx = ?
+            FROM generations_discarded
+            WHERE run_id = ? AND group_id = ? AND sample_id = ?
             LIMIT 1
             """,
             [req.run_path, req.group_id, req.sample_idx],
@@ -2710,7 +3068,9 @@ def get_sample_details(req: SampleDetailsRequest):
             "group_id": req.group_id,
             "sample_idx": req.sample_idx,
             "prompts": [],
-            "rollouts": [],
+            "generations": [],
+            "env_responses": [],
+            "tool_calls": [],
             "samples_data": [],
             "rollout_metrics": [],
             "golden_answers": [],
@@ -2749,38 +3109,104 @@ def get_sample_details(req: SampleDetailsRequest):
         for row in prompt_rows
     ]
 
-    rollout_rows = con.execute(
+    gen_rows = con.execute(
         """
-        SELECT trainer_step, inference_step, group_id, sample_idx,
-               turn_order, turn_type, content, tokens, stop_reason
-        FROM rollouts_discarded
-        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_idx = ?
-        ORDER BY turn_order
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+        FROM generations_discarded
+        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
+        ORDER BY generation_idx
         """,
         [req.run_path, trainer_step, req.group_id, req.sample_idx],
     ).fetchall()
 
-    rollouts = [
+    generations = [
         {
             "trainer_step": row[0],
             "inference_step": row[1],
             "group_id": row[2],
-            "sample_idx": row[3],
-            "turn_order": row[4],
-            "turn_type": row[5],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
             "content": decompress_blob(row[6]),
             "tokens": row[7],
-            "stop_reason": row[8],
+            "prompt_tokens": row[8],
+            "tool_call_count": row[9],
+            "stop_reason": row[10],
         }
-        for row in rollout_rows
+        for row in gen_rows
+    ]
+
+    env_resp_rows = con.execute(
+        """
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, content, turn_type, tokens, response_time
+        FROM env_responses_discarded
+        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
+        ORDER BY generation_idx
+        """,
+        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+    ).fetchall()
+
+    env_responses = [
+        {
+            "trainer_step": row[0],
+            "inference_step": row[1],
+            "group_id": row[2],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
+            "content": decompress_blob(row[6]),
+            "turn_type": row[7],
+            "tokens": row[8],
+            "response_time": row[9],
+        }
+        for row in env_resp_rows
+    ]
+
+    tc_rows = con.execute(
+        """
+        SELECT trainer_step, inference_step, group_id, sample_id,
+               agent_id, generation_idx, tool_call_idx,
+               env_response_generation_idx, tool_name, arguments, raw_text, result,
+               success, error, exit_code, truncated, result_tokens, sandbox_id
+        FROM tool_calls_discarded
+        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
+        ORDER BY generation_idx, tool_call_idx
+        """,
+        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+    ).fetchall()
+
+    tool_calls = [
+        {
+            "trainer_step": row[0],
+            "inference_step": row[1],
+            "group_id": row[2],
+            "sample_id": row[3],
+            "agent_id": row[4],
+            "generation_idx": row[5],
+            "tool_call_idx": row[6],
+            "env_response_generation_idx": row[7],
+            "tool_name": row[8],
+            "arguments": row[9],
+            "raw_text": row[10],
+            "result": row[11],
+            "success": row[12],
+            "error": row[13],
+            "exit_code": row[14],
+            "truncated": row[15],
+            "result_tokens": row[16],
+            "sandbox_id": row[17],
+        }
+        for row in tc_rows
     ]
 
     samples_rows = con.execute(
         """
-        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, sample_idx,
-               reward, advantage, turns, total_tokens, raw_string
+        SELECT timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+               reward, advantage, num_generations, total_tokens, raw_string
         FROM samples_data_discarded
-        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_idx = ?
+        WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
         """,
         [req.run_path, trainer_step, req.group_id, req.sample_idx],
     ).fetchall()
@@ -2792,10 +3218,10 @@ def get_sample_details(req: SampleDetailsRequest):
             "trainer_step": row[2],
             "inference_step": row[3],
             "group_id": row[4],
-            "sample_idx": row[5],
+            "sample_id": row[5],
             "reward": row[6],
             "advantage": row[7],
-            "turns": row[8],
+            "num_generations": row[8],
             "total_tokens": row[9],
             "raw_string": decompress_blob(row[10]),
         }
@@ -2804,9 +3230,9 @@ def get_sample_details(req: SampleDetailsRequest):
 
     metrics_rows = con.execute(
         """
-        SELECT sample_idx, env, metric_name, value, tail_idx
+        SELECT sample_id, env, metric_name, value, tail_idx
         FROM rollouts_metrics_discarded
-        WHERE run_id = ? AND sample_idx = ?
+        WHERE run_id = ? AND sample_id = ?
         ORDER BY metric_name
         """,
         [req.run_path, req.sample_idx],
@@ -2814,7 +3240,7 @@ def get_sample_details(req: SampleDetailsRequest):
 
     rollout_metrics = [
         {
-            "sample_idx": row[0],
+            "sample_id": row[0],
             "env": row[1],
             "metric_name": row[2],
             "value": row[3],
@@ -2825,9 +3251,9 @@ def get_sample_details(req: SampleDetailsRequest):
 
     golden_rows = con.execute(
         """
-        SELECT sample_idx, env, key, value, tail_idx
+        SELECT sample_id, env, key, value, tail_idx
         FROM golden_answers_discarded
-        WHERE run_id = ? AND sample_idx = ?
+        WHERE run_id = ? AND sample_id = ?
         ORDER BY key
         """,
         [req.run_path, req.sample_idx],
@@ -2835,7 +3261,7 @@ def get_sample_details(req: SampleDetailsRequest):
 
     golden_answers = [
         {
-            "sample_idx": row[0],
+            "sample_id": row[0],
             "env": row[1],
             "key": row[2],
             "value": row[3],
@@ -2846,23 +3272,25 @@ def get_sample_details(req: SampleDetailsRequest):
 
     info_rows = con.execute(
         """
-        SELECT sample_idx, turn_order, env, info_key, info_value, info_type, tail_idx
+        SELECT sample_id, generation_idx, env, info_key, info_value, info_type, tail_idx, agent_id, tool_call_idx
         FROM info_turns_discarded
-        WHERE run_id = ? AND sample_idx = ?
-        ORDER BY turn_order, info_key
+        WHERE run_id = ? AND sample_id = ?
+        ORDER BY generation_idx, info_key
         """,
         [req.run_path, req.sample_idx],
     ).fetchall()
 
     info_turns = [
         {
-            "sample_idx": row[0],
-            "turn_order": row[1],
+            "sample_id": row[0],
+            "generation_idx": row[1],
             "env": row[2],
             "info_key": row[3],
             "info_value": row[4],
             "info_type": row[5],
             "tail_idx": row[6],
+            "agent_id": row[7],
+            "tool_call_idx": row[8],
         }
         for row in info_rows
     ]
@@ -2875,7 +3303,9 @@ def get_sample_details(req: SampleDetailsRequest):
         "group_id": req.group_id,
         "sample_idx": req.sample_idx,
         "prompts": prompts,
-        "rollouts": rollouts,
+        "generations": generations,
+        "env_responses": env_responses,
+        "tool_calls": tool_calls,
         "samples_data": samples_data,
         "rollout_metrics": rollout_metrics,
         "golden_answers": golden_answers,
@@ -2901,32 +3331,32 @@ def get_sample_statuses(req: SampleStatusesRequest):
 
     rows = con.execute(
         f"""
-        WITH keys(group_id, sample_idx) AS (VALUES {values_clause})
+        WITH keys(group_id, sample_id) AS (VALUES {values_clause})
         SELECT
             k.group_id,
-            k.sample_idx,
+            k.sample_id,
             CASE
-                WHEN g.sample_idx IS NOT NULL THEN 'rollouts'
-                WHEN d.sample_idx IS NOT NULL THEN 'rollouts_discarded'
+                WHEN g.sample_id IS NOT NULL THEN 'rollouts'
+                WHEN d.sample_id IS NOT NULL THEN 'rollouts_discarded'
                 ELSE NULL
             END AS kind
         FROM keys k
         LEFT JOIN (
-            SELECT DISTINCT group_id, sample_idx
+            SELECT DISTINCT group_id, sample_id
             FROM samples_data
             WHERE run_id = ?
-        ) g ON g.group_id = k.group_id AND g.sample_idx = k.sample_idx
+        ) g ON g.group_id = k.group_id AND g.sample_id = k.sample_id
         LEFT JOIN (
-            SELECT DISTINCT group_id, sample_idx
+            SELECT DISTINCT group_id, sample_id
             FROM samples_data_discarded
             WHERE run_id = ?
-        ) d ON d.group_id = k.group_id AND d.sample_idx = k.sample_idx
+        ) d ON d.group_id = k.group_id AND d.sample_id = k.sample_id
         """,
         params,
     ).fetchall()
 
     statuses = [
-        {"group_id": row[0], "sample_idx": row[1], "kind": row[2]}
+        {"group_id": row[0], "sample_id": row[1], "kind": row[2]}
         for row in rows
     ]
 
@@ -2939,7 +3369,7 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
     log.info(f"[API] Getting inference events for group {req.group_id} in {req.run_path}")
     con = connect()
 
-    # Fetch inference events from events_inference (server_lane is now directly on this table).
+    # Fetch rollout events from events_rollout (server_lane is now directly on this table).
     rows = con.execute(
         """
         SELECT event_type, server, node_id, tp_group_id, tp_size,
@@ -2948,7 +3378,7 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
                vllm_request_id, queue_time, time_to_first_token, prefill_time,
                decode_time, inference_time, e2e_latency, max_tokens,
                server_lane as lane, is_eval, step, is_canceled, off_policy_steps
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND group_id = ? AND event_type = 'request' AND (phase IS NULL OR phase != 'start')
         ORDER BY start_time ASC
         """,
@@ -2987,50 +3417,49 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
         for row in rows
     ]
 
-    # Fetch environment_response_time from rollouts (including discarded) for this group
-    # Returns rows where environment_response_time > 0 (environment turns)
+    # Fetch environment response_time from env_responses (including discarded) for this group
     env_time_rows = con.execute(
         """
-        SELECT sample_idx, turn_order, environment_response_time FROM (
-            SELECT sample_idx, turn_order, environment_response_time
-            FROM rollouts
+        SELECT sample_id, generation_idx, response_time FROM (
+            SELECT sample_id, generation_idx, response_time
+            FROM env_responses
             WHERE run_id = ? AND group_id = ?
-              AND environment_response_time IS NOT NULL AND environment_response_time > 0
+              AND response_time IS NOT NULL AND response_time > 0
             UNION ALL
-            SELECT sample_idx, turn_order, environment_response_time
-            FROM rollouts_discarded
+            SELECT sample_id, generation_idx, response_time
+            FROM env_responses_discarded
             WHERE run_id = ? AND group_id = ?
-              AND environment_response_time IS NOT NULL AND environment_response_time > 0
+              AND response_time IS NOT NULL AND response_time > 0
         ) sub
-        ORDER BY sample_idx, turn_order
+        ORDER BY sample_id, generation_idx
         """,
         [req.run_path, req.group_id, req.run_path, req.group_id],
     ).fetchall()
     environment_response_times = [
-        {"sample_idx": row[0], "turn_order": row[1], "time": row[2]}
+        {"sample_id": row[0], "generation_idx": row[1], "time": row[2]}
         for row in env_time_rows
     ]
 
     # Fetch compute_reward_time from samples_data (including discarded) for this group
     reward_time_rows = con.execute(
         """
-        SELECT sample_idx, compute_reward_time FROM (
-            SELECT sample_idx, compute_reward_time
+        SELECT sample_id, compute_reward_time FROM (
+            SELECT sample_id, compute_reward_time
             FROM samples_data
             WHERE run_id = ? AND group_id = ?
               AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
             UNION ALL
-            SELECT sample_idx, compute_reward_time
+            SELECT sample_id, compute_reward_time
             FROM samples_data_discarded
             WHERE run_id = ? AND group_id = ?
               AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
         ) sub
-        ORDER BY sample_idx
+        ORDER BY sample_id
         """,
         [req.run_path, req.group_id, req.run_path, req.group_id],
     ).fetchall()
     compute_reward_times = [
-        {"sample_idx": row[0], "time": row[1]}
+        {"sample_id": row[0], "time": row[1]}
         for row in reward_time_rows
     ]
 
@@ -3041,7 +3470,7 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
         all_eval_groups = con.execute(
             """
             SELECT DISTINCT group_id
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND is_eval = TRUE
             ORDER BY group_id
             """,
@@ -3095,7 +3524,7 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
                         default=0,
                     )
                     compute_reward_times = [
-                        {"sample_idx": max_sample_id, "time": eval_time_row[0]}
+                        {"sample_id": max_sample_id, "time": eval_time_row[0]}
                     ]
 
     log.info(f"[API] Returning {len(events)} inference events for group {req.group_id}")
@@ -3238,18 +3667,18 @@ def get_run_summary(run_path: str):
     counts = con.execute(
         """
         SELECT
-            (SELECT COUNT(*) FROM rollouts WHERE run_id = ?),
+            (SELECT COUNT(*) FROM generations WHERE run_id = ?),
             (SELECT COUNT(*) FROM rollouts_metrics WHERE run_id = ?),
             (SELECT COUNT(*) FROM events_orchestrator WHERE run_id = ?),
             (SELECT COUNT(*) FROM events_trainer WHERE run_id = ?),
-            (SELECT COUNT(*) FROM events_inference WHERE run_id = ?),
+            (SELECT COUNT(*) FROM events_rollout WHERE run_id = ?),
             (SELECT COUNT(*) FROM system_metrics_gpu WHERE run_id = ?),
             (SELECT COUNT(*) FROM system_metrics_cpu WHERE run_id = ?),
             (SELECT COUNT(*) FROM vllm_metrics WHERE run_id = ?),
-            (SELECT COUNT(*) FROM rollouts_discarded WHERE run_id = ?),
+            (SELECT COUNT(*) FROM generations_discarded WHERE run_id = ?),
             (SELECT COUNT(*) FROM rollouts_metrics_discarded WHERE run_id = ?),
-            (SELECT COUNT(DISTINCT trainer_step) FROM rollouts_discarded WHERE run_id = ?),
-            (SELECT COUNT(DISTINCT step) FROM rollouts WHERE run_id = ?)
+            (SELECT COUNT(DISTINCT trainer_step) FROM generations_discarded WHERE run_id = ?),
+            (SELECT COUNT(DISTINCT step) FROM generations WHERE run_id = ?)
         """,
         [rp] * 12,
     ).fetchone()
@@ -3590,7 +4019,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
     # Get the absolute time range from ALL events.
     time_range = con.execute(
         """
-        SELECT 
+        SELECT
             MIN(min_time) as global_min,
             MAX(max_time) as global_max
         FROM (
@@ -3601,21 +4030,25 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             FROM events_trainer WHERE run_id = ?
             UNION ALL
             SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
-            FROM events_inference WHERE run_id = ?
+            FROM events_rollout WHERE run_id = ?
+            UNION ALL
+            SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
+            FROM events_infra WHERE run_id = ?
         )
         """,
-        [req.run_path, req.run_path, req.run_path],
+        [req.run_path, req.run_path, req.run_path, req.run_path],
     ).fetchone()
-    
+
     global_min_time = time_range[0]
     global_max_time = time_range[1]
-    
+
     if global_min_time is None or global_max_time is None:
         log.info(f"[API] No events found for {req.run_path}")
         return {
             "orchestrator_events": [],
             "trainer_events": [],
-            "inference_events": [],
+            "rollout_events": [],
+            "infra_events": [],
             "total_pages": 1,
             "current_page": 0,
             "interval_start": 0,
@@ -3623,15 +4056,15 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "global_min_time": None,
             "global_max_time": None,
         }
-    
+
     # Calculate pagination
     total_duration = global_max_time - global_min_time
     total_pages = max(1, int((total_duration // req.interval_seconds) + 1))
-    
+
     # Calculate the time window for this page
     interval_start = global_min_time + (req.page * req.interval_seconds)
     interval_end = interval_start + req.interval_seconds
-    
+
     # Fetch orchestrator events in this time window
     orchestrator_rows = con.execute(
         """
@@ -3642,7 +4075,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         """,
         [req.run_path, interval_start, interval_end],
     ).fetchall()
-    
+
     orchestrator_events = [
         {
             "timestamp": row[0],
@@ -3654,7 +4087,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         }
         for row in orchestrator_rows
     ]
-    
+
     # Fetch trainer events that overlap with this time window
     # (events that start before interval_end AND end after interval_start)
     trainer_rows = con.execute(
@@ -3682,112 +4115,23 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         }
         for row in trainer_rows
     ]
-    
-    # Fetch inference events from events_inference, joining with samples_data
-    # for compute_reward_time, and with rollouts for per-event timing data.
-    # server_lane is now directly on events_inference.
-    # Uses window functions to compute per-sample turn position so we can
-    # map environment_response_time to the correct request event and attach
-    # compute_reward_time to the last request event of each sample.
-    inference_rows = con.execute(
+
+    # Fetch rollout events from events_rollout (thin events -- timing data is in generations table)
+    rollout_rows = con.execute(
         """
-        WITH ranked_requests AS (
-            SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time, prompt_tokens, rollout_tokens,
-                   sample_id, group_id,
-                   vllm_request_id, queue_time, time_to_first_token, prefill_time,
-                   decode_time, inference_time, e2e_latency, max_tokens, is_eval, step, is_canceled, off_policy_steps,
-                   server_lane,
-                   ROW_NUMBER() OVER (PARTITION BY group_id, sample_id ORDER BY start_time) as turn_pos,
-                   COUNT(*) OVER (PARTITION BY group_id, sample_id) as total_turns
-            FROM events_inference
-            WHERE run_id = ? AND event_type = 'request' AND (phase IS NULL OR phase != 'start')
-        ),
-        ranked_env AS (
-            SELECT group_id, sample_idx,
-                   environment_response_time,
-                   ROW_NUMBER() OVER (PARTITION BY group_id, sample_idx ORDER BY turn_order) as env_pos
-            FROM (
-                SELECT group_id, sample_idx, environment_response_time, turn_order
-                FROM rollouts WHERE run_id = ?
-                  AND environment_response_time IS NOT NULL AND environment_response_time > 0
-                UNION ALL
-                SELECT group_id, sample_idx, environment_response_time, turn_order
-                FROM rollouts_discarded WHERE run_id = ?
-                  AND environment_response_time IS NOT NULL AND environment_response_time > 0
-            ) sub
-        ),
-        eval_groups_ranked AS (
-            SELECT group_id, ROW_NUMBER() OVER (ORDER BY group_id) - 1 as rnk
-            FROM (SELECT DISTINCT group_id FROM events_inference WHERE run_id = ? AND is_eval = TRUE)
-        ),
-        eval_samples_ranked AS (
-            SELECT step, eval_name, sample_idx, ROW_NUMBER() OVER (ORDER BY step, eval_name, sample_idx) - 1 as rnk
-            FROM (SELECT DISTINCT step, eval_name, sample_idx FROM prompts_eval WHERE run_id = ?)
-        ),
-        samples_info AS (
-            SELECT group_id, sample_idx, compute_reward_time
-            FROM samples_data WHERE run_id = ?
-            UNION ALL
-            SELECT group_id, sample_idx, compute_reward_time
-            FROM samples_data_discarded WHERE run_id = ?
-            UNION ALL
-            SELECT egr.group_id,
-                   esr.sample_idx as sample_idx,
-                   MAX(sde.compute_eval_metrics_time) as compute_reward_time
-            FROM eval_groups_ranked egr
-            JOIN eval_samples_ranked esr ON egr.rnk = esr.rnk
-            JOIN samples_data_eval sde ON sde.run_id = ? AND sde.step = esr.step AND sde.eval_name = esr.eval_name AND sde.sample_idx = esr.sample_idx
-            WHERE sde.compute_eval_metrics_time IS NOT NULL AND sde.compute_eval_metrics_time > 0
-            GROUP BY egr.group_id, esr.sample_idx
-        )
-        SELECT rr.event_type, rr.server, rr.node_id, rr.tp_group_id, rr.tp_size,
-               rr.start_time, rr.end_time, rr.prompt_tokens, rr.rollout_tokens,
-               rr.sample_id, rr.group_id,
-               rr.vllm_request_id, rr.queue_time, rr.time_to_first_token, rr.prefill_time,
-               rr.decode_time, rr.inference_time, rr.e2e_latency, rr.max_tokens,
-               rr.server_lane as lane,
-               re.environment_response_time,
-               CASE WHEN rr.turn_pos = rr.total_turns THEN si.compute_reward_time ELSE NULL END as compute_reward_time,
-               rr.is_eval,
-               rr.step,
-               rr.is_canceled,
-               rr.off_policy_steps
-        FROM ranked_requests rr
-        LEFT JOIN samples_info si ON si.group_id = rr.group_id AND si.sample_idx = rr.sample_id
-        LEFT JOIN ranked_env re ON re.group_id = rr.group_id AND re.sample_idx = rr.sample_id AND re.env_pos = rr.turn_pos
-        WHERE rr.start_time < ?
-          AND (rr.end_time
-               + COALESCE(re.environment_response_time, 0)
-               + CASE WHEN rr.turn_pos = rr.total_turns THEN COALESCE(si.compute_reward_time, 0) ELSE 0 END
-              ) > ?
-
-        UNION ALL
-
-        SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time, prompt_tokens, rollout_tokens,
-               sample_id, group_id,
+        SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time,
+               prompt_tokens, rollout_tokens, sample_id, group_id,
                vllm_request_id, queue_time, time_to_first_token, prefill_time,
                decode_time, inference_time, e2e_latency, max_tokens,
-               NULL as lane,
-               NULL as environment_response_time,
-               NULL as compute_reward_time,
-               is_eval,
-               step,
-               is_canceled,
-               off_policy_steps
-        FROM events_inference
-        WHERE run_id = ? AND event_type != 'request' AND start_time < ? AND end_time > ?
-
+               server_lane, is_eval, step, is_canceled, off_policy_steps
+        FROM events_rollout
+        WHERE run_id = ? AND start_time < ? AND end_time > ?
         ORDER BY start_time ASC
         """,
-        [req.run_path,
-         req.run_path, req.run_path,
-         req.run_path, req.run_path,
-         req.run_path, req.run_path, req.run_path,
-         interval_end, interval_start,
-         req.run_path, interval_end, interval_start],
+        [req.run_path, interval_end, interval_start],
     ).fetchall()
 
-    inference_events = [
+    rollout_events = [
         {
             "event_type": row[0],
             "server": row[1],
@@ -3809,22 +4153,51 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "e2e_latency": row[17],
             "max_tokens": row[18],
             "lane": row[19],
-            "environment_response_time": row[20],
-            "compute_reward_time": row[21],
-            "is_eval": bool(row[22]) if row[22] is not None else False,
-            "step": row[23],
-            "is_canceled": bool(row[24]) if row[24] is not None else False,
-            "off_policy_steps": row[25],
+            "is_eval": bool(row[20]) if row[20] is not None else False,
+            "step": row[21],
+            "is_canceled": bool(row[22]) if row[22] is not None else False,
+            "off_policy_steps": row[23],
         }
-        for row in inference_rows
+        for row in rollout_rows
     ]
-    
-    log.info(f"[API] Returning page {req.page}/{total_pages}: {len(orchestrator_events)} orchestrator, {len(trainer_events)} trainer, {len(inference_events)} inference events")
-    
+
+    # Fetch infra events from events_infra
+    infra_rows = con.execute(
+        """
+        SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time,
+               step, server_lane
+        FROM events_infra
+        WHERE run_id = ? AND start_time < ? AND end_time > ?
+        ORDER BY start_time ASC
+        """,
+        [req.run_path, interval_end, interval_start],
+    ).fetchall()
+
+    infra_events = [
+        {
+            "event_type": row[0],
+            "server": row[1],
+            "node_id": row[2],
+            "tp_group_id": row[3],
+            "tp_size": row[4],
+            "start_time": row[5],
+            "end_time": row[6],
+            "step": row[7],
+            "lane": row[8],
+        }
+        for row in infra_rows
+    ]
+
+    log.info(
+        f"[API] Returning page {req.page}/{total_pages}: {len(orchestrator_events)} orchestrator, "
+        f"{len(trainer_events)} trainer, {len(rollout_events)} rollout, {len(infra_events)} infra events"
+    )
+
     return {
         "orchestrator_events": orchestrator_events,
         "trainer_events": trainer_events,
-        "inference_events": inference_events,
+        "rollout_events": rollout_events,
+        "infra_events": infra_events,
         "total_pages": total_pages,
         "current_page": req.page,
         "interval_start": interval_start,
@@ -3840,11 +4213,14 @@ def get_inflight_generations(run_path: str):
 
     Returns the in-memory snapshot (from the last tail.zip download).
     This is ephemeral data — not persisted to DB.
+
+    Returns the new inflight snapshot structure with inflight_generations,
+    inflight_tool_executions, etc.
     """
     from .ingest import inflight_by_run
     data = inflight_by_run.get(run_path)
     if data is None:
-        return {"snapshot_time": None, "running": []}
+        return {"snapshot_time": None, "inflight_generations": [], "inflight_tool_executions": []}
     return data
 
 
@@ -4503,7 +4879,7 @@ def get_step_metrics(req: StepMetricsRequest):
     
     # Check if we have any rollouts
     count_result = con.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT step), MIN(step), MAX(step) FROM rollouts WHERE run_id = ?",
+        "SELECT COUNT(*), COUNT(DISTINCT step), MIN(step), MAX(step) FROM generations WHERE run_id = ?",
         [req.run_path],
     ).fetchone()
     
@@ -4564,19 +4940,19 @@ def get_step_metrics(req: StepMetricsRequest):
 
     # Build tag filter SQL for rollout metrics queries.
     # _build_tag_filter returns (sql_fragment, params) where the sql_fragment
-    # uses the given prefix for step/sample_idx columns.
+    # uses the given prefix for step/sample_id columns.
     def _build_tag_filter(prefix: str = "") -> tuple[str, list]:
         if not req.tag_filters:
             return "", []
         step_col = f"{prefix}step" if prefix else "step"
-        sidx_col = f"{prefix}sample_idx" if prefix else "sample_idx"
+        sidx_col = f"{prefix}sample_id" if prefix else "sample_id"
         conditions = []
         params_out: list = []
         for tag_name, tag_values in req.tag_filters.items():
             if tag_values:
                 placeholders = ", ".join(["?"] * len(tag_values))
                 conditions.append(
-                    f"SELECT DISTINCT step, sample_idx FROM sample_tags "
+                    f"SELECT DISTINCT step, sample_id FROM sample_tags "
                     f"WHERE run_id = ? AND tag_name = ? AND tag_value IN ({placeholders})"
                 )
                 params_out.extend([req.run_path, tag_name] + tag_values)
@@ -4590,7 +4966,7 @@ def get_step_metrics(req: StepMetricsRequest):
     tag_filter_sql, tag_filter_params = _build_tag_filter()
     tag_filter_sql_gm, tag_filter_params_gm = _build_tag_filter("gm.")
 
-    # Group-level tag filter for prompts table (group_id instead of sample_idx)
+    # Group-level tag filter for prompts table (group_id instead of sample_id)
     def _build_tag_filter_group(prefix: str = "") -> tuple[str, list]:
         if not req.tag_filters:
             return "", []
@@ -4602,7 +4978,7 @@ def get_step_metrics(req: StepMetricsRequest):
             if tag_values:
                 placeholders = ", ".join(["?"] * len(tag_values))
                 conditions.append(
-                    f"SELECT DISTINCT step, sample_idx FROM sample_tags "
+                    f"SELECT DISTINCT step, sample_id FROM sample_tags "
                     f"WHERE run_id = ? AND tag_name = ? AND tag_value IN ({placeholders})"
                 )
                 params_out.extend([req.run_path, tag_name] + tag_values)
@@ -4614,7 +4990,7 @@ def get_step_metrics(req: StepMetricsRequest):
         group_subquery = (
             f"SELECT DISTINCT sd.step, sd.group_id "
             f"FROM samples_data sd "
-            f"WHERE sd.run_id = ? AND (sd.step, sd.sample_idx) IN ({subquery})"
+            f"WHERE sd.run_id = ? AND (sd.step, sd.sample_id) IN ({subquery})"
         )
         return f" AND ({step_col}, {gid_col}) IN ({group_subquery})", [req.run_path] + params_out
 
@@ -4678,10 +5054,10 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(completion_tokens) as length_completion_min,
             MAX(completion_tokens) as length_completion_max
         FROM (
-            SELECT step, sample_idx, SUM(tokens) as completion_tokens
-            FROM rollouts
+            SELECT step, sample_id, SUM(tokens) as completion_tokens
+            FROM generations
             WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
-            GROUP BY step, sample_idx
+            GROUP BY step, sample_id
         )
         GROUP BY step
         ORDER BY step ASC
@@ -4729,9 +5105,9 @@ def get_step_metrics(req: StepMetricsRequest):
     stop_reason_length_query = f"""
         SELECT
             step,
-            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
-                NULLIF(COUNT(DISTINCT sample_idx), 0) as stop_reason_length_pct
-        FROM rollouts
+            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
+                NULLIF(COUNT(DISTINCT sample_id), 0) as stop_reason_length_pct
+        FROM generations
         WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
         GROUP BY step
         ORDER BY step ASC
@@ -4750,11 +5126,11 @@ def get_step_metrics(req: StepMetricsRequest):
             SELECT
                 step,
                 group_id,
-                sample_idx,
+                sample_id,
                 SUM(tokens) as completion_tokens
-            FROM rollouts
+            FROM generations
             WHERE run_id = ? AND turn_type = 'model' {step_filter} {tag_filter_sql} {env_filter_sql}
-            GROUP BY step, group_id, sample_idx
+            GROUP BY step, group_id, sample_id
         ),
         group_stats AS (
             SELECT
@@ -4865,15 +5241,15 @@ def get_step_metrics(req: StepMetricsRequest):
     gini_rows = con.execute(gini_query, params + tag_filter_params + env_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
 
-    # Compute off-policy steps stats from events_inference table
+    # Compute off-policy steps stats from events_rollout table
     # off_policy_steps = number of weight updates while rollout was in-flight
-    # Join with prompts to get the training step (events_inference.step may be NULL)
+    # Join with prompts to get the training step (events_rollout.step may be NULL)
     off_policy_query = f"""
         SELECT
             p.step,
             AVG(ei.off_policy_steps) as off_policy_steps_mean,
             STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
-        FROM events_inference ei
+        FROM events_rollout ei
         JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
         WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
             {step_filter.replace("step", "p.step")}
@@ -4994,7 +5370,7 @@ def get_step_metrics(req: StepMetricsRequest):
                         "value": float(value),
                     })
 
-    # Add off-policy steps metrics (from events_inference, independent of samples_data steps)
+    # Add off-policy steps metrics (from events_rollout, independent of samples_data steps)
     for step, (off_policy_mean, off_policy_std) in off_policy_by_step.items():
         if metrics_to_include is None or "off_policy_steps_mean" in metrics_to_include:
             if off_policy_mean is not None:
@@ -5079,7 +5455,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     COUNT(*) OVER (PARTITION BY gm.step, gm.metric_name, sd.group_id) as n,
                     SUM(gm.value) OVER (PARTITION BY gm.step, gm.metric_name, sd.group_id) as sum_value
                 FROM rollouts_metrics gm
-                JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
+                JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_id = gm.sample_id
                 WHERE gm.run_id = ? AND gm.value IS NOT NULL {metric_step_filter} {tag_filter_sql_gm} {env_filter_sql_gm}
             ),
             gini_per_group AS (
@@ -5176,7 +5552,7 @@ def get_step_metrics(req: StepMetricsRequest):
     # Add custom metrics to available metrics list
     available_metrics.extend(available_custom_metrics)
     
-    # Compute discarded rollout metrics from rollouts_discarded table
+    # Compute discarded rollout metrics from generations_discarded table
     # Use trainer_step as the step for discarded metrics
     discarded_step_filter = ""
     discarded_params = [req.run_path]
@@ -5269,7 +5645,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     "value": float(max_async_count / total_count * 100),
                 })
     
-    # Compute completion token stats for discarded samples (from rollouts_discarded, turn_type='model')
+    # Compute completion token stats for discarded samples (from generations_discarded, turn_type='model')
     # First sum tokens per sample where turn_type = 'model', then aggregate per step
     discarded_completion_query = f"""
         SELECT 
@@ -5279,10 +5655,10 @@ def get_step_metrics(req: StepMetricsRequest):
             MIN(completion_tokens) as discarded_length_completion_min,
             MAX(completion_tokens) as discarded_length_completion_max
         FROM (
-            SELECT trainer_step, sample_idx, SUM(tokens) as completion_tokens
-            FROM rollouts_discarded
+            SELECT trainer_step, sample_id, SUM(tokens) as completion_tokens
+            FROM generations_discarded
             WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
-            GROUP BY trainer_step, sample_idx
+            GROUP BY trainer_step, sample_id
         )
         GROUP BY trainer_step
         ORDER BY trainer_step ASC
@@ -5378,9 +5754,9 @@ def get_step_metrics(req: StepMetricsRequest):
     discarded_stop_reason_length_query = f"""
         SELECT 
             trainer_step as step,
-            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 / 
-                NULLIF(COUNT(DISTINCT sample_idx), 0) as discarded_stop_reason_length_pct
-        FROM rollouts_discarded
+            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
+                NULLIF(COUNT(DISTINCT sample_id), 0) as discarded_stop_reason_length_pct
+        FROM generations_discarded
         WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
         GROUP BY trainer_step
         ORDER BY trainer_step ASC
@@ -5406,11 +5782,11 @@ def get_step_metrics(req: StepMetricsRequest):
             SELECT
                 trainer_step as step,
                 group_id,
-                sample_idx,
+                sample_id,
                 SUM(tokens) as completion_tokens
-            FROM rollouts_discarded
+            FROM generations_discarded
             WHERE run_id = ? AND turn_type = 'model' {discarded_step_filter}
-            GROUP BY trainer_step, group_id, sample_idx
+            GROUP BY trainer_step, group_id, sample_id
         ),
         group_stats AS (
             SELECT
@@ -5532,7 +5908,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     })
     
     # Compute discarded rollout metrics per reward name from rollouts_metrics_discarded
-    # Need to join with rollouts_discarded to get trainer_step
+    # Need to join with generations_discarded to get trainer_step
     discarded_gen_metrics_query = f"""
         SELECT 
             gd.trainer_step as step,
@@ -5543,10 +5919,10 @@ def get_step_metrics(req: StepMetricsRequest):
             MAX(gmd.value) as max_val
         FROM rollouts_metrics_discarded gmd
         JOIN (
-            SELECT DISTINCT run_id, trainer_step, sample_idx
-            FROM rollouts_discarded
+            SELECT DISTINCT run_id, trainer_step, sample_id
+            FROM generations_discarded
             WHERE run_id = ? {discarded_step_filter}
-        ) gd ON gmd.run_id = gd.run_id AND gmd.sample_idx = gd.sample_idx
+        ) gd ON gmd.run_id = gd.run_id AND gmd.sample_id = gd.sample_id
         WHERE gmd.run_id = ?
         GROUP BY gd.trainer_step, gmd.metric_name
         ORDER BY gd.trainer_step ASC, gmd.metric_name ASC
@@ -5587,14 +5963,14 @@ def get_step_metrics(req: StepMetricsRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
         discarded_gen_metric_names = set()
     
-    # Compute discarded off-policy steps (join events_inference with prompts_discarded)
+    # Compute discarded off-policy steps (join events_rollout with prompts_discarded)
     try:
         discarded_off_policy_query = f"""
             SELECT
                 pd.trainer_step,
                 AVG(ei.off_policy_steps) as off_policy_steps_mean,
                 STDDEV_SAMP(ei.off_policy_steps) as off_policy_steps_std
-            FROM events_inference ei
+            FROM events_rollout ei
             JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
             WHERE ei.run_id = ? AND ei.event_type = 'request'
                 AND ei.off_policy_steps IS NOT NULL {discarded_step_filter}
@@ -5634,7 +6010,7 @@ def get_step_metrics(req: StepMetricsRequest):
         ])
     available_metrics.extend(discarded_metrics_list)
 
-    # Compute canceled count per step from events_inference
+    # Compute canceled count per step from events_rollout
     # Canceled samples are attributed to the step of the weight_broadcast that follows them.
     # i.e. canceled samples between broadcast(step N-1) and broadcast(step N) → step N
     try:
@@ -5644,13 +6020,13 @@ def get_step_metrics(req: StepMetricsRequest):
                     step,
                     MIN(start_time) as broadcast_time,
                     LAG(MIN(start_time)) OVER (ORDER BY step) as prev_broadcast_time
-                FROM events_inference
+                FROM events_rollout
                 WHERE run_id = ? AND event_type = 'weight_broadcast' AND step IS NOT NULL
                 GROUP BY step
             ),
             canceled AS (
                 SELECT DISTINCT sample_id, end_time
-                FROM events_inference
+                FROM events_rollout
                 WHERE run_id = ? AND event_type = 'request' AND is_canceled = true
             )
             SELECT
@@ -6068,14 +6444,14 @@ def get_step_metrics(req: StepMetricsRequest):
     except Exception as e:
         log.warning(f"[API] Could not compute trainer weight_broadcast metric: {e}")
     
-    # Compute inference weight_broadcast timing (from events_inference table)
+    # Compute inference weight_broadcast timing (from events_rollout table)
     # Uses the stored step column to group weight_broadcast events per step
     try:
         weight_broadcast_inference_query = """
             SELECT
                 step,
                 (MAX(end_time) - MIN(start_time)) as wall_clock_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'weight_broadcast' AND step IS NOT NULL
             GROUP BY step
             ORDER BY step ASC
@@ -6160,7 +6536,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 request_events AS (
                     SELECT sample_id, group_id, start_time, end_time,
                            inference_time, is_canceled
-                    FROM events_inference
+                    FROM events_rollout
                     WHERE run_id = ? AND event_type = 'request'
                       AND (is_eval = false OR is_eval IS NULL)
                 ),
@@ -6172,10 +6548,10 @@ def get_step_metrics(req: StepMetricsRequest):
                 ),
                 -- sample classification + compute_reward_time
                 sample_info AS (
-                    SELECT group_id, sample_idx, compute_reward_time, 'normal' as status
+                    SELECT group_id, sample_id, compute_reward_time, 'normal' as status
                     FROM samples_data WHERE run_id = ?
                     UNION ALL
-                    SELECT group_id, sample_idx, compute_reward_time, 'discarded' as status
+                    SELECT group_id, sample_id, compute_reward_time, 'discarded' as status
                     FROM samples_data_discarded WHERE run_id = ?
                 ),
                 -- Generation: attribute each event to a step, clip duration
@@ -6193,7 +6569,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     JOIN step_windows sw
                         ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
                     LEFT JOIN sample_info si
-                        ON si.group_id = re.group_id AND si.sample_idx = re.sample_id
+                        ON si.group_id = re.group_id AND si.sample_id = re.sample_id
                 ),
                 -- Compute reward: attribute to step of last event per sample
                 cr_attributed AS (
@@ -6205,7 +6581,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     JOIN step_windows sw
                         ON le.last_end > sw.step_start AND le.last_end <= sw.step_end
                     LEFT JOIN sample_info si
-                        ON si.group_id = le.group_id AND si.sample_idx = le.sample_id
+                        ON si.group_id = le.group_id AND si.sample_id = le.sample_id
                     WHERE NOT EXISTS (
                         SELECT 1 FROM request_events re2
                         WHERE re2.group_id = le.group_id AND re2.sample_id = le.sample_id
@@ -6429,7 +6805,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     # =====================================================================
     for row in con.execute(f"""
         SELECT run_id, COUNT(*), COUNT(DISTINCT step), MIN(step), MAX(step)
-        FROM rollouts WHERE run_id IN ({in_ph})
+        FROM generations WHERE run_id IN ({in_ph})
         GROUP BY run_id
     """, run_paths).fetchall():
         rid = row[0]
@@ -6464,14 +6840,14 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             return "", []
         rid_col = f"{prefix}run_id" if prefix else "run_id"
         step_col = f"{prefix}step" if prefix else "step"
-        sidx_col = f"{prefix}sample_idx" if prefix else "sample_idx"
+        sidx_col = f"{prefix}sample_id" if prefix else "sample_id"
         conditions = []
         params_out: list = []
         for tag_name, tag_values in req.tag_filters.items():
             if tag_values:
                 placeholders = ", ".join(["?"] * len(tag_values))
                 conditions.append(
-                    f"SELECT DISTINCT run_id, step, sample_idx FROM sample_tags "
+                    f"SELECT DISTINCT run_id, step, sample_id FROM sample_tags "
                     f"WHERE tag_name = ? AND tag_value IN ({placeholders})"
                 )
                 params_out.extend([tag_name] + tag_values)
@@ -6485,8 +6861,8 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     multi_tag_sql, multi_tag_params = _build_multi_tag_filter()
     multi_tag_sql_gm, multi_tag_params_gm = _build_multi_tag_filter("gm.")
 
-    # Group-level tag filter for prompts table (which has group_id but not sample_idx).
-    # Joins through samples_data to map sample_idx tags to group_id.
+    # Group-level tag filter for prompts table (which has group_id but not sample_id).
+    # Joins through samples_data to map sample_id tags to group_id.
     def _build_multi_tag_filter_group(prefix: str = "") -> tuple[str, list]:
         if not req.tag_filters:
             return "", []
@@ -6499,7 +6875,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             if tag_values:
                 placeholders = ", ".join(["?"] * len(tag_values))
                 conditions.append(
-                    f"SELECT DISTINCT run_id, step, sample_idx FROM sample_tags "
+                    f"SELECT DISTINCT run_id, step, sample_id FROM sample_tags "
                     f"WHERE tag_name = ? AND tag_value IN ({placeholders})"
                 )
                 params_out.extend([tag_name] + tag_values)
@@ -6508,11 +6884,11 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         subquery = conditions[0]
         for cond in conditions[1:]:
             subquery = f"({subquery}) INTERSECT ({cond})"
-        # Map sample_idx back to group_id via samples_data
+        # Map sample_id back to group_id via samples_data
         group_subquery = (
             f"SELECT DISTINCT sd.run_id, sd.step, sd.group_id "
             f"FROM samples_data sd "
-            f"WHERE (sd.run_id, sd.step, sd.sample_idx) IN ({subquery})"
+            f"WHERE (sd.run_id, sd.step, sd.sample_id) IN ({subquery})"
         )
         return f" AND ({rid_col}, {step_col}, {gid_col}) IN ({group_subquery})", params_out
 
@@ -6585,10 +6961,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(completion_tokens), STDDEV_SAMP(completion_tokens),
             MIN(completion_tokens), MAX(completion_tokens)
         FROM (
-            SELECT run_id, step, sample_idx, SUM(tokens) as completion_tokens
-            FROM rollouts
+            SELECT run_id, step, sample_id, SUM(tokens) as completion_tokens
+            FROM generations
             WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
-            GROUP BY run_id, step, sample_idx
+            GROUP BY run_id, step, sample_id
         )
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
@@ -6634,9 +7010,9 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     for row in con.execute(f"""
         SELECT
             run_id, step,
-            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
-                NULLIF(COUNT(DISTINCT sample_idx), 0)
-        FROM rollouts
+            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
+                NULLIF(COUNT(DISTINCT sample_id), 0)
+        FROM generations
         WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
         GROUP BY run_id, step
         ORDER BY run_id, step ASC
@@ -6653,11 +7029,11 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 run_id,
                 step,
                 group_id,
-                sample_idx,
+                sample_id,
                 SUM(tokens) as completion_tokens
-            FROM rollouts
+            FROM generations
             WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {step_filter} {multi_tag_sql} {multi_env_sql}
-            GROUP BY run_id, step, group_id, sample_idx
+            GROUP BY run_id, step, group_id, sample_id
         ),
         group_stats AS (
             SELECT
@@ -6762,7 +7138,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         gini_map[(row[0], row[1])] = row[2]
 
     # =====================================================================
-    # 7c. Off-policy steps (from events_inference)
+    # 7c. Off-policy steps (from events_rollout)
     # =====================================================================
     off_policy_map: dict[tuple[str, int], tuple[float | None, float | None]] = {}
     for row in con.execute(f"""
@@ -6770,7 +7146,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             p.run_id, p.step,
             AVG(ei.off_policy_steps),
             STDDEV_SAMP(ei.off_policy_steps)
-        FROM events_inference ei
+        FROM events_rollout ei
         JOIN prompts p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
         WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
             AND ei.off_policy_steps IS NOT NULL {step_filter.replace("step", "p.step")}
@@ -6779,7 +7155,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     """, a_params).fetchall():
         off_policy_map[(row[0], row[1])] = (row[2], row[3])
 
-    # Emit off-policy metrics (independent of base_keys since they come from events_inference)
+    # Emit off-policy metrics (independent of base_keys since they come from events_rollout)
     for (rid, step), (op_mean, op_std) in off_policy_map.items():
         _add(rid, step, "off_policy_steps_mean", op_mean)
         _add(rid, step, "off_policy_steps_std", op_std)
@@ -6834,7 +7210,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 COUNT(*) OVER (PARTITION BY gm.run_id, gm.step, gm.metric_name, sd.group_id) as n,
                 SUM(gm.value) OVER (PARTITION BY gm.run_id, gm.step, gm.metric_name, sd.group_id) as sum_value
             FROM rollouts_metrics gm
-            JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_idx = gm.sample_idx
+            JOIN samples_data sd ON sd.run_id = gm.run_id AND sd.step = gm.step AND sd.sample_id = gm.sample_id
             WHERE gm.run_id IN ({a_in_ph}) AND gm.value IS NOT NULL {step_filter} {multi_tag_sql_gm} {multi_env_sql_gm}
         ),
         gini_per_group AS (
@@ -6925,10 +7301,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             AVG(completion_tokens), STDDEV_SAMP(completion_tokens),
             MIN(completion_tokens), MAX(completion_tokens)
         FROM (
-            SELECT run_id, trainer_step, sample_idx, SUM(tokens) as completion_tokens
-            FROM rollouts_discarded
+            SELECT run_id, trainer_step, sample_id, SUM(tokens) as completion_tokens
+            FROM generations_discarded
             WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
-            GROUP BY run_id, trainer_step, sample_idx
+            GROUP BY run_id, trainer_step, sample_id
         )
         GROUP BY run_id, trainer_step
         ORDER BY run_id, trainer_step ASC
@@ -6985,9 +7361,9 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     for row in con.execute(f"""
         SELECT
             run_id, trainer_step,
-            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_idx END) * 100.0 /
-                NULLIF(COUNT(DISTINCT sample_idx), 0)
-        FROM rollouts_discarded
+            COUNT(DISTINCT CASE WHEN stop_reason = 'length' THEN sample_id END) * 100.0 /
+                NULLIF(COUNT(DISTINCT sample_id), 0)
+        FROM generations_discarded
         WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
         GROUP BY run_id, trainer_step
         ORDER BY run_id, trainer_step ASC
@@ -7003,11 +7379,11 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 run_id,
                 trainer_step as step,
                 group_id,
-                sample_idx,
+                sample_id,
                 SUM(tokens) as completion_tokens
-            FROM rollouts_discarded
+            FROM generations_discarded
             WHERE run_id IN ({a_in_ph}) AND turn_type = 'model' {discarded_step_filter}
-            GROUP BY run_id, trainer_step, group_id, sample_idx
+            GROUP BY run_id, trainer_step, group_id, sample_id
         ),
         group_stats AS (
             SELECT
@@ -7105,10 +7481,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 MIN(gmd.value), MAX(gmd.value)
             FROM rollouts_metrics_discarded gmd
             JOIN (
-                SELECT DISTINCT run_id, trainer_step, sample_idx
-                FROM rollouts_discarded
+                SELECT DISTINCT run_id, trainer_step, sample_id
+                FROM generations_discarded
                 WHERE run_id IN ({a_in_ph}) {discarded_step_filter}
-            ) gd ON gmd.run_id = gd.run_id AND gmd.sample_idx = gd.sample_idx
+            ) gd ON gmd.run_id = gd.run_id AND gmd.sample_id = gd.sample_id
             WHERE gmd.run_id IN ({a_in_ph})
             GROUP BY gd.run_id, gd.trainer_step, gmd.metric_name
             ORDER BY gd.run_id, gd.trainer_step ASC, gmd.metric_name ASC
@@ -7122,7 +7498,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
 
     # =====================================================================
-    # 17a. Discarded off-policy steps (join events_inference with prompts_discarded)
+    # 17a. Discarded off-policy steps (join events_rollout with prompts_discarded)
     # =====================================================================
     try:
         for row in con.execute(f"""
@@ -7130,7 +7506,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                 pd.run_id, pd.trainer_step,
                 AVG(ei.off_policy_steps),
                 STDDEV_SAMP(ei.off_policy_steps)
-            FROM events_inference ei
+            FROM events_rollout ei
             JOIN prompts_discarded pd ON pd.run_id = ei.run_id AND pd.group_id = ei.group_id
             WHERE ei.run_id IN ({a_in_ph}) AND ei.event_type = 'request'
                 AND ei.off_policy_steps IS NOT NULL {discarded_step_filter.replace("trainer_step", "pd.trainer_step")}
@@ -7143,7 +7519,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
 
     # =====================================================================
-    # 17b. Canceled count per step (from events_inference)
+    # 17b. Canceled count per step (from events_rollout)
     # =====================================================================
     try:
         for row in con.execute(f"""
@@ -7153,13 +7529,13 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                     step,
                     MIN(start_time) as broadcast_time,
                     LAG(MIN(start_time)) OVER (PARTITION BY run_id ORDER BY step) as prev_broadcast_time
-                FROM events_inference
+                FROM events_rollout
                 WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND step IS NOT NULL
                 GROUP BY run_id, step
             ),
             canceled AS (
                 SELECT DISTINCT run_id, sample_id, end_time
-                FROM events_inference
+                FROM events_rollout
                 WHERE run_id IN ({a_in_ph}) AND event_type = 'request' AND is_canceled = true
             )
             SELECT
@@ -7398,7 +7774,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
     try:
         for row in con.execute(f"""
             SELECT run_id, step, (MAX(end_time) - MIN(start_time)) as wall_clock_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND step IS NOT NULL
             GROUP BY run_id, step
             ORDER BY run_id, step ASC
@@ -7470,7 +7846,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                     request_events AS (
                         SELECT sample_id, group_id, start_time, end_time,
                                inference_time, is_canceled
-                        FROM events_inference
+                        FROM events_rollout
                         WHERE run_id = ? AND event_type = 'request'
                           AND (is_eval = false OR is_eval IS NULL)
                     ),
@@ -7746,7 +8122,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     inference_calls = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
         GROUP BY bucket_time
         ORDER BY bucket_time ASC
@@ -7758,7 +8134,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     requests_done = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
         GROUP BY bucket_time
@@ -7772,7 +8148,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         WITH group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
               AND (is_canceled = false OR is_canceled IS NULL)
             GROUP BY group_id
@@ -7794,7 +8170,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         WITH group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
               AND (is_canceled = false OR is_canceled IS NULL)
             GROUP BY group_id
@@ -7816,7 +8192,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         WITH group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
               AND (is_canceled = false OR is_canceled IS NULL)
             GROUP BY group_id
@@ -7849,7 +8225,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         WITH canceled_groups AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
               AND is_canceled = true
             GROUP BY group_id
@@ -7866,7 +8242,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_prefill = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(prefill_time) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND prefill_time IS NOT NULL AND prefill_time > 0
@@ -7880,7 +8256,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_decode = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(decode_time) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND decode_time IS NOT NULL AND decode_time > 0
@@ -7892,13 +8268,13 @@ def get_inference_performance(req: InferencePerformanceRequest):
 
     # Average compute reward time per bucket
     # compute_reward_time lives in samples_data / samples_data_discarded,
-    # keyed by group_id. We join with group completion time from events_inference
+    # keyed by group_id. We join with group completion time from events_rollout
     # to bucket it by time.
     avg_time_compute_reward = con.execute(
         """
         WITH group_completion AS (
             SELECT group_id, MAX(end_time) as completion_time
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
               AND (is_canceled = false OR is_canceled IS NULL)
             GROUP BY group_id
@@ -7930,7 +8306,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_queue = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(queue_time) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND queue_time IS NOT NULL AND queue_time > 0
@@ -7944,7 +8320,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_ttft = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(time_to_first_token) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND time_to_first_token IS NOT NULL AND time_to_first_token > 0
@@ -7958,7 +8334,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_inference = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(inference_time) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND inference_time IS NOT NULL AND inference_time > 0
@@ -7972,7 +8348,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_e2e = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(e2e_latency) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND e2e_latency IS NOT NULL AND e2e_latency > 0
@@ -7986,7 +8362,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     avg_time_generation = con.execute(
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time, AVG(end_time - start_time) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND (end_time - start_time) > 0
@@ -8001,7 +8377,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time,
                AVG(CAST(rollout_tokens AS DOUBLE) / (end_time - start_time)) as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL AND start_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
@@ -8017,7 +8393,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         SELECT FLOOR(end_time / ?) * ? as bucket_time,
                CAST(SUM(rollout_tokens) AS DOUBLE) / ? as avg_val
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
             AND (is_canceled = false OR is_canceled IS NULL)
             AND rollout_tokens IS NOT NULL AND rollout_tokens > 0
@@ -8103,7 +8479,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         ),
         requests_per_bucket AS (
             SELECT FLOOR(end_time / ?) * ? as bucket_time, COUNT(*) as cnt
-            FROM events_inference
+            FROM events_rollout
             WHERE run_id = ? AND event_type = 'request' AND end_time IS NOT NULL
                 AND (is_canceled = false OR is_canceled IS NULL)
             GROUP BY bucket_time
@@ -8134,7 +8510,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     num_lanes_row = con.execute(
         """
         SELECT COUNT(DISTINCT (COALESCE(server, 0) * 100000 + COALESCE(server_lane, 0)))
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request'
             AND start_time IS NOT NULL AND end_time IS NOT NULL
         """,
@@ -8146,7 +8522,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     inference_events = con.execute(
         """
         SELECT start_time, end_time
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'request'
             AND start_time IS NOT NULL AND end_time IS NOT NULL
         ORDER BY start_time ASC
@@ -8169,7 +8545,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     weight_broadcast_events = con.execute(
         """
         SELECT start_time, end_time
-        FROM events_inference
+        FROM events_rollout
         WHERE run_id = ? AND event_type = 'weight_broadcast'
             AND start_time IS NOT NULL AND end_time IS NOT NULL
         ORDER BY start_time ASC
@@ -8192,7 +8568,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
     # Last event time (for detecting unfinished intervals)
     last_time_row = con.execute(
         """
-        SELECT MAX(end_time) FROM events_inference
+        SELECT MAX(end_time) FROM events_rollout
         WHERE run_id = ? AND end_time IS NOT NULL
         """,
         [req.run_path],
@@ -8479,13 +8855,13 @@ def get_step_histogram(req: StepHistogramRequest):
             values = [row[0] for row in rows]
         elif metric_type == "length_completion":
             rows = con.execute(
-                f"SELECT SUM(tokens) as ct FROM rollouts_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
+                f"SELECT SUM(tokens) as ct FROM generations_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
                 base_params,
             ).fetchall()
             values = [row[0] for row in rows]
         elif metric_type == "length_sum":
             rows = con.execute(
-                f"SELECT SUM(tokens) as ct FROM rollouts_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
+                f"SELECT SUM(tokens) as ct FROM generations_eval WHERE run_id = ? AND eval_name = ? AND step = ? {sample_filter} AND tokens IS NOT NULL GROUP BY sample_idx, completion_idx ORDER BY sample_idx, completion_idx",
                 base_params,
             ).fetchall()
             values = [row[0] for row in rows]
@@ -8509,7 +8885,7 @@ def get_step_histogram(req: StepHistogramRequest):
     # Choose tables and step column based on discarded flag
     samples_table = "samples_data_discarded" if is_discarded else "samples_data"
     prompts_table = "prompts_discarded" if is_discarded else "prompts"
-    rollouts_table = "rollouts_discarded" if is_discarded else "rollouts"
+    rollouts_table = "generations_discarded" if is_discarded else "generations"
     gen_metrics_table = "rollouts_metrics_discarded" if is_discarded else "rollouts_metrics"
     step_col = "trainer_step" if is_discarded else "step"
     
@@ -8518,23 +8894,23 @@ def get_step_histogram(req: StepHistogramRequest):
             f"""
             SELECT reward FROM {samples_table}
             WHERE run_id = ? AND {step_col} = ? AND reward IS NOT NULL
-            ORDER BY sample_idx
+            ORDER BY sample_id
             """,
             [req.run_path, req.step],
         ).fetchall()
         values = [row[0] for row in rows]
-        
+
     elif metric_type == "advantage":
         rows = con.execute(
             f"""
             SELECT advantage FROM {samples_table}
             WHERE run_id = ? AND {step_col} = ? AND advantage IS NOT NULL
-            ORDER BY sample_idx
+            ORDER BY sample_id
             """,
             [req.run_path, req.step],
         ).fetchall()
         values = [row[0] for row in rows]
-        
+
     elif metric_type == "length_prompt":
         rows = con.execute(
             f"""
@@ -8545,25 +8921,25 @@ def get_step_histogram(req: StepHistogramRequest):
             [req.run_path, req.step],
         ).fetchall()
         values = [row[0] for row in rows]
-        
+
     elif metric_type == "length_completion":
         rows = con.execute(
             f"""
             SELECT SUM(tokens) as completion_tokens FROM {rollouts_table}
             WHERE run_id = ? AND {step_col} = ? AND turn_type = 'model' AND tokens IS NOT NULL
-            GROUP BY sample_idx
-            ORDER BY sample_idx
+            GROUP BY sample_id
+            ORDER BY sample_id
             """,
             [req.run_path, req.step],
         ).fetchall()
         values = [row[0] for row in rows]
-    
+
     elif metric_type == "length_sum":
         rows = con.execute(
             f"""
             SELECT total_tokens FROM {samples_table}
             WHERE run_id = ? AND {step_col} = ? AND total_tokens IS NOT NULL
-            ORDER BY sample_idx
+            ORDER BY sample_id
             """,
             [req.run_path, req.step],
         ).fetchall()
@@ -8572,15 +8948,15 @@ def get_step_histogram(req: StepHistogramRequest):
     elif metric_type.startswith("reward_"):
         metric_name = metric_type[7:]  # Remove "reward_" prefix
         if is_discarded:
-            # For discarded rollout metrics, join with rollouts_discarded to get trainer_step
+            # For discarded rollout metrics, join with generations_discarded to get trainer_step
             rows = con.execute(
                 f"""
                 SELECT gmd.value FROM {gen_metrics_table} gmd
-                WHERE gmd.run_id = ? AND gmd.sample_idx IN (
-                    SELECT DISTINCT sample_idx FROM {rollouts_table}
+                WHERE gmd.run_id = ? AND gmd.sample_id IN (
+                    SELECT DISTINCT sample_id FROM {rollouts_table}
                     WHERE run_id = ? AND {step_col} = ?
                 ) AND gmd.metric_name = ? AND gmd.value IS NOT NULL
-                ORDER BY gmd.sample_idx
+                ORDER BY gmd.sample_id
                 """,
                 [req.run_path, req.run_path, req.step, metric_name],
             ).fetchall()
@@ -8589,7 +8965,7 @@ def get_step_histogram(req: StepHistogramRequest):
                 f"""
                 SELECT value FROM {gen_metrics_table}
                 WHERE run_id = ? AND step = ? AND metric_name = ? AND value IS NOT NULL
-                ORDER BY sample_idx
+                ORDER BY sample_id
                 """,
                 [req.run_path, req.step, metric_name],
             ).fetchall()
@@ -8649,10 +9025,10 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
             all_values_query = f"SELECT step, tokens_prompt as value FROM prompts_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens_prompt IS NOT NULL ORDER BY step, sample_idx"
             params = base_params
         elif eval_metric_type == "length_completion":
-            all_values_query = f"SELECT step, SUM(tokens) as value FROM rollouts_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
+            all_values_query = f"SELECT step, SUM(tokens) as value FROM generations_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND turn_type = 'model' AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
             params = base_params
         elif eval_metric_type == "length_sum":
-            all_values_query = f"SELECT step, SUM(tokens) as value FROM rollouts_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
+            all_values_query = f"SELECT step, SUM(tokens) as value FROM generations_eval WHERE run_id = ? AND eval_name = ? {sample_filter} AND tokens IS NOT NULL GROUP BY step, sample_idx, completion_idx ORDER BY step, sample_idx, completion_idx"
             params = base_params
         elif eval_metric_type.startswith("reward_"):
             metric_name = eval_metric_type[7:]
@@ -8708,7 +9084,7 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
     # Choose tables and step column based on discarded flag
     samples_table = "samples_data_discarded" if is_discarded else "samples_data"
     prompts_table = "prompts_discarded" if is_discarded else "prompts"
-    rollouts_table = "rollouts_discarded" if is_discarded else "rollouts"
+    rollouts_table = "generations_discarded" if is_discarded else "generations"
     gen_metrics_table = "rollouts_metrics_discarded" if is_discarded else "rollouts_metrics"
     step_col = "trainer_step" if is_discarded else "step"
     
@@ -8717,14 +9093,14 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
         all_values_query = f"""
             SELECT {step_col} as step, reward as value FROM {samples_table}
             WHERE run_id = ? AND reward IS NOT NULL
-            ORDER BY {step_col}, sample_idx
+            ORDER BY {step_col}, sample_id
         """
         params = [req.run_path]
     elif metric_type == "advantage":
         all_values_query = f"""
             SELECT {step_col} as step, advantage as value FROM {samples_table}
             WHERE run_id = ? AND advantage IS NOT NULL
-            ORDER BY {step_col}, sample_idx
+            ORDER BY {step_col}, sample_id
         """
         params = [req.run_path]
     elif metric_type == "length_prompt":
@@ -8738,21 +9114,21 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
         all_values_query = f"""
             SELECT {step_col} as step, SUM(tokens) as value FROM {rollouts_table}
             WHERE run_id = ? AND turn_type = 'model' AND tokens IS NOT NULL
-            GROUP BY {step_col}, sample_idx
-            ORDER BY {step_col}, sample_idx
+            GROUP BY {step_col}, sample_id
+            ORDER BY {step_col}, sample_id
         """
         params = [req.run_path]
     elif metric_type == "length_sum":
         all_values_query = f"""
             SELECT {step_col} as step, total_tokens as value FROM {samples_table}
             WHERE run_id = ? AND total_tokens IS NOT NULL
-            ORDER BY {step_col}, sample_idx
+            ORDER BY {step_col}, sample_id
         """
         params = [req.run_path]
     elif metric_type == "off_policy_steps":
         all_values_query = f"""
             SELECT p.{step_col} as step, ei.off_policy_steps as value
-            FROM events_inference ei
+            FROM events_rollout ei
             JOIN {prompts_table} p ON p.run_id = ei.run_id AND p.group_id = ei.group_id
             WHERE ei.run_id = ? AND ei.event_type = 'request' AND ei.off_policy_steps IS NOT NULL
             ORDER BY p.{step_col}
@@ -8761,23 +9137,23 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
     elif metric_type.startswith("reward_"):
         metric_name = metric_type[7:]
         if is_discarded:
-            # For discarded rollout metrics, join with rollouts_discarded for trainer_step
+            # For discarded rollout metrics, join with generations_discarded for trainer_step
             all_values_query = f"""
                 SELECT gd.trainer_step as step, gmd.value FROM {gen_metrics_table} gmd
                 JOIN (
-                    SELECT DISTINCT run_id, trainer_step, sample_idx
+                    SELECT DISTINCT run_id, trainer_step, sample_id
                     FROM {rollouts_table}
                     WHERE run_id = ?
-                ) gd ON gmd.run_id = gd.run_id AND gmd.sample_idx = gd.sample_idx
+                ) gd ON gmd.run_id = gd.run_id AND gmd.sample_id = gd.sample_id
                 WHERE gmd.run_id = ? AND gmd.metric_name = ? AND gmd.value IS NOT NULL
-                ORDER BY gd.trainer_step, gmd.sample_idx
+                ORDER BY gd.trainer_step, gmd.sample_id
             """
             params = [req.run_path, req.run_path, metric_name]
         else:
             all_values_query = f"""
                 SELECT step, value FROM {gen_metrics_table}
                 WHERE run_id = ? AND metric_name = ? AND value IS NOT NULL
-                ORDER BY step, sample_idx
+                ORDER BY step, sample_id
             """
             params = [req.run_path, metric_name]
     else:

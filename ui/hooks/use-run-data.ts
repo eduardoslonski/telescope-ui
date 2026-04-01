@@ -14,7 +14,6 @@ import type {
   SampleDetailsResponse,
   SampleStatusesResponse,
   TimelinePaginatedResponse,
-  InferenceGroupEventsResponse,
   TrainerBreakdownEventsResponse,
   RunSummary,
   RunCodeTreeResponse,
@@ -203,7 +202,7 @@ export function useSampleDetails(
         body: JSON.stringify({
           run_path: runPath,
           group_id: groupId,
-          sample_idx: sampleIdx,
+          sample_id: sampleIdx,
           is_eval: isEval ?? false,
         }),
       })
@@ -218,27 +217,27 @@ export function useSampleDetails(
 
 export function useSampleStatuses(
   runPath: string,
-  samples: Array<{ group_id: number; sample_idx: number }>,
+  samples: Array<{ group_id: number; sample_id: number }>,
   enabled: boolean,
   shouldPoll: boolean = false
 ) {
   const normalizedSamples = useMemo(() => {
     const seen = new Set<string>()
-    const unique: Array<{ group_id: number; sample_idx: number }> = []
+    const unique: Array<{ group_id: number; sample_id: number }> = []
     for (const sample of samples) {
-      const key = `${sample.group_id}:${sample.sample_idx}`
+      const key = `${sample.group_id}:${sample.sample_id}`
       if (seen.has(key)) continue
       seen.add(key)
       unique.push(sample)
     }
     return unique.sort(
-      (a, b) => a.group_id - b.group_id || a.sample_idx - b.sample_idx
+      (a, b) => a.group_id - b.group_id || a.sample_id - b.sample_id
     )
   }, [samples])
 
   const sampleKey = useMemo(() => {
     return normalizedSamples
-      .map((sample) => `${sample.group_id}:${sample.sample_idx}`)
+      .map((sample) => `${sample.group_id}:${sample.sample_id}`)
       .join("|")
   }, [normalizedSamples])
 
@@ -575,15 +574,16 @@ export function useInflightGenerations(
   })
 }
 
-export function useInferenceEventsByGroup(
+// TODO: Update this hook when the rollout-events-by-group endpoint is implemented
+export function useRolloutEventsByGroup(
   runPath: string,
   groupId: number | null,
   enabled: boolean
 ) {
-  return useQuery<InferenceGroupEventsResponse>({
-    queryKey: ["inference-events-by-group", runPath, groupId],
+  return useQuery<{ events: unknown[] }>({
+    queryKey: ["rollout-events-by-group", runPath, groupId],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/events/inference-by-group`, {
+      const response = await fetch(`${API_BASE}/events/rollout-by-group`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -592,7 +592,7 @@ export function useInferenceEventsByGroup(
         }),
       })
       if (!response.ok) {
-        throw new Error("Failed to fetch inference events by group")
+        throw new Error("Failed to fetch rollout events by group")
       }
       return response.json()
     },
@@ -1073,7 +1073,7 @@ export function useEvalStepMetricSingle(
         limit: 100000,
       }
       if (sampleIdx !== undefined) {
-        body.sample_idx = sampleIdx
+        body.sample_id = sampleIdx
       }
       const response = await fetch(`${API_BASE}/eval-step-metrics`, {
         method: "POST",

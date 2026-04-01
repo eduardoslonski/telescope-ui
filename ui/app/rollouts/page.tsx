@@ -358,7 +358,9 @@ export default function RolloutsPage() {
 
             <RolloutsView
               prompts={rolloutsData?.prompts}
-              data={rolloutsData?.rollouts}
+              generations={rolloutsData?.generations}
+              envResponses={rolloutsData?.env_responses}
+              toolCalls={rolloutsData?.tool_calls}
               samplesData={rolloutsData?.samples_data}
               rolloutMetrics={rolloutsData?.rollout_metrics}
               goldenAnswers={rolloutsData?.golden_answers}
