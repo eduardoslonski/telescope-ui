@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -84,7 +83,8 @@ import { useSampleStatuses } from "@/hooks/use-run-data"
 import type {
   OrchestratorEvent,
   TrainerEvent,
-  InferenceEvent,
+  RolloutEvent,
+  InfraEvent,
   GpuMetric,
   InflightSnapshot,
 } from "@/lib/types"
@@ -138,96 +138,94 @@ function formatNumberWithDelimiter(n: number): string {
   return n.toLocaleString("en-US")
 }
 
-/** Build the common tooltip detail rows for an inference request event. */
-function buildInferenceRequestDetails(
-  event: InferenceEvent,
+// ============================================================================
+// RolloutSpan: pivoting start/end rows into paired spans
+// ============================================================================
+
+interface RolloutSpan {
+  event_type: string // "generation", "tool_execution", "env_response", "reward"
+  start_time: number
+  end_time: number
+  sample_id: number
+  group_id: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number
+  server_id: number
+  phase?: string // "inflight" for synthetic in-progress spans
+}
+
+/** Pivot RolloutEvent start/end rows into paired RolloutSpan objects. */
+function pivotRolloutEvents(events: RolloutEvent[]): RolloutSpan[] {
+  const starts = new Map<string, RolloutEvent>()
+  const spans: RolloutSpan[] = []
+  for (const e of events) {
+    const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
+    if (e.phase === "start") {
+      starts.set(key, e)
+    } else if (e.phase === "end") {
+      const start = starts.get(key)
+      if (start) {
+        spans.push({
+          event_type: e.event_type,
+          start_time: start.timestamp,
+          end_time: e.timestamp,
+          sample_id: e.sample_id ?? -1,
+          group_id: start.group_id ?? e.group_id ?? -1,
+          agent_id: e.agent_id ?? 0,
+          generation_idx: e.generation_idx ?? -1,
+          tool_call_idx: e.tool_call_idx ?? -1,
+          server_id: start.server_id ?? e.server_id ?? -1,
+        })
+        starts.delete(key)
+      }
+    }
+  }
+  return spans
+}
+
+/** Pivot InfraEvent start/end rows into spans (for weight_sync etc.). */
+interface InfraSpan {
+  event_type: string
+  start_time: number
+  end_time: number
+  server_id: number
+  step: number
+}
+
+function pivotInfraEvents(events: InfraEvent[]): InfraSpan[] {
+  const starts = new Map<string, InfraEvent>()
+  const spans: InfraSpan[] = []
+  for (const e of events) {
+    const key = `${e.event_type}:${e.server_id ?? -1}:${e.step ?? -1}`
+    if (e.phase === "start") {
+      starts.set(key, e)
+    } else if (e.phase === "end") {
+      const start = starts.get(key)
+      if (start) {
+        spans.push({
+          event_type: e.event_type,
+          start_time: start.timestamp,
+          end_time: e.timestamp,
+          server_id: start.server_id ?? e.server_id ?? -1,
+          step: start.step ?? e.step ?? -1,
+        })
+        starts.delete(key)
+      }
+    }
+  }
+  return spans
+}
+
+/** Build the common tooltip detail rows for a generation span. */
+function buildGenerationDetails(
+  span: RolloutSpan,
   durationMs: number,
   extra: Array<{ label: string; value: string }> = [],
 ): Array<{ label: string; value: string }> {
   return [
     { label: "Duration", value: formatDuration(durationMs) },
-    ...(event.prompt_tokens !== undefined
-      ? [
-          {
-            label: "Prompt tokens",
-            value: formatNumberWithDelimiter(event.prompt_tokens),
-          },
-        ]
-      : []),
-    ...(event.rollout_tokens !== undefined
-      ? [
-          {
-            label: "Rollout tokens",
-            value: formatNumberWithDelimiter(event.rollout_tokens),
-          },
-        ]
-      : []),
-    ...(event.max_tokens !== undefined && event.max_tokens !== null
-      ? [
-          {
-            label: "Max tokens",
-            value: formatNumberWithDelimiter(event.max_tokens),
-          },
-        ]
-      : []),
     ...extra,
-    ...(event.queue_time !== undefined && event.queue_time !== null
-      ? [
-          {
-            label: "Queue time",
-            value: formatDuration(event.queue_time * 1000),
-          },
-        ]
-      : []),
-    ...(event.time_to_first_token !== undefined &&
-    event.time_to_first_token !== null
-      ? [
-          {
-            label: "TTFT",
-            value: formatDuration(event.time_to_first_token * 1000),
-          },
-        ]
-      : []),
-    ...(event.prefill_time !== undefined && event.prefill_time !== null
-      ? [
-          {
-            label: "Prefill time",
-            value: formatDuration(event.prefill_time * 1000),
-          },
-        ]
-      : []),
-    ...(event.decode_time !== undefined && event.decode_time !== null
-      ? [
-          {
-            label: "Decode time",
-            value: formatDuration(event.decode_time * 1000),
-          },
-        ]
-      : []),
-    ...(event.inference_time !== undefined && event.inference_time !== null
-      ? [
-          {
-            label: "Inference time",
-            value: formatDuration(event.inference_time * 1000),
-          },
-        ]
-      : []),
-    ...(event.e2e_latency !== undefined && event.e2e_latency !== null
-      ? [
-          {
-            label: "E2E latency",
-            value: formatDuration(event.e2e_latency * 1000),
-          },
-        ]
-      : []),
-    ...(event.off_policy_steps !== undefined && event.off_policy_steps !== null
-      ? [
-          {
-            label: "Off-policy steps",
-            value: String(event.off_policy_steps),
-          },
-        ]
-      : []),
   ]
 }
 
@@ -337,7 +335,8 @@ function buildCloseEventWindows(
 interface CombinedTimelineChartProps {
   orchestratorData?: OrchestratorEvent[]
   trainerData?: TrainerEvent[]
-  inferenceData?: InferenceEvent[]
+  rolloutEvents?: RolloutEvent[]
+  infraEvents?: InfraEvent[]
   isLoading?: boolean
   intervalStart: number
   intervalEnd: number
@@ -365,7 +364,8 @@ interface CombinedTimelineChartProps {
 export function CombinedTimelineChart({
   orchestratorData,
   trainerData,
-  inferenceData,
+  rolloutEvents,
+  infraEvents,
   inflightSnapshot,
   isLoading,
   intervalStart,
@@ -440,87 +440,200 @@ export function CombinedTimelineChart({
     )
   }, [trainerData, intervalStart, intervalEnd])
 
-  // Merge inflight generations into inference events as synthetic "in-progress" bars.
-  // For each running generation in the snapshot, if there's no matching end event
-  // (same sample_id), create a synthetic event extending to the snapshot time.
-  const inferenceWithInflight = useMemo(() => {
-    const events = inferenceData ?? []
-    if (!inflightSnapshot?.snapshot_time) {
-      return events
-    }
-    const syntheticAll: InferenceEvent[] = []
-    // Inflight generations: filter out sample_ids that already have end events
-    if (inflightSnapshot.running?.length) {
-      const endedSampleIds = new Set(
-        events
-          .filter((e) => e.sample_id != null)
-          .map((e) => e.sample_id!)
-      )
-      for (const gen of inflightSnapshot.running) {
-        if (!endedSampleIds.has(gen.sample_id)) {
-          syntheticAll.push({
-            event_type: "request",
-            server: gen.server,
-            start_time: gen.start_time,
-            end_time: inflightSnapshot.snapshot_time!,
-            prompt_tokens: gen.prompt_tokens,
-            sample_id: gen.sample_id,
-            group_id: gen.group_id,
-            lane: gen.server_lane,
-            is_eval: gen.is_eval,
-            phase: "inflight",
-          })
-        }
-      }
-    }
-    // Inflight compute_reward: always add (backend only includes truly in-flight entries)
-    if (inflightSnapshot.running_compute_reward?.length) {
-      for (const gen of inflightSnapshot.running_compute_reward) {
-        syntheticAll.push({
-          event_type: "request",
-          server: gen.server,
-          start_time: gen.start_time,
-          end_time: inflightSnapshot.snapshot_time!,
-          sample_id: gen.sample_id,
-          group_id: gen.group_id,
-          lane: gen.server_lane,
-          is_eval: gen.is_eval,
-          phase: "inflight",
-        })
-      }
-    }
-    // Inflight env_response: always add (backend only includes truly in-flight entries)
-    if (inflightSnapshot.running_env_response?.length) {
-      for (const gen of inflightSnapshot.running_env_response) {
-        syntheticAll.push({
-          event_type: "request",
-          server: gen.server,
-          start_time: gen.start_time,
-          end_time: inflightSnapshot.snapshot_time!,
-          sample_id: gen.sample_id,
-          group_id: gen.group_id,
-          lane: gen.server_lane,
-          is_eval: gen.is_eval,
-          phase: "inflight",
-        })
-      }
-    }
-    return syntheticAll.length > 0 ? [...events, ...syntheticAll] : events
-  }, [inferenceData, inflightSnapshot])
+  // Pivot rollout events into spans (pair start/end rows)
+  const allRolloutSpans = useMemo(
+    () => pivotRolloutEvents(rolloutEvents ?? []),
+    [rolloutEvents],
+  )
 
-  // Page-scoped inference events (for display / discard checks).
-  // Use the effective end time (including env response + compute reward)
-  // so that events whose reward trace extends into this page are kept.
-  const filteredInferenceData = useMemo(() => {
-    if (!inferenceWithInflight || inferenceWithInflight.length === 0) return []
-    return inferenceWithInflight.filter((event) => {
-      const effectiveEnd =
-        event.end_time +
-        (event.environment_response_time ?? 0) +
-        (event.compute_reward_time ?? 0)
-      return event.start_time < intervalEnd && effectiveEnd > intervalStart
-    })
-  }, [inferenceWithInflight, intervalStart, intervalEnd])
+  // Pivot infra events into spans (weight_sync etc.)
+  const allInfraSpans = useMemo(
+    () => pivotInfraEvents(infraEvents ?? []),
+    [infraEvents],
+  )
+
+  // Merge inflight items into rollout spans as synthetic "in-progress" spans.
+  // For each inflight item, find the matching start event from rolloutEvents.
+  const rolloutSpansWithInflight = useMemo(() => {
+    if (!inflightSnapshot?.timestamp) {
+      return allRolloutSpans
+    }
+    const snapshotTime = inflightSnapshot.timestamp
+    const syntheticSpans: RolloutSpan[] = []
+
+    // Build a set of completed sample_id+event_type+generation_idx keys
+    const completedKeys = new Set(
+      allRolloutSpans.map(
+        (s) => `${s.event_type}:${s.sample_id}:${s.generation_idx}:${s.tool_call_idx}`
+      )
+    )
+
+    // Build a lookup for start events from raw rollout events
+    const startEventMap = new Map<string, RolloutEvent>()
+    for (const e of (rolloutEvents ?? [])) {
+      if (e.phase === "start") {
+        const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
+        startEventMap.set(key, e)
+      }
+    }
+
+    // Inflight generations
+    for (const gen of (inflightSnapshot.inflight_generations ?? [])) {
+      const key = `generation:${gen.sample_id}:${gen.generation_idx}:-1`
+      if (completedKeys.has(key)) continue
+      const startEvent = startEventMap.get(key)
+      syntheticSpans.push({
+        event_type: "generation",
+        start_time: startEvent?.timestamp ?? snapshotTime,
+        end_time: snapshotTime,
+        sample_id: gen.sample_id,
+        group_id: -1, // not available in inflight snapshot
+        agent_id: gen.agent_id,
+        generation_idx: gen.generation_idx,
+        tool_call_idx: -1,
+        server_id: gen.server_id,
+        phase: "inflight",
+      })
+    }
+
+    // Inflight env responses
+    for (const er of (inflightSnapshot.inflight_env_responses ?? [])) {
+      const key = `env_response:${er.sample_id}:${er.generation_idx}:-1`
+      if (completedKeys.has(key)) continue
+      const startEvent = startEventMap.get(key)
+      syntheticSpans.push({
+        event_type: "env_response",
+        start_time: startEvent?.timestamp ?? snapshotTime,
+        end_time: snapshotTime,
+        sample_id: er.sample_id,
+        group_id: -1,
+        agent_id: er.agent_id,
+        generation_idx: er.generation_idx,
+        tool_call_idx: -1,
+        server_id: -1,
+        phase: "inflight",
+      })
+    }
+
+    // Inflight rewards
+    for (const rw of (inflightSnapshot.inflight_rewards ?? [])) {
+      const key = `reward:${rw.sample_id}:-1:-1`
+      if (completedKeys.has(key)) continue
+      const startEvent = startEventMap.get(key)
+      syntheticSpans.push({
+        event_type: "reward",
+        start_time: startEvent?.timestamp ?? snapshotTime,
+        end_time: snapshotTime,
+        sample_id: rw.sample_id,
+        group_id: -1,
+        agent_id: rw.agent_id,
+        generation_idx: -1,
+        tool_call_idx: -1,
+        server_id: -1,
+        phase: "inflight",
+      })
+    }
+
+    // Inflight tool executions
+    for (const te of (inflightSnapshot.inflight_tool_executions ?? [])) {
+      const key = `tool_execution:${te.sample_id}:${te.generation_idx}:${te.tool_call_idx}`
+      if (completedKeys.has(key)) continue
+      const startEvent = startEventMap.get(key)
+      syntheticSpans.push({
+        event_type: "tool_execution",
+        start_time: startEvent?.timestamp ?? snapshotTime,
+        end_time: snapshotTime,
+        sample_id: te.sample_id,
+        group_id: -1,
+        agent_id: te.agent_id,
+        generation_idx: te.generation_idx,
+        tool_call_idx: te.tool_call_idx,
+        server_id: -1,
+        phase: "inflight",
+      })
+    }
+
+    return syntheticSpans.length > 0 ? [...allRolloutSpans, ...syntheticSpans] : allRolloutSpans
+  }, [allRolloutSpans, inflightSnapshot, rolloutEvents])
+
+  // Inflight weight syncs as synthetic infra spans
+  const infraSpansWithInflight = useMemo(() => {
+    if (!inflightSnapshot?.timestamp) return allInfraSpans
+    const snapshotTime = inflightSnapshot.timestamp
+    const syntheticInfra: InfraSpan[] = []
+
+    const infraStartMap = new Map<string, InfraEvent>()
+    for (const e of (infraEvents ?? [])) {
+      if (e.phase === "start") {
+        const key = `${e.event_type}:${e.server_id ?? -1}:${e.step ?? -1}`
+        infraStartMap.set(key, e)
+      }
+    }
+
+    for (const ws of (inflightSnapshot.inflight_weight_syncs ?? [])) {
+      const key = `weight_sync:${ws.server_id}:${ws.step}`
+      const startEvent = infraStartMap.get(key)
+      syntheticInfra.push({
+        event_type: "weight_sync",
+        start_time: startEvent?.timestamp ?? snapshotTime,
+        end_time: snapshotTime,
+        server_id: ws.server_id,
+        step: ws.step,
+      })
+    }
+
+    return syntheticInfra.length > 0 ? [...allInfraSpans, ...syntheticInfra] : allInfraSpans
+  }, [allInfraSpans, inflightSnapshot, infraEvents])
+
+  // Split spans by type
+  const generationSpans = useMemo(
+    () => rolloutSpansWithInflight.filter((s) => s.event_type === "generation"),
+    [rolloutSpansWithInflight],
+  )
+  const envResponseSpans = useMemo(
+    () => rolloutSpansWithInflight.filter((s) => s.event_type === "env_response"),
+    [rolloutSpansWithInflight],
+  )
+  const rewardSpans = useMemo(
+    () => rolloutSpansWithInflight.filter((s) => s.event_type === "reward"),
+    [rolloutSpansWithInflight],
+  )
+  const weightSyncSpans = useMemo(
+    () => infraSpansWithInflight.filter((s) => s.event_type === "weight_sync"),
+    [infraSpansWithInflight],
+  )
+
+  // Page-scoped generation spans
+  const filteredGenerationSpans = useMemo(() => {
+    if (generationSpans.length === 0) return []
+    return generationSpans.filter(
+      (span) => span.start_time < intervalEnd && span.end_time > intervalStart,
+    )
+  }, [generationSpans, intervalStart, intervalEnd])
+
+  // Page-scoped env response spans
+  const filteredEnvResponseSpans = useMemo(() => {
+    if (envResponseSpans.length === 0) return []
+    return envResponseSpans.filter(
+      (span) => span.start_time < intervalEnd && span.end_time > intervalStart,
+    )
+  }, [envResponseSpans, intervalStart, intervalEnd])
+
+  // Page-scoped reward spans
+  const filteredRewardSpans = useMemo(() => {
+    if (rewardSpans.length === 0) return []
+    return rewardSpans.filter(
+      (span) => span.start_time < intervalEnd && span.end_time > intervalStart,
+    )
+  }, [rewardSpans, intervalStart, intervalEnd])
+
+  // Page-scoped weight sync spans
+  const filteredWeightSyncSpans = useMemo(() => {
+    if (weightSyncSpans.length === 0) return []
+    return weightSyncSpans.filter(
+      (span) => span.start_time < intervalEnd && span.end_time > intervalStart,
+    )
+  }, [weightSyncSpans, intervalStart, intervalEnd])
 
   const { eventsByRank, ranks } = useMemo(() => {
     const byRank: Record<number, TrainerEvent[]> = {}
@@ -538,21 +651,22 @@ export function CombinedTimelineChart({
     return { eventsByRank: byRank, ranks: rankList }
   }, [filteredTrainerData])
 
-  const { eventsByServer, servers } = useMemo(() => {
-    const byServer: Record<number, InferenceEvent[]> = {}
-    filteredInferenceData.forEach((event) => {
-      if (!byServer[event.server]) {
-        byServer[event.server] = []
+  // Group generation spans by server_id
+  const { spansByServer, servers } = useMemo(() => {
+    const byServer: Record<number, RolloutSpan[]> = {}
+    filteredGenerationSpans.forEach((span) => {
+      if (!byServer[span.server_id]) {
+        byServer[span.server_id] = []
       }
-      byServer[event.server].push(event)
+      byServer[span.server_id].push(span)
     })
 
     const serverList = Object.keys(byServer)
       .map(Number)
       .sort((a, b) => a - b)
 
-    return { eventsByServer: byServer, servers: serverList }
-  }, [filteredInferenceData])
+    return { spansByServer: byServer, servers: serverList }
+  }, [filteredGenerationSpans])
 
   const lanesPerServer = maxConcurrentPromptsPerServer * groupSize
 
@@ -571,7 +685,10 @@ export function CombinedTimelineChart({
                 ? servers
                 : Array.from({ length: numInferenceServers }, (_, i) => i)
             }
-            eventsByServer={eventsByServer}
+            spansByServer={spansByServer}
+            envResponseSpans={filteredEnvResponseSpans}
+            rewardSpans={filteredRewardSpans}
+            weightSyncSpans={filteredWeightSyncSpans}
             intervalStart={intervalStart}
             intervalDuration={intervalDuration}
             lanesPerServer={lanesPerServer}
@@ -579,7 +696,6 @@ export function CombinedTimelineChart({
             totalSetupNodes={totalSetupNodes}
             isLoading={isLoading}
             freeLaneAfterGeneration={freeLaneAfterGeneration}
-            inflightSnapshot={inflightSnapshot}
             rewardStartedKeys={rewardStartedKeys}
             rewardEndedKeys={rewardEndedKeys}
           />
@@ -985,13 +1101,16 @@ function OrchestratorEventTooltip({
 // Inference Section
 // ============================================================================
 
-interface AssignedInferenceEvent extends InferenceEvent {
+interface AssignedRolloutSpan extends RolloutSpan {
   lane: number
 }
 
 function InferenceSection({
   servers,
-  eventsByServer,
+  spansByServer,
+  envResponseSpans,
+  rewardSpans,
+  weightSyncSpans,
   intervalStart,
   intervalDuration,
   lanesPerServer,
@@ -999,12 +1118,14 @@ function InferenceSection({
   totalSetupNodes,
   isLoading,
   freeLaneAfterGeneration = false,
-  inflightSnapshot,
   rewardStartedKeys,
   rewardEndedKeys,
 }: {
   servers: number[]
-  eventsByServer: Record<number, InferenceEvent[]>
+  spansByServer: Record<number, RolloutSpan[]>
+  envResponseSpans: RolloutSpan[]
+  rewardSpans: RolloutSpan[]
+  weightSyncSpans: InfraSpan[]
   intervalStart: number
   intervalDuration: number
   lanesPerServer: number
@@ -1012,7 +1133,6 @@ function InferenceSection({
   totalSetupNodes?: number
   isLoading?: boolean
   freeLaneAfterGeneration?: boolean
-  inflightSnapshot?: InflightSnapshot
   rewardStartedKeys?: Set<string>
   rewardEndedKeys?: Set<string>
 }) {
@@ -1091,47 +1211,23 @@ function InferenceSection({
   // Propagate is_canceled to all events in a group if any event in that group
   // is canceled. This ensures bars for completed-before-cancellation events in a
   // canceled group also render as canceled instead of "Waiting for Group".
-  const enrichedEventsByServer = useMemo(() => {
-    const canceledGroupIds = new Set<number>()
-    for (const events of Object.values(eventsByServer)) {
-      for (const event of events) {
-        if (event.is_canceled && event.group_id != null) {
-          canceledGroupIds.add(event.group_id)
-        }
-      }
-    }
-    if (canceledGroupIds.size === 0) return eventsByServer
-    const result: Record<number, InferenceEvent[]> = {}
-    for (const [server, events] of Object.entries(eventsByServer)) {
-      result[Number(server)] = events.map((event) =>
-        !event.is_canceled && event.group_id != null && canceledGroupIds.has(event.group_id)
-          ? { ...event, is_canceled: true }
-          : event
-      )
-    }
-    return result
-  }, [eventsByServer])
+  // Generation spans don't have is_canceled — just pass through directly
+  const enrichedSpansByServer = spansByServer
 
   const requestSamples = useMemo(() => {
     const seen = new Set<string>()
     const samples: Array<{ group_id: number; sample_idx: number }> = []
-    for (const events of Object.values(enrichedEventsByServer)) {
-      for (const event of events) {
-        if (
-          event.event_type !== "request" ||
-          event.sample_id == null ||
-          event.group_id == null
-        ) {
-          continue
-        }
-        const key = `${event.group_id}:${event.sample_id}`
+    for (const spans of Object.values(enrichedSpansByServer)) {
+      for (const span of spans) {
+        if (span.sample_id < 0 || span.group_id < 0) continue
+        const key = `${span.group_id}:${span.sample_id}`
         if (seen.has(key)) continue
         seen.add(key)
-        samples.push({ group_id: event.group_id, sample_idx: event.sample_id })
+        samples.push({ group_id: span.group_id, sample_idx: span.sample_id })
       }
     }
     return samples
-  }, [enrichedEventsByServer])
+  }, [enrichedSpansByServer])
 
   const { data: sampleStatuses } = useSampleStatuses(
     selectedRunPath ?? "",
@@ -1152,18 +1248,29 @@ function InferenceSection({
   }, [sampleStatuses])
 
   // Compute actual lane count for pagination
+  // Use greedy lane packing to estimate max lanes needed per server
   const actualMaxLanesPerServer = useMemo(() => {
     let maxPerServer = lanesPerServer
-    for (const events of Object.values(enrichedEventsByServer)) {
-      for (const event of events) {
-        if (event.event_type !== "request") continue
-        if (event.lane != null && event.lane + 1 > maxPerServer) {
-          maxPerServer = event.lane + 1
+    for (const spans of Object.values(enrichedSpansByServer)) {
+      const sorted = [...spans].sort((a, b) => a.start_time - b.start_time)
+      const laneEnds: number[] = []
+      for (const span of sorted) {
+        let placed = false
+        for (let i = 0; i < laneEnds.length; i++) {
+          if (laneEnds[i] <= span.start_time) {
+            laneEnds[i] = span.end_time
+            placed = true
+            break
+          }
+        }
+        if (!placed) {
+          laneEnds.push(span.end_time)
         }
       }
+      maxPerServer = Math.max(maxPerServer, laneEnds.length)
     }
     return maxPerServer
-  }, [enrichedEventsByServer, lanesPerServer])
+  }, [enrichedSpansByServer, lanesPerServer])
 
   // Lane pagination
   const numServersForCalc = Math.max(1, servers.length)
@@ -1188,19 +1295,19 @@ function InferenceSection({
 
   const totalEventCount = useMemo(() => {
     let count = 0
-    for (const events of Object.values(enrichedEventsByServer)) count += events.length
+    for (const spans of Object.values(enrichedSpansByServer)) count += spans.length
     return count
-  }, [enrichedEventsByServer])
+  }, [enrichedSpansByServer])
 
   const currentRenderData = useMemo(
     () => ({
       servers: paginatedServers,
-      eventsByServer: enrichedEventsByServer,
+      spansByServer: enrichedSpansByServer,
       intervalStart,
       intervalDuration,
       lanesPerServer,
     }),
-    [paginatedServers, enrichedEventsByServer, intervalStart, intervalDuration, lanesPerServer],
+    [paginatedServers, enrichedSpansByServer, intervalStart, intervalDuration, lanesPerServer],
   )
   const renderKey = useMemo(() => {
     return `${intervalStart}:${intervalDuration}:${paginatedServers.join(",")}:${
@@ -1243,75 +1350,42 @@ function InferenceSection({
     activeRenderKey !== null &&
     renderKey !== activeRenderKey
 
-  // Handle click on an inference event
+  // Handle click on a generation span
   const handleEventClick = useCallback(
-    (event: InferenceEvent) => {
-      // Only handle requests, not weight_broadcast events
-      if (event.event_type !== "request") return
-      if (event.sample_id === undefined || event.group_id === undefined) return
+    (span: RolloutSpan) => {
+      if (span.sample_id < 0 || span.group_id < 0) return
 
       // Toggle off if clicking the same sample_id
-      if (selectedRequest?.sampleId === event.sample_id) {
+      if (selectedRequest?.sampleId === span.sample_id) {
         setSelectedRequest(null)
         return
       }
 
       setSelectedRequest({
-        sampleId: event.sample_id,
-        groupId: event.group_id,
-        isEval: event.is_eval,
+        sampleId: span.sample_id,
+        groupId: span.group_id,
+        isEval: false,
       })
     },
     [selectedRequest, setSelectedRequest],
   )
 
-  // Separate compute reward: extract reward items from all servers
+  // Separate compute reward: use reward spans directly
   const computeRewardItems = useMemo(() => {
     if (!showComputeReward || !separateComputeReward) return []
     const items: Array<{
       startTime: number
       duration: number
-      sourceEvent: InferenceEvent
-      server: number
+      sourceSpan: RolloutSpan
     }> = []
-    for (const [serverStr, events] of Object.entries(enrichedEventsByServer)) {
-      const server = Number(serverStr)
-      for (const event of events) {
-        if (event.event_type !== "request") continue
-        const rewardTime = event.compute_reward_time
-        if (rewardTime == null || rewardTime <= 0) continue
-        const envTime = event.environment_response_time
-        const startTime =
-          event.end_time + (envTime != null && envTime > 0 ? envTime : 0)
-        items.push({ startTime, duration: rewardTime, sourceEvent: event, server })
-      }
-    }
-    // Add inflight compute_reward as in-progress items in the separate section
-    if (inflightSnapshot?.running_compute_reward?.length && inflightSnapshot.snapshot_time) {
-      for (const gen of inflightSnapshot.running_compute_reward) {
-        const duration = inflightSnapshot.snapshot_time - gen.start_time
-        if (duration <= 0) continue
-        items.push({
-          startTime: gen.start_time,
-          duration,
-          sourceEvent: {
-            event_type: "request",
-            server: gen.server,
-            start_time: gen.start_time,
-            end_time: inflightSnapshot.snapshot_time,
-            sample_id: gen.sample_id,
-            group_id: gen.group_id,
-            lane: gen.server_lane,
-            is_eval: gen.is_eval,
-            phase: "inflight",
-          },
-          server: gen.server,
-        })
-      }
+    for (const span of rewardSpans) {
+      const duration = span.end_time - span.start_time
+      if (duration <= 0) continue
+      items.push({ startTime: span.start_time, duration, sourceSpan: span })
     }
     items.sort((a, b) => a.startTime - b.startTime)
     return items
-  }, [showComputeReward, separateComputeReward, enrichedEventsByServer, inflightSnapshot])
+  }, [showComputeReward, separateComputeReward, rewardSpans])
 
   // Greedy lane packing for separate compute reward section
   const { packedRewardItems, rewardLaneCount } = useMemo(() => {
@@ -1336,6 +1410,46 @@ function InferenceSection({
     }
     return { packedRewardItems: packed, rewardLaneCount: laneEnds.length }
   }, [computeRewardItems])
+
+  // Env response items for the separate env response section
+  const envResponseItems = useMemo(() => {
+    const items: Array<{
+      startTime: number
+      duration: number
+      sourceSpan: RolloutSpan
+    }> = []
+    for (const span of envResponseSpans) {
+      const duration = span.end_time - span.start_time
+      if (duration <= 0) continue
+      items.push({ startTime: span.start_time, duration, sourceSpan: span })
+    }
+    items.sort((a, b) => a.startTime - b.startTime)
+    return items
+  }, [envResponseSpans])
+
+  // Greedy lane packing for separate env response section
+  const { packedEnvItems, envLaneCount } = useMemo(() => {
+    if (envResponseItems.length === 0)
+      return { packedEnvItems: [] as Array<(typeof envResponseItems)[number] & { lane: number }>, envLaneCount: 0 }
+    const laneEnds: number[] = []
+    const packed: Array<(typeof envResponseItems)[number] & { lane: number }> = []
+    for (const item of envResponseItems) {
+      let placed = false
+      for (let i = 0; i < laneEnds.length; i++) {
+        if (laneEnds[i] <= item.startTime) {
+          laneEnds[i] = item.startTime + item.duration
+          packed.push({ ...item, lane: i })
+          placed = true
+          break
+        }
+      }
+      if (!placed) {
+        packed.push({ ...item, lane: laneEnds.length })
+        laneEnds.push(item.startTime + item.duration)
+      }
+    }
+    return { packedEnvItems: packed, envLaneCount: laneEnds.length }
+  }, [envResponseItems])
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -1537,7 +1651,8 @@ function InferenceSection({
                         server={server}
                         nodeId={inferenceServerNodeMap?.[server] ?? null}
                         showNodeLabel={hasMultipleInferenceNodes}
-                        events={renderData.eventsByServer[server] || []}
+                        generationSpans={renderData.spansByServer[server] || []}
+                        weightSyncSpans={weightSyncSpans.filter((s) => s.server_id === server)}
                         intervalStart={renderData.intervalStart}
                         intervalDuration={renderData.intervalDuration}
                         numLanes={renderData.lanesPerServer}
@@ -1547,7 +1662,6 @@ function InferenceSection({
                         discardStatusReady={renderDiscardStatusReady}
                         onEventClick={handleEventClick}
                         showWeightUpdate={showWeightUpdate}
-                        showComputeReward={showComputeReward && !separateComputeReward}
                         laneHeight={laneHeight}
                         laneStart={childLaneStart}
                         maxLanesToShow={childMaxLanesToShow}
@@ -1566,6 +1680,109 @@ function InferenceSection({
             </div>
           )}
         </div>
+
+        {/* Separate env response section */}
+        {packedEnvItems.length > 0 && (
+          <div className="mt-3">
+            <div className="text-xs font-medium text-muted-foreground mb-0.5">
+              Env Response
+            </div>
+            <div
+              className="relative bg-muted/30 rounded-lg border border-border/50"
+              style={{
+                height:
+                  envLaneCount * laneHeight +
+                  Math.max(0, envLaneCount - 1) * 2,
+              }}
+            >
+              {packedEnvItems.map((item, idx) => {
+                const envIntervalEnd = intervalStart + intervalDuration
+                const envEnd = item.startTime + item.duration
+                if (
+                  item.startTime >= envIntervalEnd ||
+                  envEnd <= intervalStart
+                )
+                  return null
+
+                const visibleStart = Math.max(item.startTime, intervalStart)
+                const visibleEnd = Math.min(envEnd, envIntervalEnd)
+                const leftPct = Math.max(
+                  0,
+                  ((visibleStart - intervalStart) / intervalDuration) * 100,
+                )
+                const widthPct = Math.max(
+                  0.3,
+                  ((visibleEnd - visibleStart) / intervalDuration) * 100,
+                )
+                const laneTop = item.lane * (laneHeight + 2)
+
+                const isInflight = item.sourceSpan.phase === "inflight"
+                const envStyle = isInflight
+                  ? { color: darkMode ? "rgba(134, 239, 172, 0.5)" : "rgba(34, 197, 94, 0.5)", opacity: 0.85 }
+                  : getSpanTimingBarStyle(
+                      item.sourceSpan,
+                      "env",
+                      selectedRequest,
+                      sampleStatusByKey,
+                      highlightDiscarded,
+                      discardStatusReady,
+                      darkMode,
+                    )
+                const itemBorder = isInflight
+                  ? (darkMode ? "1.5px dashed rgba(134, 239, 172, 0.7)" : "1.5px dashed rgba(34, 197, 94, 0.7)")
+                  : eventBorderMedium
+
+                return (
+                  <HoverTooltipBlock
+                    key={`er-${idx}`}
+                    className="absolute group cursor-pointer"
+                    style={{
+                      left: `${leftPct}%`,
+                      width: `${Math.min(widthPct, 100 - leftPct)}%`,
+                      top: laneTop,
+                      height: laneHeight,
+                      backgroundColor: envStyle.color,
+                      borderRadius: "1px",
+                      border: itemBorder,
+                      boxSizing: "border-box",
+                      opacity: envStyle.opacity,
+                    }}
+                    onClick={() => handleEventClick(item.sourceSpan)}
+                    tooltip={
+                      <EventTooltip
+                        title={isInflight ? "Env Response (in flight)" : "Env Response"}
+                        titleSecondary={
+                          item.sourceSpan.sample_id >= 0
+                            ? `Sample ${item.sourceSpan.sample_id}`
+                            : undefined
+                        }
+                        color={envStyle.color}
+                        details={[
+                          {
+                            label: "Duration",
+                            value: formatDuration(item.duration * 1000),
+                          },
+                          ...(item.sourceSpan.group_id >= 0
+                            ? [
+                                {
+                                  label: "Group",
+                                  value: String(item.sourceSpan.group_id),
+                                },
+                              ]
+                            : []),
+                          {
+                            label: "Lane",
+                            value: String(item.lane),
+                          },
+                        ]}
+                      />
+                    }
+                  />
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Separate compute reward section */}
         {separateComputeReward && packedRewardItems.length > 0 && (
@@ -1602,11 +1819,11 @@ function InferenceSection({
                 )
                 const laneTop = item.lane * (laneHeight + 2)
 
-                const isInflight = item.sourceEvent.phase === "inflight"
+                const isInflight = item.sourceSpan.phase === "inflight"
                 const rewardStyle = isInflight
                   ? { color: darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)", opacity: 0.85 }
-                  : getTimingBarStyle(
-                      item.sourceEvent,
+                  : getSpanTimingBarStyle(
+                      item.sourceSpan,
                       "reward",
                       selectedRequest,
                       sampleStatusByKey,
@@ -1633,23 +1850,19 @@ function InferenceSection({
                       boxSizing: "border-box",
                       opacity: rewardStyle.opacity,
                     }}
-                    onClick={() => handleEventClick(item.sourceEvent)}
+                    onClick={() => handleEventClick(item.sourceSpan)}
                     tooltip={
                       <EventTooltip
-                        title={
-                          item.sourceEvent.is_eval
-                            ? "Compute Metrics"
-                            : "Compute Reward"
-                        }
+                        title="Compute Reward"
                         statusLabel={
                           isInflight
                             ? { text: "In Progress", className: "text-yellow-500" }
                             : (() => {
-                                if (!highlightDiscarded || item.sourceEvent.is_eval) return null
+                                if (!highlightDiscarded) return null
                                 if (!discardStatusReady) return { text: "Waiting for Group", className: "text-yellow-600" }
-                                const sid = item.sourceEvent.sample_id
-                                const gid = item.sourceEvent.group_id
-                                if (sid != null && gid != null) {
+                                const sid = item.sourceSpan.sample_id
+                                const gid = item.sourceSpan.group_id
+                                if (sid >= 0 && gid >= 0) {
                                   const status = sampleStatusByKey.get(`${gid}:${sid}`)
                                   if (status == null) return { text: "Waiting for Group", className: "text-yellow-600" }
                                 }
@@ -1657,8 +1870,8 @@ function InferenceSection({
                               })()
                         }
                         titleSecondary={
-                          item.sourceEvent.sample_id !== undefined
-                            ? `Sample ${item.sourceEvent.sample_id}`
+                          item.sourceSpan.sample_id >= 0
+                            ? `Sample ${item.sourceSpan.sample_id}`
                             : undefined
                         }
                         color={rewardStyle.color}
@@ -1667,18 +1880,14 @@ function InferenceSection({
                             label: "Duration",
                             value: formatDuration(item.duration * 1000),
                           },
-                          ...(item.sourceEvent.group_id !== undefined
+                          ...(item.sourceSpan.group_id >= 0
                             ? [
                                 {
                                   label: "Group",
-                                  value: String(item.sourceEvent.group_id),
+                                  value: String(item.sourceSpan.group_id),
                                 },
                               ]
                             : []),
-                          {
-                            label: "Server",
-                            value: String(item.server),
-                          },
                           {
                             label: "Lane",
                             value: String(item.lane),
@@ -1759,7 +1968,7 @@ export function GroupSampleTimeline({
   showNodeLabel,
   isEval,
 }: {
-  eventsBySampleId: Record<number, InferenceEvent[]>
+  eventsBySampleId: Record<number, RolloutSpan[]>
   selectedSampleId: number
   timeBounds: { start: number; end: number; duration: number }
   groupId: number
@@ -1803,19 +2012,9 @@ export function GroupSampleTimeline({
     return sampleStatuses.statuses.some((s) => s.kind === "rollouts_discarded")
   }, [highlightDiscarded, sampleStatuses])
 
-  const isEvalGroup = useMemo(() => {
-    for (const events of Object.values(eventsBySampleId)) {
-      if (events.some((e) => e.is_eval)) return true
-    }
-    return false
-  }, [eventsBySampleId])
+  const isEvalGroup = isEval ?? false
 
-  const isCanceledGroup = useMemo(() => {
-    for (const events of Object.values(eventsBySampleId)) {
-      if (events.some((e) => e.is_canceled)) return true
-    }
-    return false
-  }, [eventsBySampleId])
+  const isCanceledGroup = false // cancellation not tracked in RolloutSpan
 
   // Check if group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
@@ -1933,20 +2132,16 @@ export function GroupSampleTimeline({
             const rewardTime = computeRewardTimeBySample?.[sampleId] ?? 0
 
             // Check if this sample has inflight compute_reward
-            const inflightCR = inflightSnapshot?.running_compute_reward?.find(
-              (r) => r.sample_id === sampleId && r.group_id === groupId
+            const inflightCR = inflightSnapshot?.inflight_rewards?.find(
+              (r) => r.sample_id === sampleId
             )
-            const inflightCRDuration = inflightCR && inflightSnapshot?.snapshot_time
-              ? inflightSnapshot.snapshot_time - inflightCR.start_time
-              : 0
+            const inflightCRDuration = 0 // inflight rewards don't carry start_time in new model
 
             // Check if this sample has inflight env_response
-            const inflightER = inflightSnapshot?.running_env_response?.find(
-              (r) => r.sample_id === sampleId && r.group_id === groupId
+            const inflightER = inflightSnapshot?.inflight_env_responses?.find(
+              (r) => r.sample_id === sampleId
             )
-            const inflightERDuration = inflightER && inflightSnapshot?.snapshot_time
-              ? inflightSnapshot.snapshot_time - inflightER.start_time
-              : 0
+            const inflightERDuration = 0 // inflight env_responses don't carry start_time in new model
 
             // Build env response trace positions: after each inference event
             const envTraces: Array<{
@@ -1969,32 +2164,17 @@ export function GroupSampleTimeline({
               }
             }
 
-            // Add inflight env_response as an in-progress env trace
-            if (inflightER && inflightERDuration > 0) {
-              envTraces.push({
-                start: inflightER.start_time,
-                duration: inflightERDuration,
-                idx: -1,  // sentinel for inflight
-              })
-            }
-
             // Compute reward trace: after the last event (or last env response)
-            // Used for both completed reward (rewardTime > 0) and inflight reward
-            const effectiveRewardTime = rewardTime > 0 ? rewardTime : inflightCRDuration
+            const effectiveRewardTime = rewardTime
             let rewardStart = 0
             if (effectiveRewardTime > 0 && sortedEvents.length > 0) {
-              if (inflightCR) {
-                // Inflight: use actual start_time from snapshot
-                rewardStart = inflightCR.start_time
-              } else {
-                const lastEvent = sortedEvents[sortedEvents.length - 1]
-                rewardStart = lastEvent.end_time
-                // If there's an env response after the last event, start after it
-                if (envTimes.length >= sortedEvents.length) {
-                  const lastEnv = envTimes[sortedEvents.length - 1]
-                  if (lastEnv && lastEnv.time > 0) {
-                    rewardStart += lastEnv.time
-                  }
+              const lastEvent = sortedEvents[sortedEvents.length - 1]
+              rewardStart = lastEvent.end_time
+              // If there's an env response after the last event, start after it
+              if (envTimes.length >= sortedEvents.length) {
+                const lastEnv = envTimes[sortedEvents.length - 1]
+                if (lastEnv && lastEnv.time > 0) {
+                  rewardStart += lastEnv.time
                 }
               }
             }
@@ -2039,14 +2219,14 @@ export function GroupSampleTimeline({
                       tooltip={
                         <EventTooltip
                           title={
-                            event.sample_id !== undefined
+                            event.sample_id >= 0
                               ? `Sample ${event.sample_id}`
-                              : event.group_id !== undefined
+                              : event.group_id >= 0
                                 ? `Group ${event.group_id}`
-                                : "Request"
+                                : "Generation"
                           }
                           titleSecondary={
-                            event.group_id !== undefined
+                            event.group_id >= 0
                               ? `Group ${event.group_id}`
                               : null
                           }
@@ -2061,20 +2241,12 @@ export function GroupSampleTimeline({
                                   }
                                 : null
                           }
-                          details={buildInferenceRequestDetails(
+                          details={buildGenerationDetails(
                             event,
                             durationMs,
                             [
-                              { label: "Server", value: String(event.server) },
-                              ...(showNodeLabel &&
-                              event.node_id !== null &&
-                              event.node_id !== undefined
-                                ? [
-                                    {
-                                      label: "Node",
-                                      value: String(event.node_id),
-                                    },
-                                  ]
+                              ...(event.server_id >= 0
+                                ? [{ label: "Server", value: String(event.server_id) }]
                                 : []),
                             ],
                           )}
@@ -2239,7 +2411,8 @@ function InferenceServerTimeline({
   server,
   nodeId,
   showNodeLabel,
-  events,
+  generationSpans,
+  weightSyncSpans: serverWeightSyncSpans,
   intervalStart,
   intervalDuration,
   numLanes,
@@ -2249,7 +2422,6 @@ function InferenceServerTimeline({
   discardStatusReady,
   onEventClick,
   showWeightUpdate = true,
-  showComputeReward = false,
   laneHeight: laneHeightProp = 14,
   laneStart = 0,
   maxLanesToShow,
@@ -2260,7 +2432,8 @@ function InferenceServerTimeline({
   server: number
   nodeId?: number | null
   showNodeLabel?: boolean
-  events: InferenceEvent[]
+  generationSpans: RolloutSpan[]
+  weightSyncSpans?: InfraSpan[]
   intervalStart: number
   intervalDuration: number
   numLanes: number
@@ -2268,9 +2441,8 @@ function InferenceServerTimeline({
   sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | null>
   highlightDiscarded: boolean
   discardStatusReady: boolean
-  onEventClick: (event: InferenceEvent) => void
+  onEventClick: (span: RolloutSpan) => void
   showWeightUpdate?: boolean
-  showComputeReward?: boolean
   laneHeight?: number
   laneStart?: number
   maxLanesToShow?: number
@@ -2288,65 +2460,35 @@ function InferenceServerTimeline({
       ? nodeId
       : undefined
 
-  const weightBroadcastEvents = useMemo(
-    () => events.filter((e) => e.event_type === "weight_broadcast"),
-    [events],
-  )
-
-  const requestEvents = useMemo(
-    () => events.filter((e) => e.event_type === "request"),
-    [events],
-  )
-
-  // Separated view uses server-provided per-server lane assignments directly.
-  // Events without a lane (e.g. eval inference) get lanes via greedy assignment.
-  const { assignedEvents, actualNumLanes } = useMemo(() => {
-    const withLane: AssignedInferenceEvent[] = []
-    const withoutLane: InferenceEvent[] = []
-    for (const e of requestEvents) {
-      if (e.lane != null && e.lane >= 0) {
-        withLane.push({ ...e, lane: e.lane as number })
-      } else {
-        withoutLane.push(e)
+  // Greedy lane assignment for generation spans
+  const { assignedSpans, actualNumLanes } = useMemo(() => {
+    const sorted = [...generationSpans].sort(
+      (a, b) => a.start_time - b.start_time,
+    )
+    const laneEnds: number[] = []
+    const assigned: AssignedRolloutSpan[] = []
+    for (const span of sorted) {
+      let placed = false
+      for (let i = 0; i < laneEnds.length; i++) {
+        if (laneEnds[i] <= span.start_time) {
+          laneEnds[i] = span.end_time
+          assigned.push({ ...span, lane: i })
+          placed = true
+          break
+        }
+      }
+      if (!placed) {
+        assigned.push({ ...span, lane: laneEnds.length })
+        laneEnds.push(span.end_time)
       }
     }
 
-    if (withoutLane.length > 0) {
-      const sorted = [...withoutLane].sort(
-        (a, b) => a.start_time - b.start_time,
-      )
-      const laneEnds: number[] = []
-      for (const e of sorted) {
-        // When freeLaneAfterGeneration, the lane is freed after generation
-        // (end_time), so compute_reward doesn't block the lane.
-        const eventLaneEnd = freeLaneAfterGeneration
-          ? e.end_time + (e.environment_response_time ?? 0)
-          : e.end_time +
-            (e.environment_response_time ?? 0) +
-            (e.compute_reward_time ?? 0)
-        let placed = false
-        for (let i = 0; i < laneEnds.length; i++) {
-          if (laneEnds[i] <= e.start_time) {
-            laneEnds[i] = eventLaneEnd
-            withLane.push({ ...e, lane: i })
-            placed = true
-            break
-          }
-        }
-        if (!placed) {
-          const newLane = laneEnds.length
-          laneEnds.push(eventLaneEnd)
-          withLane.push({ ...e, lane: newLane })
-        }
-      }
-    }
-
-    const maxLane = withLane.reduce((max, e) => Math.max(max, e.lane), -1)
+    const maxLane = assigned.reduce((max, s) => Math.max(max, s.lane), -1)
     return {
-      assignedEvents: withLane,
+      assignedSpans: assigned,
       actualNumLanes: Math.max(numLanes, maxLane + 1),
     }
-  }, [requestEvents, numLanes, freeLaneAfterGeneration])
+  }, [generationSpans, numLanes])
 
   const intervalEnd = intervalStart + intervalDuration
   const laneHeight = laneHeightProp
@@ -2366,41 +2508,41 @@ function InferenceServerTimeline({
     return Array.from({ length: displayedLaneCount }, (_, idx) => idx)
   }, [displayedLaneCount])
 
-  // Precompute events + idle periods per lane in one pass
-  const { laneEventsByIndex, idlePeriodsByLane } = useMemo(() => {
-    const laneEvents: InferenceEvent[][] = Array.from(
+  // Precompute spans + idle periods per lane in one pass
+  const { laneSpansByIndex, idlePeriodsByLane } = useMemo(() => {
+    const laneSpans: RolloutSpan[][] = Array.from(
       { length: actualNumLanes },
       () => [],
     )
 
-    for (const event of assignedEvents) {
-      const lane = event.lane
-      if (laneEvents[lane]) {
-        laneEvents[lane].push(event)
+    for (const span of assignedSpans) {
+      const lane = span.lane
+      if (laneSpans[lane]) {
+        laneSpans[lane].push(span)
       }
     }
 
-    const idleByLane = laneEvents.map((laneEventsForLane) => {
+    const idleByLane = laneSpans.map((laneSpansForLane) => {
       const idlePeriods: Array<{
         start: number
         end: number
         duration: number
       }> = []
 
-      if (laneEventsForLane.length > 0) {
+      if (laneSpansForLane.length > 0) {
         // Idle at beginning
-        if (laneEventsForLane[0].start_time > intervalStart) {
+        if (laneSpansForLane[0].start_time > intervalStart) {
           idlePeriods.push({
             start: intervalStart,
-            end: laneEventsForLane[0].start_time,
-            duration: laneEventsForLane[0].start_time - intervalStart,
+            end: laneSpansForLane[0].start_time,
+            duration: laneSpansForLane[0].start_time - intervalStart,
           })
         }
 
-        // Gaps between events
-        for (let i = 0; i < laneEventsForLane.length - 1; i++) {
-          const currentEnd = laneEventsForLane[i].end_time
-          const nextStart = laneEventsForLane[i + 1].start_time
+        // Gaps between spans
+        for (let i = 0; i < laneSpansForLane.length - 1; i++) {
+          const currentEnd = laneSpansForLane[i].end_time
+          const nextStart = laneSpansForLane[i + 1].start_time
           if (currentEnd < nextStart) {
             idlePeriods.push({
               start: currentEnd,
@@ -2411,12 +2553,12 @@ function InferenceServerTimeline({
         }
 
         // Idle at end
-        const lastEvent = laneEventsForLane[laneEventsForLane.length - 1]
-        if (lastEvent.end_time < intervalEnd) {
+        const lastSpan = laneSpansForLane[laneSpansForLane.length - 1]
+        if (lastSpan.end_time < intervalEnd) {
           idlePeriods.push({
-            start: lastEvent.end_time,
+            start: lastSpan.end_time,
             end: intervalEnd,
-            duration: intervalEnd - lastEvent.end_time,
+            duration: intervalEnd - lastSpan.end_time,
           })
         }
       } else {
@@ -2432,11 +2574,11 @@ function InferenceServerTimeline({
     })
 
     return {
-      laneEventsByIndex: laneEvents,
+      laneSpansByIndex: laneSpans,
       idlePeriodsByLane: idleByLane,
     }
   }, [
-    assignedEvents,
+    assignedSpans,
     intervalStart,
     intervalEnd,
     intervalDuration,
@@ -2462,7 +2604,7 @@ function InferenceServerTimeline({
           {laneIndices.map((displayIdx) => {
             const actualLaneIdx = displayIdx + laneStart
             const laneTop = displayIdx * (laneHeight + 2)
-            const laneEvents = laneEventsByIndex[actualLaneIdx] || []
+            const laneSpans = laneSpansByIndex[actualLaneIdx] || []
             const idlePeriods = idlePeriodsByLane[actualLaneIdx] || []
 
             return (
@@ -2526,251 +2668,50 @@ function InferenceServerTimeline({
                   )
                 })}
 
-                {/* Events for this lane */}
-                {laneEvents.map((event, eventIdx) => {
-                  const envTime = event.environment_response_time
-                  const rewardTime = event.compute_reward_time
-                  const envStyle = getTimingBarStyle(
-                    event,
-                    "env",
-                    selectedRequest,
-                    sampleStatusByKey,
-                    highlightDiscarded,
-                    discardStatusReady,
-                    darkMode,
-                  )
-                  const rewardStyle = getTimingBarStyle(
-                    event,
-                    "reward",
-                    selectedRequest,
-                    sampleStatusByKey,
-                    highlightDiscarded,
-                    discardStatusReady,
-                    darkMode,
-                  )
-                  return (
-                    <Fragment key={`event-${eventIdx}`}>
-                      <InferenceEventBlock
-                        event={event}
-                        server={server}
-                        nodeId={displayNodeId}
-                        lane={actualLaneIdx}
-                        intervalStart={intervalStart}
-                        intervalDuration={intervalDuration}
-                        selectedRequest={selectedRequest}
-                        sampleStatusByKey={sampleStatusByKey}
-                        highlightDiscarded={highlightDiscarded}
-                        discardStatusReady={discardStatusReady}
-                        onClick={() => onEventClick(event)}
-                        rewardStartedKeys={rewardStartedKeys}
-                        rewardEndedKeys={rewardEndedKeys}
-                      />
-                      {/* Environment response bar (right after inference event) */}
-                      {envTime != null &&
-                        envTime > 0 &&
-                        (() => {
-                          const intervalEnd = intervalStart + intervalDuration
-                          const envStart = event.end_time
-                          const envEnd = envStart + envTime
-                          if (
-                            envStart >= intervalEnd ||
-                            envEnd <= intervalStart
-                          )
-                            return null
-                          const visibleStart = Math.max(envStart, intervalStart)
-                          const visibleEnd = Math.min(envEnd, intervalEnd)
-                          const envLeftPct = Math.max(
-                            0,
-                            ((visibleStart - intervalStart) /
-                              intervalDuration) *
-                              100,
-                          )
-                          const envWidthPct = Math.max(
-                            0.3,
-                            ((visibleEnd - visibleStart) / intervalDuration) *
-                              100,
-                          )
-                          const envDurationMs = envTime * 1000
-                          return (
-                            <HoverTooltipBlock
-                              className="absolute top-0 bottom-0 group cursor-pointer"
-                              style={{
-                                left: `${envLeftPct}%`,
-                                width: `${Math.min(envWidthPct, 100 - envLeftPct)}%`,
-                                backgroundColor: envStyle.color,
-                                borderRadius: "1px",
-                                border: eventBorderMedium,
-                                boxSizing: "border-box",
-                                opacity: envStyle.opacity,
-                              }}
-                              onClick={() => onEventClick(event)}
-                              tooltip={
-                                <EventTooltip
-                                  title="Env Response"
-                                  titleSecondary={
-                                    event.sample_id !== undefined
-                                      ? `Sample ${event.sample_id}`
-                                      : undefined
-                                  }
-                                  color={envStyle.color}
-                                  details={[
-                                    {
-                                      label: "Duration",
-                                      value: formatDuration(envDurationMs),
-                                    },
-                                    ...(event.group_id !== undefined
-                                      ? [
-                                          {
-                                            label: "Group",
-                                            value: String(event.group_id),
-                                          },
-                                        ]
-                                      : []),
-                                    { label: "Server", value: String(server) },
-                                    ...(displayNodeId !== undefined
-                                      ? [
-                                          {
-                                            label: "Node",
-                                            value: String(displayNodeId),
-                                          },
-                                        ]
-                                      : []),
-                                    {
-                                      label: "Lane",
-                                      value: String(actualLaneIdx),
-                                    },
-                                  ]}
-                                />
-                              }
-                            />
-                          )
-                        })()}
-                      {/* Compute reward bar (after last inference event for a sample) */}
-                      {showComputeReward &&
-                        rewardTime != null &&
-                        rewardTime > 0 &&
-                        (() => {
-                          const intervalEnd = intervalStart + intervalDuration
-                          const rewardStart =
-                            event.end_time +
-                            (envTime != null && envTime > 0 ? envTime : 0)
-                          const rewardEnd = rewardStart + rewardTime
-                          if (
-                            rewardStart >= intervalEnd ||
-                            rewardEnd <= intervalStart
-                          )
-                            return null
-                          const visibleStart = Math.max(
-                            rewardStart,
-                            intervalStart,
-                          )
-                          const visibleEnd = Math.min(rewardEnd, intervalEnd)
-                          const rewardLeftPct = Math.max(
-                            0,
-                            ((visibleStart - intervalStart) /
-                              intervalDuration) *
-                              100,
-                          )
-                          const rewardWidthPct = Math.max(
-                            0.3,
-                            ((visibleEnd - visibleStart) / intervalDuration) *
-                              100,
-                          )
-                          const rewardDurationMs = rewardTime * 1000
-                          // When freeLaneAfterGeneration, compute reward can overlap
-                          // with next generation. Show it with smaller height,
-                          // vertically centered, on top (higher z-index).
-                          const rewardHeight = freeLaneAfterGeneration
-                            ? Math.max(3, Math.round(laneHeight * 0.4))
-                            : undefined
-                          const rewardTop = freeLaneAfterGeneration
-                            ? Math.round((laneHeight - rewardHeight!) / 2)
-                            : undefined
-                          return (
-                            <HoverTooltipBlock
-                              className="absolute group cursor-pointer"
-                              style={{
-                                left: `${rewardLeftPct}%`,
-                                width: `${Math.min(rewardWidthPct, 100 - rewardLeftPct)}%`,
-                                backgroundColor: rewardStyle.color,
-                                borderRadius: "1px",
-                                border: eventBorderMedium,
-                                boxSizing: "border-box",
-                                opacity: rewardStyle.opacity,
-                                ...(freeLaneAfterGeneration
-                                  ? { top: rewardTop, height: rewardHeight, zIndex: 2 }
-                                  : { top: 0, bottom: 0 }),
-                              }}
-                              onClick={() => onEventClick(event)}
-                              tooltip={
-                                <EventTooltip
-                                  title={event.is_eval ? "Compute Metrics" : "Waiting for Reward"}
-                                  titleSecondary={
-                                    event.sample_id !== undefined
-                                      ? `Sample ${event.sample_id}`
-                                      : undefined
-                                  }
-                                  color={rewardStyle.color}
-                                  details={[
-                                    {
-                                      label: "Duration",
-                                      value: formatDuration(rewardDurationMs),
-                                    },
-                                    ...(event.group_id !== undefined
-                                      ? [
-                                          {
-                                            label: "Group",
-                                            value: String(event.group_id),
-                                          },
-                                        ]
-                                      : []),
-                                    { label: "Server", value: String(server) },
-                                    ...(displayNodeId !== undefined
-                                      ? [
-                                          {
-                                            label: "Node",
-                                            value: String(displayNodeId),
-                                          },
-                                        ]
-                                      : []),
-                                    {
-                                      label: "Lane",
-                                      value: String(actualLaneIdx),
-                                    },
-                                  ]}
-                                />
-                              }
-                            />
-                          )
-                        })()}
-                    </Fragment>
-                  )
-                })}
+                {/* Generation spans for this lane */}
+                {laneSpans.map((span, spanIdx) => (
+                  <GenerationSpanBlock
+                    key={`span-${spanIdx}`}
+                    span={span}
+                    server={server}
+                    nodeId={displayNodeId}
+                    lane={actualLaneIdx}
+                    intervalStart={intervalStart}
+                    intervalDuration={intervalDuration}
+                    selectedRequest={selectedRequest}
+                    sampleStatusByKey={sampleStatusByKey}
+                    highlightDiscarded={highlightDiscarded}
+                    discardStatusReady={discardStatusReady}
+                    onClick={() => onEventClick(span)}
+                    rewardStartedKeys={rewardStartedKeys}
+                    rewardEndedKeys={rewardEndedKeys}
+                  />
+                ))}
               </div>
             )
           })}
 
-          {/* Weight broadcast events - span all lanes */}
+          {/* Weight sync events - span all lanes */}
           {showWeightUpdate &&
-            weightBroadcastEvents.map((event, eventIdx) => {
-              const relativeStart = event.start_time - intervalStart
+            (serverWeightSyncSpans ?? []).map((span, spanIdx) => {
+              const relativeStart = span.start_time - intervalStart
               const leftPercent = Math.max(
                 0,
                 (relativeStart / intervalDuration) * 100,
               )
-              const duration = event.end_time - event.start_time
+              const duration = span.end_time - span.start_time
               const durationMs = duration * 1000
-              const visibleStart = Math.max(event.start_time, intervalStart)
-              const visibleDuration = event.end_time - visibleStart
+              const visibleStart = Math.max(span.start_time, intervalStart)
+              const visibleDuration = span.end_time - visibleStart
               const widthPercent = Math.max(
                 0.5,
                 (visibleDuration / intervalDuration) * 100,
               )
-              const color = getInferenceEventColor(event.event_type)
+              const color = getInferenceEventColor("weight_broadcast")
 
               return (
                 <HoverTooltipBlock
-                  key={`wb-${eventIdx}`}
+                  key={`ws-${spanIdx}`}
                   className="absolute group cursor-default"
                   style={{
                     top: 0,
@@ -2785,11 +2726,11 @@ function InferenceServerTimeline({
                   }}
                   tooltip={
                     <EventTooltip
-                      title="Weight Broadcast"
+                      title="Weight Sync"
                       color={color}
                       details={[
-                        ...(event.step != null
-                          ? [{ label: "Step", value: String(event.step) }]
+                        ...(span.step >= 0
+                          ? [{ label: "Step", value: String(span.step) }]
                           : []),
                         {
                           label: "Duration",
@@ -2800,8 +2741,8 @@ function InferenceServerTimeline({
                           ? [{ label: "Node", value: String(displayNodeId) }]
                           : []),
                       ]}
-                      startTime={event.start_time}
-                      endTime={event.end_time}
+                      startTime={span.start_time}
+                      endTime={span.end_time}
                     />
                   }
                 />
@@ -2814,59 +2755,49 @@ function InferenceServerTimeline({
 }
 
 // Helper to get the base color for an inference event (eval = green, training = blue)
-function getInferenceEventBaseColor(
-  event: InferenceEvent,
+// Helper to get the base color for a generation span
+function getSpanBaseColor(
+  span: RolloutSpan,
   sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
   darkMode: boolean = false,
 ): string {
-  if (event.event_type !== "request") {
-    return getInferenceEventColor(event.event_type)
+  // Inflight (in-progress) spans use yellow
+  if (span.phase === "inflight") {
+    return darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)"
   }
-  // Inflight (in-progress) events use yellow to distinguish from completed (blue)
-  if (event.phase === "inflight") {
-    return darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)" // yellow-400/yellow-500 at 50% opacity
+  if (!highlightDiscarded) {
+    return INFERENCE_REQUEST_COLOR
   }
-  if (event.is_canceled) {
-    return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
-  }
-  if (!highlightDiscarded || event.is_eval) {
-    return event.is_eval
-      ? INFERENCE_REQUEST_EVAL_COLOR
-      : INFERENCE_REQUEST_COLOR
-  }
-  // Status not loaded yet — show darker yellow ("done but unknown status")
+  // Status not loaded yet
   if (!discardStatusReady) {
-    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)" // yellow-600
+    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)"
   }
-  if (!sampleStatusByKey || event.sample_id == null || event.group_id == null) {
-    return event.is_eval
-      ? INFERENCE_REQUEST_EVAL_COLOR
-      : INFERENCE_REQUEST_COLOR
+  if (!sampleStatusByKey || span.sample_id < 0 || span.group_id < 0) {
+    return INFERENCE_REQUEST_COLOR
   }
-  const key = `${event.group_id}:${event.sample_id}`
+  const key = `${span.group_id}:${span.sample_id}`
   const status = sampleStatusByKey.get(key)
   if (status === "rollouts_discarded") {
     return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
   }
-  // Done but not yet categorized as kept or discarded — darker yellow
   if (status == null) {
-    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)" // yellow-600
+    return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)"
   }
-  return event.is_eval ? INFERENCE_REQUEST_EVAL_COLOR : INFERENCE_REQUEST_COLOR
+  return INFERENCE_REQUEST_COLOR
 }
 
-function getInferenceEventSelectionColor(
-  event: InferenceEvent,
+function getSpanSelectionColor(
+  span: RolloutSpan,
   selectedRequest: SelectedInferenceRequest | null,
   sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
   darkMode: boolean = false,
 ): { color: string; opacity: number } {
-  const defaultColor = getInferenceEventBaseColor(
-    event,
+  const defaultColor = getSpanBaseColor(
+    span,
     sampleStatusByKey,
     highlightDiscarded,
     discardStatusReady,
@@ -2878,51 +2809,38 @@ function getInferenceEventSelectionColor(
   }
 
   const isDiscarded = defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR || defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR_DARK
-  const isCanceled = defaultColor === INFERENCE_REQUEST_CANCELED_COLOR || defaultColor === INFERENCE_REQUEST_CANCELED_COLOR_DARK
-  const isInflightOrPending = event.phase === "inflight" || defaultColor.includes("202, 138, 4") || defaultColor.includes("234, 179, 8") || defaultColor.includes("250, 204, 21")
+  const isInflightOrPending = span.phase === "inflight" || defaultColor.includes("202, 138, 4") || defaultColor.includes("234, 179, 8") || defaultColor.includes("250, 204, 21")
 
   // Selected sample = darker version of base color
-  if (event.sample_id === selectedRequest.sampleId) {
-    if (isCanceled) {
-      return { color: darkMode ? GROUP_SAMPLE_CANCELED_SELECTED_COLOR_DARK : GROUP_SAMPLE_CANCELED_SELECTED_COLOR_LIGHT, opacity: 1 }
-    }
+  if (span.sample_id === selectedRequest.sampleId) {
     if (isDiscarded) {
       return { color: darkMode ? "#9ca3af" : "#6b7280", opacity: 1 }
     }
     if (isInflightOrPending) {
-      return { color: darkMode ? "rgba(161, 98, 7, 0.8)" : "rgba(161, 98, 7, 0.9)", opacity: 1 } // yellow-700
+      return { color: darkMode ? "rgba(161, 98, 7, 0.8)" : "rgba(161, 98, 7, 0.9)", opacity: 1 }
     }
-    const selectedColor = event.is_eval
-      ? INFERENCE_REQUEST_EVAL_SELECTED_COLOR
-      : INFERENCE_REQUEST_SELECTED_COLOR
-    return { color: selectedColor, opacity: 1 }
+    return { color: INFERENCE_REQUEST_SELECTED_COLOR, opacity: 1 }
   }
 
   // Same group_id but different sample_id
-  if (event.group_id === selectedRequest.groupId) {
-    if (isCanceled) {
-      return { color: darkMode ? GROUP_SAMPLE_CANCELED_COLOR_DARK : GROUP_SAMPLE_CANCELED_COLOR_LIGHT, opacity: 1 }
-    }
+  if (span.group_id === selectedRequest.groupId) {
     if (isDiscarded) {
       return { color: darkMode ? GROUP_SAMPLE_DISCARDED_COLOR_DARK : GROUP_SAMPLE_DISCARDED_COLOR_LIGHT, opacity: 1 }
     }
     if (isInflightOrPending) {
-      return { color: darkMode ? "rgba(202, 138, 4, 0.7)" : "rgba(202, 138, 4, 0.8)", opacity: 1 } // yellow-600
+      return { color: darkMode ? "rgba(202, 138, 4, 0.7)" : "rgba(202, 138, 4, 0.8)", opacity: 1 }
     }
-    return {
-      color: event.is_eval ? GROUP_SAMPLE_EVAL_COLOR : GROUP_SAMPLE_COLOR,
-      opacity: 1,
-    }
+    return { color: GROUP_SAMPLE_COLOR, opacity: 1 }
   }
 
-  // Other events when something is selected = slightly dimmed
+  // Other spans when something is selected = slightly dimmed
   return { color: defaultColor, opacity: 0.55 }
 }
 
-/** Get color + opacity for env-response / compute-reward bars,
+/** Get color + opacity for env-response / compute-reward spans,
  *  taking selection state and discarded status into account. */
-function getTimingBarStyle(
-  event: InferenceEvent,
+function getSpanTimingBarStyle(
+  span: RolloutSpan,
   kind: "env" | "reward",
   selectedRequest: SelectedInferenceRequest | null,
   sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | null>,
@@ -2930,66 +2848,54 @@ function getTimingBarStyle(
   discardStatusReady: boolean,
   darkMode: boolean = false,
 ): { color: string; opacity: number } {
-  const isEval = kind === "reward" && event.is_eval
   // Determine if the sample is discarded
   const isDiscarded = (() => {
     if (!highlightDiscarded) return false
-    if (!discardStatusReady) return true // assume discarded until we know
-    if (event.sample_id == null || event.group_id == null) return false
-    const key = `${event.group_id}:${event.sample_id}`
+    if (!discardStatusReady) return true
+    if (span.sample_id < 0 || span.group_id < 0) return false
+    const key = `${span.group_id}:${span.sample_id}`
     return sampleStatusByKey.get(key) === "rollouts_discarded"
   })()
 
   const baseColor = isDiscarded
     ? kind === "env"
       ? (darkMode ? ENV_RESPONSE_DISCARDED_COLOR_DARK : ENV_RESPONSE_DISCARDED_COLOR_LIGHT)
-      : isEval
-        ? (darkMode ? COMPUTE_METRICS_DISCARDED_COLOR_DARK : COMPUTE_METRICS_DISCARDED_COLOR_LIGHT)
-        : (darkMode ? COMPUTE_REWARD_DISCARDED_COLOR_DARK : COMPUTE_REWARD_DISCARDED_COLOR_LIGHT)
+      : (darkMode ? COMPUTE_REWARD_DISCARDED_COLOR_DARK : COMPUTE_REWARD_DISCARDED_COLOR_LIGHT)
     : kind === "env"
       ? ENV_RESPONSE_COLOR
-      : isEval
-        ? COMPUTE_METRICS_COLOR
-        : COMPUTE_REWARD_COLOR
+      : COMPUTE_REWARD_COLOR
 
   if (!selectedRequest) return { color: baseColor, opacity: 0.85 }
 
-  // Selected sample: darker version of base color (or darker gray if discarded)
-  if (event.sample_id === selectedRequest.sampleId) {
+  // Selected sample: darker version
+  if (span.sample_id === selectedRequest.sampleId) {
     if (isDiscarded) {
       return { color: darkMode ? "#9ca3af" : "#6b7280", opacity: 1 }
     }
     const selectedColor =
       kind === "env"
         ? ENV_RESPONSE_SELECTED_COLOR
-        : isEval
-          ? COMPUTE_METRICS_SELECTED_COLOR
-          : COMPUTE_REWARD_SELECTED_COLOR
+        : COMPUTE_REWARD_SELECTED_COLOR
     return { color: selectedColor, opacity: 1 }
   }
 
-  // Same group: use darker color variants to match the group darkening
-  if (event.group_id === selectedRequest.groupId) {
+  // Same group
+  if (span.group_id === selectedRequest.groupId) {
     const groupColor = isDiscarded
       ? kind === "env"
         ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
-        : isEval
-          ? (darkMode ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK : COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT)
-          : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
+        : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
       : kind === "env"
         ? ENV_RESPONSE_GROUP_COLOR
-        : isEval
-          ? COMPUTE_METRICS_GROUP_COLOR
-          : COMPUTE_REWARD_GROUP_COLOR
+        : COMPUTE_REWARD_GROUP_COLOR
     return { color: groupColor, opacity: 1 }
   }
 
-  // Other events when something is selected = dimmed
   return { color: baseColor, opacity: 0.35 }
 }
 
-function InferenceEventBlock({
-  event,
+function GenerationSpanBlock({
+  span,
   server,
   nodeId,
   lane,
@@ -3003,7 +2909,7 @@ function InferenceEventBlock({
   rewardStartedKeys,
   rewardEndedKeys,
 }: {
-  event: InferenceEvent
+  span: RolloutSpan
   server: number
   nodeId?: number | null
   lane: number
@@ -3020,61 +2926,52 @@ function InferenceEventBlock({
   const darkMode = useAtomValue(darkModeAtom)
   const intervalEnd = intervalStart + intervalDuration
 
-  if (event.end_time <= intervalStart || event.start_time >= intervalEnd)
+  if (span.end_time <= intervalStart || span.start_time >= intervalEnd)
     return null
 
-  const relativeStart = event.start_time - intervalStart
+  const relativeStart = span.start_time - intervalStart
   const leftPercent = Math.max(0, (relativeStart / intervalDuration) * 100)
 
-  const duration = event.end_time - event.start_time
+  const duration = span.end_time - span.start_time
   const durationMs = duration * 1000
 
-  // Calculate visible width
-  const visibleStart = Math.max(event.start_time, intervalStart)
-  const visibleDuration = event.end_time - visibleStart
+  const visibleStart = Math.max(span.start_time, intervalStart)
+  const visibleDuration = span.end_time - visibleStart
   const widthPercent = (visibleDuration / intervalDuration) * 100
 
-  const { color, opacity } = getInferenceEventSelectionColor(
-    event,
+  const { color, opacity } = getSpanSelectionColor(
+    span,
     selectedRequest,
     sampleStatusByKey,
     highlightDiscarded,
     discardStatusReady,
     darkMode,
   )
-  const isClickable =
-    event.event_type === "request" && event.sample_id !== undefined
+  const isClickable = span.sample_id >= 0
 
   // Determine status label for tooltip
   const statusLabel = (() => {
-    if (event.event_type !== "request") return null
-    if (event.phase === "inflight")
+    if (span.phase === "inflight")
       return { text: "In Progress", className: "text-yellow-500" }
-    if (event.is_canceled)
-      return { text: "Canceled", className: "text-muted-foreground" }
     // For completed generation bars: show compute_reward lifecycle state
-    if (event.phase === "end" && event.sample_id != null && event.group_id != null) {
-      const key = `${event.group_id}:${event.sample_id}`
-      const rewardStarted = rewardStartedKeys?.has(key)
-      const rewardEnded = rewardEndedKeys?.has(key)
-      if (!rewardStarted) {
-        return { text: "Finished (Waiting)", className: "text-yellow-600" }
+    if (span.sample_id >= 0 && span.group_id >= 0) {
+      const key = `${span.group_id}:${span.sample_id}`
+      if (rewardStartedKeys && rewardEndedKeys) {
+        const rewardStarted = rewardStartedKeys.has(key)
+        const rewardEnded = rewardEndedKeys.has(key)
+        if (!rewardStarted) {
+          return { text: "Finished (Waiting)", className: "text-yellow-600" }
+        }
+        if (!rewardEnded) {
+          return { text: "Finished (Waiting for Reward)", className: "text-yellow-600" }
+        }
       }
-      if (!rewardEnded) {
-        return { text: "Finished (Waiting for Reward)", className: "text-yellow-600" }
-      }
-      return { text: "Finished (Waiting for Group)", className: "text-yellow-600" }
     }
-    if (
-      highlightDiscarded &&
-      !event.is_eval &&
-      event.sample_id != null &&
-      event.group_id != null
-    ) {
+    if (highlightDiscarded && span.sample_id >= 0 && span.group_id >= 0) {
       if (!discardStatusReady) {
         return { text: "Pending Status", className: "text-yellow-600" }
       }
-      const key = `${event.group_id}:${event.sample_id}`
+      const key = `${span.group_id}:${span.sample_id}`
       const status = sampleStatusByKey.get(key)
       if (status === "rollouts_discarded") {
         return { text: "Discarded", className: "text-red-700" }
@@ -3097,11 +2994,9 @@ function InferenceEventBlock({
         minWidth: "1px",
         backgroundColor: color,
         borderRadius: "1px",
-        border: event.phase === "inflight"
+        border: span.phase === "inflight"
           ? (darkMode ? "1.5px dashed rgba(250, 204, 21, 0.7)" : "1.5px dashed rgba(234, 179, 8, 0.7)")
-          : event.is_canceled
-            ? (darkMode ? "1.5px solid rgba(255, 255, 255, 0.15)" : "1.5px solid rgba(0, 0, 0, 0.2)")
-            : (darkMode ? "1.5px solid rgba(255, 255, 255, 0.2)" : "1.5px solid rgba(0, 0, 0, 0.3)"),
+          : (darkMode ? "1.5px solid rgba(255, 255, 255, 0.2)" : "1.5px solid rgba(0, 0, 0, 0.3)"),
         boxSizing: "border-box",
         opacity,
       }}
@@ -3109,42 +3004,32 @@ function InferenceEventBlock({
       tooltip={
         <EventTooltip
           title={
-            event.event_type === "request"
-              ? event.sample_id !== undefined
-                ? `Sample ${event.sample_id}`
-                : event.group_id !== undefined
-                  ? `Group ${event.group_id}`
-                  : "Request"
-              : event.event_type
+            span.sample_id >= 0
+              ? `Sample ${span.sample_id}`
+              : span.group_id >= 0
+                ? `Group ${span.group_id}`
+                : "Generation"
           }
           titleSecondary={
-            event.event_type === "request" && event.group_id !== undefined
-              ? `Group ${event.group_id}`
+            span.group_id >= 0
+              ? `Group ${span.group_id}`
               : null
           }
           color={color}
           capitalize
           statusLabel={statusLabel}
-          details={
-            event.event_type === "request"
-              ? buildInferenceRequestDetails(event, durationMs, [
-                  { label: "Server", value: String(server) },
-                  ...(nodeId !== null && nodeId !== undefined
-                    ? [{ label: "Node", value: String(nodeId) }]
-                    : []),
-                  { label: "Lane", value: String(lane) },
-                ])
-              : [
-                  { label: "Duration", value: formatDuration(durationMs) },
-                  { label: "Server", value: String(server) },
-                  ...(nodeId !== null && nodeId !== undefined
-                    ? [{ label: "Node", value: String(nodeId) }]
-                    : []),
-                  { label: "Lane", value: String(lane) },
-                ]
-          }
-          startTime={event.start_time}
-          endTime={event.end_time}
+          details={buildGenerationDetails(span, durationMs, [
+            { label: "Server", value: String(server) },
+            ...(nodeId !== null && nodeId !== undefined
+              ? [{ label: "Node", value: String(nodeId) }]
+              : []),
+            { label: "Lane", value: String(lane) },
+            ...(span.generation_idx >= 0
+              ? [{ label: "Gen idx", value: String(span.generation_idx) }]
+              : []),
+          ])}
+          startTime={span.start_time}
+          endTime={span.end_time}
         />
       }
     />

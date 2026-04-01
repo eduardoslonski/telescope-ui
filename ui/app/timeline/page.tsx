@@ -35,7 +35,7 @@ import {
 } from "@/lib/constants"
 import {
   useGpuMetricsForTrainerRanks,
-  useInferenceEventsByGroup,
+  useRolloutEventsByGroup,
   useTrainerBreakdownEvents,
   useTimelinePaginated,
   useInflightGenerations,
@@ -43,7 +43,7 @@ import {
   useSampleStatuses,
   useSampleDetails,
 } from "@/hooks/use-run-data"
-import type { GpuMetric, InferenceEvent, TrainerEvent, InflightSnapshot } from "@/lib/types"
+import type { GpuMetric, RolloutEvent, TrainerEvent, InflightSnapshot } from "@/lib/types"
 import { parseSetupJson, asObject, asNumber } from "@/components/topology-viewer"
 
 function parseDeviceList(value: unknown): number[] {
@@ -403,19 +403,11 @@ export default function TimelinePage() {
     [summaryData?.summary]
   )
 
+  // In the new model, rollout_events don't carry node_id — server-to-node
+  // mapping comes from setup only. Keep an empty fallback.
   const inferenceServerNodeMapFromEvents = useMemo<Record<number, number | null>>(() => {
-    const map: Record<number, number | null> = {}
-    const events = timelineData?.inference_events ?? []
-    for (const event of events) {
-      const server = event.server
-      if (!Number.isFinite(server)) continue
-      if (map[server] !== undefined) continue
-      if (typeof event.node_id === "number" && Number.isFinite(event.node_id)) {
-        map[server] = event.node_id
-      }
-    }
-    return map
-  }, [timelineData?.inference_events])
+    return {}
+  }, [])
 
   const inferenceServerNodeMap = useMemo<Record<number, number | null>>(() => {
     const merged: Record<number, number | null> = {}
@@ -568,7 +560,8 @@ export default function TimelinePage() {
           <CombinedTimelineChart
             orchestratorData={timelineData?.orchestrator_events}
             trainerData={timelineData?.trainer_events}
-            inferenceData={timelineData?.inference_events}
+            rolloutEvents={timelineData?.rollout_events}
+            infraEvents={timelineData?.infra_events}
             inflightSnapshot={inflightData}
             isLoading={isTimelineTransitionLoading}
             intervalStart={timelineData?.interval_start ?? 0}
@@ -641,44 +634,112 @@ function TimelineFooter({
   }
 
   // ---- Inference data ----
-  const { data: groupEventsData } = useInferenceEventsByGroup(
+  const { data: groupEventsData } = useRolloutEventsByGroup(
     runPath ?? "",
     selectedRequest?.groupId ?? null,
     !!selectedRequest && !!runPath
   )
 
+  // Pivot rollout events from the group into spans, then group by sample_id
   const groupEventsBySampleId = useMemo(() => {
     if (!selectedRequest || !groupEventsData?.events) return null
-    const eventsBySample: Record<number, InferenceEvent[]> = {}
-    for (const event of groupEventsData.events) {
-      if (event.sample_id !== undefined) {
-        if (!eventsBySample[event.sample_id]) {
-          eventsBySample[event.sample_id] = []
+    // Pivot start/end rows into spans
+    const starts = new Map<string, RolloutEvent>()
+    const spans: Array<{
+      event_type: string
+      start_time: number
+      end_time: number
+      sample_id: number
+      group_id: number
+      agent_id: number
+      generation_idx: number
+      tool_call_idx: number
+      server_id: number
+    }> = []
+    for (const e of groupEventsData.events as RolloutEvent[]) {
+      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
+      if (e.phase === "start") {
+        starts.set(key, e)
+      } else if (e.phase === "end") {
+        const start = starts.get(key)
+        if (start) {
+          spans.push({
+            event_type: e.event_type,
+            start_time: start.timestamp,
+            end_time: e.timestamp,
+            sample_id: e.sample_id ?? -1,
+            group_id: start.group_id ?? e.group_id ?? -1,
+            agent_id: e.agent_id ?? 0,
+            generation_idx: e.generation_idx ?? -1,
+            tool_call_idx: e.tool_call_idx ?? -1,
+            server_id: start.server_id ?? e.server_id ?? -1,
+          })
+          starts.delete(key)
         }
-        eventsBySample[event.sample_id].push(event)
+      }
+    }
+    // Only keep generation spans for the group timeline
+    const generationSpans = spans.filter((s) => s.event_type === "generation")
+    const eventsBySample: Record<number, typeof generationSpans> = {}
+    for (const span of generationSpans) {
+      if (span.sample_id >= 0) {
+        if (!eventsBySample[span.sample_id]) {
+          eventsBySample[span.sample_id] = []
+        }
+        eventsBySample[span.sample_id].push(span)
       }
     }
     return eventsBySample
   }, [selectedRequest, groupEventsData])
 
-  // Build per-sample timing data: env response times + compute reward time
+  // Build per-sample timing data from env_response and reward spans
   const groupTimingData = useMemo(() => {
-    if (!groupEventsData) return null
-    const envTimes = groupEventsData.environment_response_times ?? []
-    const rewardTimes = groupEventsData.compute_reward_times ?? []
-    // Index env times by sample_idx → sorted list of {turn_order, time}
+    if (!groupEventsData?.events) return null
+    // Pivot to get env_response and reward spans
+    const starts = new Map<string, RolloutEvent>()
+    const envSpans: Array<{ sample_id: number; generation_idx: number; start_time: number; end_time: number }> = []
+    const rewardSpans: Array<{ sample_id: number; start_time: number; end_time: number }> = []
+    for (const e of groupEventsData.events as RolloutEvent[]) {
+      const key = `${e.event_type}:${e.sample_id ?? -1}:${e.generation_idx ?? -1}:${e.tool_call_idx ?? -1}`
+      if (e.phase === "start") {
+        starts.set(key, e)
+      } else if (e.phase === "end") {
+        const start = starts.get(key)
+        if (start) {
+          if (e.event_type === "env_response") {
+            envSpans.push({
+              sample_id: e.sample_id ?? -1,
+              generation_idx: e.generation_idx ?? -1,
+              start_time: start.timestamp,
+              end_time: e.timestamp,
+            })
+          } else if (e.event_type === "reward") {
+            rewardSpans.push({
+              sample_id: e.sample_id ?? -1,
+              start_time: start.timestamp,
+              end_time: e.timestamp,
+            })
+          }
+          starts.delete(key)
+        }
+      }
+    }
+    // Index env times by sample_id → sorted list of {turn_order, time}
     const envBySample: Record<number, Array<{ turn_order: number; time: number }>> = {}
-    for (const et of envTimes) {
-      if (!envBySample[et.sample_idx]) envBySample[et.sample_idx] = []
-      envBySample[et.sample_idx].push({ turn_order: et.turn_order, time: et.time })
+    for (const es of envSpans) {
+      if (!envBySample[es.sample_id]) envBySample[es.sample_id] = []
+      envBySample[es.sample_id].push({
+        turn_order: es.generation_idx,
+        time: es.end_time - es.start_time,
+      })
     }
     for (const arr of Object.values(envBySample)) {
       arr.sort((a, b) => a.turn_order - b.turn_order)
     }
-    // Index reward times by sample_idx
+    // Index reward times by sample_id
     const rewardBySample: Record<number, number> = {}
-    for (const rt of rewardTimes) {
-      rewardBySample[rt.sample_idx] = rt.time
+    for (const rs of rewardSpans) {
+      rewardBySample[rs.sample_id] = rs.end_time - rs.start_time
     }
     return { envBySample, rewardBySample }
   }, [groupEventsData])
@@ -691,15 +752,6 @@ function TimelineFooter({
       for (const event of events) {
         minTime = Math.min(minTime, event.start_time)
         maxTime = Math.max(maxTime, event.end_time)
-        // Also account for per-event timing fields
-        let eventEnd = event.end_time
-        if (event.environment_response_time && event.environment_response_time > 0) {
-          eventEnd += event.environment_response_time
-        }
-        if (event.compute_reward_time && event.compute_reward_time > 0) {
-          eventEnd += event.compute_reward_time
-        }
-        maxTime = Math.max(maxTime, eventEnd)
       }
       // Account for env response and compute reward durations from separate timing props
       if (groupTimingData) {
@@ -718,20 +770,17 @@ function TimelineFooter({
         maxTime = Math.max(maxTime, cursor)
       }
     }
-    // Account for inflight compute_reward extending to snapshot_time
-    if (inflightData?.running_compute_reward?.length && inflightData.snapshot_time && selectedRequest) {
-      for (const gen of inflightData.running_compute_reward) {
-        if (gen.group_id === selectedRequest.groupId) {
-          maxTime = Math.max(maxTime, inflightData.snapshot_time)
-        }
-      }
-    }
-    // Account for inflight env_response extending to snapshot_time
-    if (inflightData?.running_env_response?.length && inflightData.snapshot_time && selectedRequest) {
-      for (const gen of inflightData.running_env_response) {
-        if (gen.group_id === selectedRequest.groupId) {
-          maxTime = Math.max(maxTime, inflightData.snapshot_time)
-        }
+    // Account for inflight items extending to snapshot timestamp
+    if (inflightData?.timestamp && selectedRequest) {
+      const snapshotTime = inflightData.timestamp
+      const hasInflightReward = inflightData.inflight_rewards?.some(
+        (r) => r.sample_id === selectedRequest.sampleId
+      )
+      const hasInflightEnv = inflightData.inflight_env_responses?.some(
+        (r) => r.sample_id === selectedRequest.sampleId
+      )
+      if (hasInflightReward || hasInflightEnv) {
+        maxTime = Math.max(maxTime, snapshotTime)
       }
     }
     if (minTime === Infinity) return null
@@ -813,12 +862,8 @@ function TimelineFooter({
     )
   }, [highlightDiscarded, footerSampleStatuses])
 
-  const isCanceledGroup = useMemo(() => {
-    if (!groupEventsBySampleId) return false
-    return Object.values(groupEventsBySampleId).some((events) =>
-      events.some((e) => e.is_canceled)
-    )
-  }, [groupEventsBySampleId])
+  // RolloutSpan doesn't carry is_canceled — cancellation is not tracked
+  const isCanceledGroup = false
 
   // Check if the selected group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
