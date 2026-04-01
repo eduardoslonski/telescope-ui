@@ -4080,7 +4080,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             SELECT MIN(timestamp) as min_time, MAX(timestamp) as max_time
             FROM events_rollout WHERE run_id = ?
             UNION ALL
-            SELECT MIN(start_time) as min_time, MAX(end_time) as max_time
+            SELECT MIN(timestamp) as min_time, MAX(timestamp) as max_time
             FROM events_infra WHERE run_id = ?
         )
         """,
