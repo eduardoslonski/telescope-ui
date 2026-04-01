@@ -6495,38 +6495,27 @@ def get_step_metrics(req: StepMetricsRequest):
     except Exception as e:
         log.warning(f"[API] Could not compute trainer weight_broadcast metric: {e}")
     
-    # Compute inference weight_broadcast timing (from events_rollout table)
-    # With thin schema: pivot start/end phases to get wall clock time.
-    # events_rollout doesn't have a step column; use group_id to group broadcast events.
+    # Compute inference weight_sync timing (from events_infra table)
+    # events_infra has step directly; pair start/end by step + server_id.
     try:
         weight_broadcast_inference_query = """
-            WITH wb_starts AS (
-                SELECT group_id, MIN(timestamp) as start_time
-                FROM events_rollout
-                WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'start'
-                GROUP BY group_id
-            ),
-            wb_ends AS (
-                SELECT group_id, MAX(timestamp) as end_time
-                FROM events_rollout
-                WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'end'
-                GROUP BY group_id
-            ),
-            wb_with_step AS (
-                SELECT p.step, s.start_time, e.end_time
-                FROM wb_starts s
-                JOIN wb_ends e ON s.group_id = e.group_id
-                LEFT JOIN prompts p ON p.run_id = ? AND p.group_id = s.group_id
-                WHERE p.step IS NOT NULL
+            WITH wb_paired AS (
+                SELECT step, server_id,
+                    MIN(CASE WHEN phase = 'start' THEN timestamp END) as start_time,
+                    MAX(CASE WHEN phase = 'end' THEN timestamp END) as end_time
+                FROM events_infra
+                WHERE run_id = ? AND event_type = 'weight_sync'
+                GROUP BY step, server_id
             )
             SELECT step, MAX(end_time) - MIN(start_time) as wall_clock_time
-            FROM wb_with_step
+            FROM wb_paired
+            WHERE step IS NOT NULL AND start_time IS NOT NULL AND end_time IS NOT NULL
             GROUP BY step
             ORDER BY step ASC
         """
         weight_broadcast_inference_rows = con.execute(
             weight_broadcast_inference_query,
-            [req.run_path, req.run_path, req.run_path]
+            [req.run_path]
         ).fetchall()
         
         for row in weight_broadcast_inference_rows:
@@ -6548,7 +6537,7 @@ def get_step_metrics(req: StepMetricsRequest):
                         "value": float(wall_clock_time),
                     })
     except Exception as e:
-        log.warning(f"[API] Could not compute inference weight_broadcast metric: {e}")
+        log.warning(f"[API] Could not compute inference weight_sync metric: {e}")
 
     # =========================================================================
     # Compute inference timing metrics (generation/reward/idle breakdown)
@@ -6605,12 +6594,12 @@ def get_step_metrics(req: StepMetricsRequest):
                 request_starts AS (
                     SELECT sample_id, group_id, generation_idx, timestamp as start_time
                     FROM events_rollout
-                    WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+                    WHERE run_id = ? AND event_type = 'generation' AND phase = 'start'
                 ),
                 request_ends AS (
                     SELECT sample_id, group_id, generation_idx, timestamp as end_time
                     FROM events_rollout
-                    WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+                    WHERE run_id = ? AND event_type = 'generation' AND phase = 'end'
                 ),
                 canceled_samples AS (
                     SELECT DISTINCT sample_id, group_id
@@ -6618,13 +6607,20 @@ def get_step_metrics(req: StepMetricsRequest):
                     WHERE run_id = ? AND event_type = 'canceled'
                 ),
                 request_events AS (
-                    SELECT rs.sample_id, rs.group_id, rs.start_time, re.end_time,
+                    SELECT rs.sample_id, rs.group_id, rs.generation_idx, rs.start_time, re.end_time,
                            CASE WHEN cs.sample_id IS NOT NULL THEN true ELSE false END as is_canceled
                     FROM request_starts rs
                     LEFT JOIN request_ends re ON rs.sample_id IS NOT DISTINCT FROM re.sample_id
                         AND rs.group_id IS NOT DISTINCT FROM re.group_id
                         AND rs.generation_idx IS NOT DISTINCT FROM re.generation_idx
                     LEFT JOIN canceled_samples cs ON rs.sample_id = cs.sample_id AND rs.group_id = cs.group_id
+                ),
+                gen_timing AS (
+                    SELECT sample_id, generation_idx, inference_time
+                    FROM generations WHERE run_id = ?
+                    UNION ALL
+                    SELECT sample_id, generation_idx, inference_time
+                    FROM generations_discarded WHERE run_id = ?
                 ),
                 -- last event per sample (for compute_reward attribution)
                 last_event_per_sample AS (
@@ -6645,7 +6641,7 @@ def get_step_metrics(req: StepMetricsRequest):
                     SELECT
                         sw.step,
                         GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
-                        NULL as inference_time,
+                        gt.inference_time,
                         CASE
                             WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
                             WHEN si.status IS NOT NULL THEN si.status
@@ -6654,6 +6650,9 @@ def get_step_metrics(req: StepMetricsRequest):
                     FROM request_events re
                     JOIN step_windows sw
                         ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
+                    LEFT JOIN gen_timing gt
+                        ON gt.sample_id IS NOT DISTINCT FROM re.sample_id
+                        AND gt.generation_idx IS NOT DISTINCT FROM re.generation_idx
                     LEFT JOIN sample_info si
                         ON si.group_id = re.group_id AND si.sample_id = re.sample_id
                 ),
@@ -6707,7 +6706,7 @@ def get_step_metrics(req: StepMetricsRequest):
                 LEFT JOIN cr_agg c ON c.step = sw.step
                 WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
                 ORDER BY sw.step ASC
-            """, [req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path]).fetchall()
+            """, [req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path]).fetchall()
 
             for row in timing_rows:
                 step = row[0]
@@ -7823,34 +7822,24 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute trainer weight_broadcast metric: {e}")
 
     # =====================================================================
-    # 23. Inference weight_broadcast timing (thin schema: pivot start/end phases)
+    # 23. Inference weight_sync timing (from events_infra; pair start/end by step + server_id)
     # =====================================================================
     try:
         for row in con.execute(f"""
-            WITH wb_starts AS (
-                SELECT run_id, group_id, MIN(timestamp) as start_time
-                FROM events_rollout
-                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND phase = 'start'
-                GROUP BY run_id, group_id
-            ),
-            wb_ends AS (
-                SELECT run_id, group_id, MAX(timestamp) as end_time
-                FROM events_rollout
-                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_broadcast' AND phase = 'end'
-                GROUP BY run_id, group_id
-            ),
-            wb_with_step AS (
-                SELECT s.run_id, p.step, s.start_time, e.end_time
-                FROM wb_starts s
-                JOIN wb_ends e ON s.run_id = e.run_id AND s.group_id = e.group_id
-                LEFT JOIN prompts p ON p.run_id = s.run_id AND p.group_id = s.group_id
-                WHERE p.step IS NOT NULL
+            WITH wb_paired AS (
+                SELECT run_id, step, server_id,
+                    MIN(CASE WHEN phase = 'start' THEN timestamp END) as start_time,
+                    MAX(CASE WHEN phase = 'end' THEN timestamp END) as end_time
+                FROM events_infra
+                WHERE run_id IN ({a_in_ph}) AND event_type = 'weight_sync'
+                GROUP BY run_id, step, server_id
             )
             SELECT run_id, step, MAX(end_time) - MIN(start_time) as wall_clock_time
-            FROM wb_with_step
+            FROM wb_paired
+            WHERE step IS NOT NULL AND start_time IS NOT NULL AND end_time IS NOT NULL
             GROUP BY run_id, step
             ORDER BY run_id, step ASC
-        """, active_runs + active_runs).fetchall():
+        """, active_runs).fetchall():
             rid, step, wc_time = row
             if req.start_step is not None and step < req.start_step:
                 continue
@@ -7915,16 +7904,16 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                                batch_time as step_end
                         FROM batch_events CROSS JOIN training_start t
                     ),
-                    -- Pivot start/end phases into request events
+                    -- Pivot start/end phases into generation events
                     request_starts AS (
                         SELECT sample_id, group_id, generation_idx, timestamp as start_time
                         FROM events_rollout
-                        WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+                        WHERE run_id = ? AND event_type = 'generation' AND phase = 'start'
                     ),
                     request_ends AS (
                         SELECT sample_id, group_id, generation_idx, timestamp as end_time
                         FROM events_rollout
-                        WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+                        WHERE run_id = ? AND event_type = 'generation' AND phase = 'end'
                     ),
                     canceled_samples AS (
                         SELECT DISTINCT sample_id, group_id
@@ -7932,13 +7921,20 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         WHERE run_id = ? AND event_type = 'canceled'
                     ),
                     request_events AS (
-                        SELECT rs.sample_id, rs.group_id, rs.start_time, re.end_time,
+                        SELECT rs.sample_id, rs.group_id, rs.generation_idx, rs.start_time, re.end_time,
                                CASE WHEN cs.sample_id IS NOT NULL THEN true ELSE false END as is_canceled
                         FROM request_starts rs
                         LEFT JOIN request_ends re ON rs.sample_id IS NOT DISTINCT FROM re.sample_id
                             AND rs.group_id IS NOT DISTINCT FROM re.group_id
                             AND rs.generation_idx IS NOT DISTINCT FROM re.generation_idx
                         LEFT JOIN canceled_samples cs ON rs.sample_id = cs.sample_id AND rs.group_id = cs.group_id
+                    ),
+                    gen_timing AS (
+                        SELECT sample_id, generation_idx, inference_time
+                        FROM generations WHERE run_id = ?
+                        UNION ALL
+                        SELECT sample_id, generation_idx, inference_time
+                        FROM generations_discarded WHERE run_id = ?
                     ),
                     last_event_per_sample AS (
                         SELECT group_id, sample_id, MAX(end_time) as last_end
@@ -7956,7 +7952,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         SELECT
                             sw.step,
                             GREATEST(0, LEAST(re.end_time, sw.step_end) - GREATEST(re.start_time, sw.step_start)) as clipped_gen,
-                            NULL as inference_time,
+                            gt.inference_time,
                             CASE
                                 WHEN COALESCE(re.is_canceled, false) THEN 'canceled'
                                 WHEN si.status IS NOT NULL THEN si.status
@@ -7965,6 +7961,9 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                         FROM request_events re
                         JOIN step_windows sw
                             ON re.end_time > sw.step_start AND re.end_time <= sw.step_end
+                        LEFT JOIN gen_timing gt
+                            ON gt.sample_id IS NOT DISTINCT FROM re.sample_id
+                            AND gt.generation_idx IS NOT DISTINCT FROM re.generation_idx
                         LEFT JOIN sample_info si
                             ON si.group_id = re.group_id AND si.sample_id = re.sample_id
                     ),
@@ -8017,7 +8016,7 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
                     LEFT JOIN cr_agg c ON c.step = sw.step
                     WHERE (g.step IS NOT NULL OR c.step IS NOT NULL)
                     ORDER BY sw.step ASC
-                """, [run_id, run_id, run_id, run_id, run_id, run_id, run_id]).fetchall()
+                """, [run_id, run_id, run_id, run_id, run_id, run_id, run_id, run_id, run_id]).fetchall()
 
                 for row in timing_rows:
                     step = row[0]
@@ -8215,12 +8214,12 @@ def get_inference_performance(req: InferencePerformanceRequest):
         WITH request_starts AS (
             SELECT sample_id, group_id, generation_idx, timestamp as start_time
             FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+            WHERE run_id = ? AND event_type = 'generation' AND phase = 'start'
         ),
         request_ends AS (
             SELECT sample_id, group_id, generation_idx, timestamp as end_time
             FROM events_rollout
-            WHERE run_id = ? AND event_type = 'request' AND phase = 'end'
+            WHERE run_id = ? AND event_type = 'generation' AND phase = 'end'
         ),
         canceled_samples AS (
             SELECT DISTINCT sample_id, group_id
@@ -8354,14 +8353,69 @@ def get_inference_performance(req: InferencePerformanceRequest):
         _rp3 + [bucket, bucket],
     ).fetchall()
 
-    # vLLM timing metrics (prefill, decode, queue, ttft, inference, e2e) are no longer
-    # in events_rollout (thin schema). Return empty results for these.
-    avg_time_prefill = []
-    avg_time_decode = []
-    avg_time_queue = []
-    avg_time_ttft = []
-    avg_time_inference = []
-    avg_time_e2e = []
+    # vLLM timing metrics from generations table, bucketed by generation end_time.
+    try:
+        gen_timing_rows = con.execute(
+            """
+            WITH gen_end_times AS (
+                SELECT sample_id, group_id, generation_idx, timestamp as end_time
+                FROM events_rollout
+                WHERE run_id = ? AND event_type = 'generation' AND phase = 'end'
+            ),
+            gen_with_time AS (
+                SELECT g.queue_time, g.ttft, g.prefill_time, g.decode_time,
+                       g.inference_time, g.e2e_latency, g.tokens,
+                       re.end_time
+                FROM generations g
+                JOIN gen_end_times re
+                    ON g.sample_id IS NOT DISTINCT FROM re.sample_id
+                    AND g.group_id IS NOT DISTINCT FROM re.group_id
+                    AND g.generation_idx IS NOT DISTINCT FROM re.generation_idx
+                WHERE g.run_id = ?
+                UNION ALL
+                SELECT g.queue_time, g.ttft, g.prefill_time, g.decode_time,
+                       g.inference_time, g.e2e_latency, g.tokens,
+                       re.end_time
+                FROM generations_discarded g
+                JOIN gen_end_times re
+                    ON g.sample_id IS NOT DISTINCT FROM re.sample_id
+                    AND g.group_id IS NOT DISTINCT FROM re.group_id
+                    AND g.generation_idx IS NOT DISTINCT FROM re.generation_idx
+                WHERE g.run_id = ?
+            )
+            SELECT
+                FLOOR(end_time / ?) * ? as bucket_time,
+                AVG(CASE WHEN queue_time > 0 THEN queue_time END) as avg_queue,
+                AVG(CASE WHEN ttft > 0 THEN ttft END) as avg_ttft,
+                AVG(CASE WHEN prefill_time > 0 THEN prefill_time END) as avg_prefill,
+                AVG(CASE WHEN decode_time > 0 THEN decode_time END) as avg_decode,
+                AVG(CASE WHEN inference_time > 0 THEN inference_time END) as avg_inference,
+                AVG(CASE WHEN e2e_latency > 0 THEN e2e_latency END) as avg_e2e,
+                AVG(CASE WHEN inference_time > 0 AND tokens > 0 THEN tokens / inference_time END) as avg_tps,
+                SUM(tokens) as total_tokens
+            FROM gen_with_time
+            WHERE end_time IS NOT NULL
+            GROUP BY bucket_time
+            ORDER BY bucket_time ASC
+            """,
+            [req.run_path, req.run_path, req.run_path, bucket, bucket],
+        ).fetchall()
+
+        avg_time_queue = [(row[0], row[1]) for row in gen_timing_rows if row[1] is not None]
+        avg_time_ttft = [(row[0], row[2]) for row in gen_timing_rows if row[2] is not None]
+        avg_time_prefill = [(row[0], row[3]) for row in gen_timing_rows if row[3] is not None]
+        avg_time_decode = [(row[0], row[4]) for row in gen_timing_rows if row[4] is not None]
+        avg_time_inference = [(row[0], row[5]) for row in gen_timing_rows if row[5] is not None]
+        avg_time_e2e = [(row[0], row[6]) for row in gen_timing_rows if row[6] is not None]
+    except Exception as e:
+        log.warning(f"[API] Could not compute generation timing metrics: {e}")
+        avg_time_prefill = []
+        avg_time_decode = []
+        avg_time_queue = []
+        avg_time_ttft = []
+        avg_time_inference = []
+        avg_time_e2e = []
+        gen_timing_rows = []
 
     # Average compute reward time per bucket
     # compute_reward_time lives in samples_data / samples_data_discarded,
@@ -8412,10 +8466,9 @@ def get_inference_performance(req: InferencePerformanceRequest):
         _rp3 + [bucket, bucket],
     ).fetchall()
 
-    # Tokens per second metrics are not available from events_rollout thin schema
-    # (rollout_tokens is not stored). Return empty results.
-    avg_tokens_per_second_generation = []
-    tokens_per_second_throughput = []
+    # Tokens per second metrics from the generation timing query above.
+    avg_tokens_per_second_generation = [(row[0], row[7]) for row in gen_timing_rows if row[7] is not None]
+    tokens_per_second_throughput = [(row[0], row[8] / bucket) for row in gen_timing_rows if row[8] is not None and bucket > 0]
 
     # --- vLLM metrics bucketed for inference performance ---
     # Requests running per bucket: average per server within bucket, then sum across servers
@@ -8525,7 +8578,7 @@ def get_inference_performance(req: InferencePerformanceRequest):
         """
         SELECT COUNT(DISTINCT COALESCE(server_id, 0))
         FROM events_rollout
-        WHERE run_id = ? AND event_type = 'request' AND phase = 'start'
+        WHERE run_id = ? AND event_type = 'generation' AND phase = 'start'
         """,
         [req.run_path],
     ).fetchone()
@@ -8553,28 +8606,24 @@ def get_inference_performance(req: InferencePerformanceRequest):
             if g.get("start_time") is not None
         ]
 
-    # Fetch weight_broadcast events for generating vs weight sync breakdown
-    # Fetch weight_broadcast events (pivoted from start/end phases)
+    # Fetch weight_sync events for generating vs weight sync breakdown
+    # events_infra has step + server_id; pair start/end phases per (step, server_id).
     weight_broadcast_events = con.execute(
         """
-        WITH wb_starts AS (
-            SELECT group_id, generation_idx, timestamp as start_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'start'
-        ),
-        wb_ends AS (
-            SELECT group_id, generation_idx, timestamp as end_time
-            FROM events_rollout
-            WHERE run_id = ? AND event_type = 'weight_broadcast' AND phase = 'end'
+        WITH wb_paired AS (
+            SELECT step, server_id,
+                MIN(CASE WHEN phase = 'start' THEN timestamp END) as start_time,
+                MAX(CASE WHEN phase = 'end' THEN timestamp END) as end_time
+            FROM events_infra
+            WHERE run_id = ? AND event_type = 'weight_sync'
+            GROUP BY step, server_id
         )
-        SELECT s.start_time, e.end_time
-        FROM wb_starts s
-        JOIN wb_ends e ON s.group_id IS NOT DISTINCT FROM e.group_id
-            AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
-        WHERE s.start_time IS NOT NULL AND e.end_time IS NOT NULL
-        ORDER BY s.start_time ASC
+        SELECT start_time, end_time
+        FROM wb_paired
+        WHERE start_time IS NOT NULL AND end_time IS NOT NULL
+        ORDER BY start_time ASC
         """,
-        [req.run_path, req.run_path],
+        [req.run_path],
     ).fetchall()
 
     # Step times (for vertical lines)
