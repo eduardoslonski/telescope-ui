@@ -433,13 +433,28 @@ class EvalStepMetricsRequest(BaseModel):
 class SampleDetailsRequest(BaseModel):
     run_path: str
     group_id: int
-    sample_idx: int
+    sample_idx: int | None = None  # For eval lookups (eval dataset index)
+    sample_id: int | None = None   # For training lookups (run-wide unique ID)
     is_eval: bool = False
+
+    @property
+    def resolved_sample_key(self) -> int:
+        """Return sample_id if set, otherwise sample_idx (backward compat)."""
+        if self.sample_id is not None:
+            return self.sample_id
+        return self.sample_idx if self.sample_idx is not None else -1
 
 
 class SampleStatusKey(BaseModel):
     group_id: int
-    sample_idx: int
+    sample_id: int | None = None
+    sample_idx: int | None = None  # backward compat
+
+    @property
+    def resolved_id(self) -> int:
+        if self.sample_id is not None:
+            return self.sample_id
+        return self.sample_idx if self.sample_idx is not None else -1
 
 
 class SampleStatusesRequest(BaseModel):
@@ -4210,29 +4225,25 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         for row in rollout_rows
     ]
 
-    # Fetch infra events from events_infra
+    # Fetch infra events from events_infra (thin schema: timestamp, event_type, phase, step, server_id, sandbox_id)
     infra_rows = con.execute(
         """
-        SELECT event_type, server, node_id, tp_group_id, tp_size, start_time, end_time,
-               step, server_lane
+        SELECT timestamp, event_type, phase, step, server_id, sandbox_id
         FROM events_infra
-        WHERE run_id = ? AND start_time < ? AND end_time > ?
-        ORDER BY start_time ASC
+        WHERE run_id = ? AND timestamp >= ? AND timestamp < ?
+        ORDER BY timestamp ASC
         """,
-        [req.run_path, interval_end, interval_start],
+        [req.run_path, interval_start, interval_end],
     ).fetchall()
 
     infra_events = [
         {
-            "event_type": row[0],
-            "server": row[1],
-            "node_id": row[2],
-            "tp_group_id": row[3],
-            "tp_size": row[4],
-            "start_time": row[5],
-            "end_time": row[6],
-            "step": row[7],
-            "lane": row[8],
+            "timestamp": row[0],
+            "event_type": row[1],
+            "phase": row[2],
+            "step": row[3],
+            "server_id": row[4],
+            "sandbox_id": row[5],
         }
         for row in infra_rows
     ]
