@@ -37,6 +37,7 @@ import type {
   LogsResponse,
   LogsSummaryResponse,
   InflightSnapshot,
+  RolloutEvent,
 } from "@/lib/types"
 
 // ============================================================================
@@ -580,7 +581,7 @@ export function useRolloutEventsByGroup(
   groupId: number | null,
   enabled: boolean
 ) {
-  return useQuery<{ events: unknown[] }>({
+  return useQuery<{ events: RolloutEvent[] }>({
     queryKey: ["rollout-events-by-group", runPath, groupId],
     queryFn: async () => {
       const response = await fetch(`${API_BASE}/events/inference-by-group`, {

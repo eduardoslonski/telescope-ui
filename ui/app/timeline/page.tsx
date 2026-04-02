@@ -44,7 +44,7 @@ import {
   useSampleStatuses,
   useSampleDetails,
 } from "@/hooks/use-run-data"
-import type { GpuMetric, RolloutEvent, TrainerEvent, InflightSnapshot } from "@/lib/types"
+import type { GpuMetric, TrainerEvent, InflightSnapshot } from "@/lib/types"
 import { parseSetupJson, asObject, asNumber } from "@/components/topology-viewer"
 
 function parseDeviceList(value: unknown): number[] {
@@ -647,7 +647,7 @@ function TimelineFooter({
     const snapshotTime = inflightData?.timestamp ?? null
     // Convert pre-pivoted rollout events into spans
     const spans: RolloutSpan[] = []
-    for (const e of groupEventsData.events as RolloutEvent[]) {
+    for (const e of groupEventsData.events) {
       // In-progress generations have end_time null/0; use snapshot timestamp instead
       const isInflight = e.event_type === "generation" && !e.end_time && snapshotTime
       spans.push({
