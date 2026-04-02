@@ -2575,7 +2575,7 @@ def get_sample_details(req: SampleDetailsRequest):
 
             prompt_rows = con.execute(
                 """
-                SELECT step, sample_idx, env, system_prompt, tokens_system_prompt, prompt, tokens_prompt
+                SELECT step, env, system_prompt, tokens_system_prompt, prompt, tokens_prompt
                 FROM prompts_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY sample_idx
@@ -2586,19 +2586,19 @@ def get_sample_details(req: SampleDetailsRequest):
             prompts = [
                 {
                     "step": row[0],
-                    "group_id": row[1],
-                    "env": row[2],
-                    "system_prompt": row[3],
-                    "tokens_system_prompt": row[4],
-                    "prompt": row[5],
-                    "tokens_prompt": row[6],
+                    "group_id": req.group_id,
+                    "env": row[1],
+                    "system_prompt": row[2],
+                    "tokens_system_prompt": row[3],
+                    "prompt": row[4],
+                    "tokens_prompt": row[5],
                 }
                 for row in prompt_rows
             ]
 
             gen_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason
+                SELECT step, sample_id, generation_idx, content, tokens, prompt_tokens, tool_call_count, stop_reason, agent_id
                 FROM generations_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, generation_idx
@@ -2609,21 +2609,22 @@ def get_sample_details(req: SampleDetailsRequest):
             generations = [
                 {
                     "step": row[0],
-                    "sample_idx": row[1],
-                    "completion_idx": row[2],
-                    "generation_idx": row[3],
-                    "content": decompress_blob(row[4]),
-                    "tokens": row[5],
-                    "prompt_tokens": row[6],
-                    "tool_call_count": row[7],
-                    "stop_reason": row[8],
+                    "group_id": req.group_id,
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "agent_id": row[8] or 0,
+                    "generation_idx": row[2],
+                    "content": decompress_blob(row[3]),
+                    "tokens": row[4],
+                    "prompt_tokens": row[5],
+                    "tool_call_count": row[6],
+                    "stop_reason": row[7],
                 }
                 for row in gen_rows
             ]
 
             env_resp_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, generation_idx, content, turn_type, tokens, response_time
+                SELECT step, sample_id, generation_idx, content, turn_type, tokens, response_time, agent_id
                 FROM env_responses_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, generation_idx
@@ -2634,22 +2635,23 @@ def get_sample_details(req: SampleDetailsRequest):
             env_responses = [
                 {
                     "step": row[0],
-                    "sample_idx": row[1],
-                    "completion_idx": row[2],
-                    "generation_idx": row[3],
-                    "content": decompress_blob(row[4]),
-                    "turn_type": row[5],
-                    "tokens": row[6],
-                    "response_time": row[7],
+                    "group_id": req.group_id,
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "agent_id": row[7] or 0,
+                    "generation_idx": row[2],
+                    "content": decompress_blob(row[3]),
+                    "turn_type": row[4],
+                    "tokens": row[5],
+                    "response_time": row[6],
                 }
                 for row in env_resp_rows
             ]
 
             tc_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, generation_idx, tool_call_idx,
+                SELECT step, sample_id, generation_idx, tool_call_idx,
                        env_response_generation_idx, tool_name, arguments, raw_text, result,
-                       success, error, exit_code, truncated, result_tokens, sandbox_id
+                       success, error, exit_code, truncated, result_tokens, sandbox_id, agent_id
                 FROM tool_calls_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, generation_idx, tool_call_idx
@@ -2660,28 +2662,29 @@ def get_sample_details(req: SampleDetailsRequest):
             tool_calls = [
                 {
                     "step": row[0],
-                    "sample_idx": row[1],
-                    "completion_idx": row[2],
-                    "generation_idx": row[3],
-                    "tool_call_idx": row[4],
-                    "env_response_generation_idx": row[5],
-                    "tool_name": row[6],
-                    "arguments": row[7],
-                    "raw_text": row[8],
-                    "result": row[9],
-                    "success": row[10],
-                    "error": row[11],
-                    "exit_code": row[12],
-                    "truncated": row[13],
-                    "result_tokens": row[14],
-                    "sandbox_id": row[15],
+                    "group_id": req.group_id,
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "agent_id": row[15] or 0,
+                    "generation_idx": row[2],
+                    "tool_call_idx": row[3],
+                    "env_response_generation_idx": row[4],
+                    "tool_name": row[5],
+                    "arguments": row[6],
+                    "raw_text": row[7],
+                    "result": row[8],
+                    "success": row[9],
+                    "error": row[10],
+                    "exit_code": row[11],
+                    "truncated": row[12],
+                    "result_tokens": row[13],
+                    "sandbox_id": row[14],
                 }
                 for row in tc_rows
             ]
 
             samples_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, env, num_generations
+                SELECT step, sample_id, env, num_generations, stop_reason
                 FROM samples_data_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 """,
@@ -2691,20 +2694,21 @@ def get_sample_details(req: SampleDetailsRequest):
             samples_data = [
                 {
                     "step": row[0],
-                    "group_id": row[1],
-                    "sample_idx": row[2],
+                    "group_id": req.group_id,
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
                     "reward": None,
                     "advantage": None,
-                    "num_generations": row[4],
+                    "num_generations": row[3],
                     "total_tokens": None,
                     "raw_string": None,
+                    "stop_reason": row[4],
                 }
                 for row in samples_rows
             ]
 
             metrics_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, env, metric_name, value
+                SELECT step, sample_id, env, metric_name, value
                 FROM rollouts_metrics_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, metric_name
@@ -2715,17 +2719,17 @@ def get_sample_details(req: SampleDetailsRequest):
             rollout_metrics = [
                 {
                     "step": row[0],
-                    "sample_idx": row[2],
-                    "env": row[3],
-                    "metric_name": row[4],
-                    "value": row[5],
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "env": row[2],
+                    "metric_name": row[3],
+                    "value": row[4],
                 }
                 for row in metrics_rows
             ]
 
             golden_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, env, key, value
+                SELECT step, sample_id, env, key, value
                 FROM golden_answers_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, key
@@ -2736,17 +2740,17 @@ def get_sample_details(req: SampleDetailsRequest):
             golden_answers = [
                 {
                     "step": row[0],
-                    "sample_idx": row[2],
-                    "env": row[3],
-                    "key": row[4],
-                    "value": row[5],
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "env": row[2],
+                    "key": row[3],
+                    "value": row[4],
                 }
                 for row in golden_rows
             ]
 
             info_rows = con.execute(
                 """
-                SELECT step, sample_idx, completion_idx, generation_idx, env, info_key, info_value, info_type
+                SELECT step, sample_id, generation_idx, env, info_key, info_value, info_type
                 FROM info_turns_eval
                 WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
                 ORDER BY completion_idx, generation_idx, info_key
@@ -2757,12 +2761,12 @@ def get_sample_details(req: SampleDetailsRequest):
             info_turns = [
                 {
                     "step": row[0],
-                    "sample_idx": row[2],
-                    "generation_idx": row[3],
-                    "env": row[4],
-                    "info_key": row[5],
-                    "info_value": row[6],
-                    "info_type": row[7],
+                    "sample_id": row[1] if row[1] is not None else req.resolved_sample_key,
+                    "generation_idx": row[2],
+                    "env": row[3],
+                    "info_key": row[4],
+                    "info_value": row[5],
+                    "info_type": row[6],
                 }
                 for row in info_rows
             ]
