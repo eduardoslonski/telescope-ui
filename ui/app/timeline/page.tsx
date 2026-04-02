@@ -661,6 +661,15 @@ function TimelineFooter({
         tool_call_idx: e.tool_call_idx ?? -1,
         server_id: e.server_id ?? -1,
         server_lane: e.server_lane ?? -1,
+        queue_time: e.queue_time,
+        time_to_first_token: e.time_to_first_token,
+        prefill_time: e.prefill_time,
+        decode_time: e.decode_time,
+        inference_time: e.inference_time,
+        e2e_latency: e.e2e_latency,
+        rollout_tokens: e.rollout_tokens,
+        prompt_tokens: e.prompt_tokens,
+        off_policy_steps: e.off_policy_steps,
         ...(isInflight ? { phase: "inflight" as const } : {}),
       })
     }

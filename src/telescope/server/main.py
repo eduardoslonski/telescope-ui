@@ -3448,6 +3448,73 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
 
     events = list(events_by_key.values())
 
+    # Enrich generation events with timing data from generations tables
+    gen_sample_ids = list({e["sample_id"] for e in events if e["event_type"] == "generation" and e["sample_id"] is not None and e["sample_id"] >= 0})
+    gen_rows = []
+    if gen_sample_ids:
+        gen_ids_clause = ", ".join(["?"] * len(gen_sample_ids))
+        gen_rows = con.execute(
+            f"""
+            SELECT sample_id, generation_idx, queue_time, ttft, prefill_time,
+                   decode_time, inference_time, e2e_latency, tokens, prompt_tokens
+            FROM (
+                SELECT sample_id, generation_idx, queue_time, ttft, prefill_time,
+                       decode_time, inference_time, e2e_latency, tokens, prompt_tokens
+                FROM generations WHERE run_id = ? AND group_id = ?
+                UNION ALL
+                SELECT sample_id, generation_idx, queue_time, ttft, prefill_time,
+                       decode_time, inference_time, e2e_latency, tokens, prompt_tokens
+                FROM generations_discarded WHERE run_id = ? AND group_id = ?
+                UNION ALL
+                SELECT sample_id, generation_idx, NULL, NULL, NULL,
+                       NULL, NULL, NULL, tokens, prompt_tokens
+                FROM generations_eval WHERE run_id = ? AND sample_id IN ({gen_ids_clause})
+            ) sub
+            """,
+            [req.run_path, req.group_id, req.run_path, req.group_id, req.run_path, *gen_sample_ids],
+        ).fetchall()
+    gen_timing = {}
+    for row in gen_rows:
+        gen_timing[(row[0], row[1])] = {
+            "queue_time": row[2],
+            "time_to_first_token": row[3],
+            "prefill_time": row[4],
+            "decode_time": row[5],
+            "inference_time": row[6],
+            "e2e_latency": row[7],
+            "rollout_tokens": row[8],
+            "prompt_tokens": row[9],
+        }
+
+    # Enrich generation events with off_policy_steps from samples_data
+    sample_ids_for_ops = list({e["sample_id"] for e in events if e["event_type"] == "generation" and e["sample_id"] is not None and e["sample_id"] >= 0})
+    ops_by_sample: dict[int, int | None] = {}
+    if sample_ids_for_ops:
+        ops_clause = ", ".join(["?"] * len(sample_ids_for_ops))
+        ops_rows = con.execute(
+            f"""
+            SELECT sample_id, off_policy_steps FROM (
+                SELECT sample_id, off_policy_steps FROM samples_data
+                WHERE run_id = ? AND sample_id IN ({ops_clause})
+                UNION ALL
+                SELECT sample_id, off_policy_steps FROM samples_data_discarded
+                WHERE run_id = ? AND sample_id IN ({ops_clause})
+            ) sub
+            """,
+            [req.run_path, *sample_ids_for_ops, req.run_path, *sample_ids_for_ops],
+        ).fetchall()
+        for row in ops_rows:
+            ops_by_sample[row[0]] = row[1]
+
+    for ev in events:
+        if ev["event_type"] == "generation":
+            key = (ev["sample_id"], ev["generation_idx"])
+            if key in gen_timing:
+                ev.update(gen_timing[key])
+            ops = ops_by_sample.get(ev["sample_id"])
+            if ops is not None:
+                ev["off_policy_steps"] = ops
+
     # Fetch environment response_time from env_responses (including discarded) for this group
     env_time_rows = con.execute(
         """
