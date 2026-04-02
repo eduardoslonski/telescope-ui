@@ -3415,8 +3415,13 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
         [req.run_path, req.group_id],
     ).fetchall()
 
-    # Build events by pivoting start/end phases
+    # Build events by pivoting start/end phases.
+    # For events with generation_idx=-1 (env_response, reward), multiple
+    # start/end pairs share the same (event_type, sample_id, generation_idx,
+    # tool_call_idx) tuple, so we use occurrence counters to disambiguate.
     events_by_key: dict[tuple, dict] = {}
+    start_counters: dict[tuple, int] = {}
+    end_counters: dict[tuple, int] = {}
     for row in rows:
         event_type = row[0]
         sample_id = row[1]
@@ -3428,40 +3433,34 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
         phase = row[7]
         timestamp = row[8]
 
-        key = (event_type, sample_id, generation_idx, tool_call_idx)
+        base_key = (event_type, sample_id, generation_idx, tool_call_idx)
+        if phase == 'start':
+            n = start_counters.get(base_key, 0)
+            start_counters[base_key] = n + 1
+            key = (*base_key, n)
+        elif phase == 'end':
+            n = end_counters.get(base_key, 0)
+            end_counters[base_key] = n + 1
+            key = (*base_key, n)
+        else:
+            key = (*base_key, 0)
+
         if key not in events_by_key:
             events_by_key[key] = {
                 "event_type": event_type,
-                "server": server_id,
-                "node_id": None,
-                "tp_group_id": None,
-                "tp_size": None,
                 "start_time": None,
                 "end_time": None,
-                "prompt_tokens": None,
-                "rollout_tokens": None,
                 "sample_id": sample_id,
                 "group_id": group_id,
                 "agent_id": agent_id,
                 "generation_idx": generation_idx,
-                "vllm_request_id": None,
-                "queue_time": None,
-                "time_to_first_token": None,
-                "prefill_time": None,
-                "decode_time": None,
-                "inference_time": None,
-                "e2e_latency": None,
-                "max_tokens": None,
-                "lane": None,
-                "is_eval": False,
-                "step": None,
-                "is_canceled": False,
-                "off_policy_steps": None,
-                "environment_response_time": None,
-                "compute_reward_time": None,
+                "tool_call_idx": tool_call_idx,
+                "server_id": server_id,
+                "server_lane": None,
             }
         if phase == 'start':
             events_by_key[key]["start_time"] = timestamp
+            events_by_key[key]["server_id"] = server_id
         elif phase == 'end':
             events_by_key[key]["end_time"] = timestamp
         elif phase is None:

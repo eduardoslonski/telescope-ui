@@ -22,6 +22,7 @@ import {
   timelinePageAtom,
   timelineIntervalAtom,
   inferenceHighlightDiscardedAtom,
+  inferenceShowEnvResponseAtom,
   inferenceShowComputeRewardAtom,
   darkModeAtom,
 } from "@/lib/atoms"
@@ -832,6 +833,7 @@ function TimelineFooter({
 
   // ---- Discard status for the selected group ----
   const highlightDiscarded = useAtomValue(inferenceHighlightDiscardedAtom)
+  const showEnvResponse = useAtomValue(inferenceShowEnvResponseAtom)
   const showComputeReward = useAtomValue(inferenceShowComputeRewardAtom)
   const footerSamples = useMemo(() => {
     if (!selectedRequest || !groupEventsBySampleId) return []
@@ -1062,7 +1064,7 @@ function TimelineFooter({
             timeBounds={groupTimeBounds}
             groupId={selectedRequest.groupId}
             runPath={runPath ?? ""}
-            envResponseSpans={groupEnvSpans}
+            envResponseSpans={showEnvResponse ? groupEnvSpans : undefined}
             rewardSpans={showComputeReward ? groupRewardSpans : undefined}
             inflightSnapshot={inflightData}
             onSampleClick={(sampleId) => {
