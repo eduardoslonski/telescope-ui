@@ -1360,6 +1360,32 @@ function InferenceSection({
     [selectedRequest, setSelectedRequest],
   )
 
+  // Map reward spans to servers for inline (non-separate) rendering
+  const inlineRewardSpansByServer = useMemo(() => {
+    if (!showComputeReward || separateComputeReward) return {}
+    // Build sample -> server mapping from generation spans (latest generation wins)
+    const sampleToServer: Record<number, { server: number; endTime: number }> = {}
+    for (const [serverId, spans] of Object.entries(enrichedSpansByServer)) {
+      const server = Number(serverId)
+      for (const span of spans) {
+        if (span.sample_id < 0) continue
+        const existing = sampleToServer[span.sample_id]
+        if (!existing || span.end_time > existing.endTime) {
+          sampleToServer[span.sample_id] = { server, endTime: span.end_time }
+        }
+      }
+    }
+    // Group reward spans by server
+    const byServer: Record<number, RolloutSpan[]> = {}
+    for (const span of rewardSpans) {
+      const entry = sampleToServer[span.sample_id]
+      if (!entry) continue
+      if (!byServer[entry.server]) byServer[entry.server] = []
+      byServer[entry.server].push(span)
+    }
+    return byServer
+  }, [showComputeReward, separateComputeReward, enrichedSpansByServer, rewardSpans])
+
   // Separate compute reward: use reward spans directly
   const computeRewardItems = useMemo(() => {
     if (!showComputeReward || !separateComputeReward) return []
@@ -1656,6 +1682,8 @@ function InferenceSection({
                         laneStart={childLaneStart}
                         maxLanesToShow={childMaxLanesToShow}
                         freeLaneAfterGeneration={freeLaneAfterGeneration}
+                        showComputeReward={showComputeReward && !separateComputeReward}
+                        rewardSpans={inlineRewardSpansByServer[server] || []}
                         rewardStartedKeys={rewardStartedKeys}
                         rewardEndedKeys={rewardEndedKeys}
                       />
@@ -2426,6 +2454,8 @@ function InferenceServerTimeline({
   laneStart = 0,
   maxLanesToShow,
   freeLaneAfterGeneration = false,
+  showComputeReward = false,
+  rewardSpans: rewardSpansProp = [],
   rewardStartedKeys,
   rewardEndedKeys,
 }: {
@@ -2447,6 +2477,8 @@ function InferenceServerTimeline({
   laneStart?: number
   maxLanesToShow?: number
   freeLaneAfterGeneration?: boolean
+  showComputeReward?: boolean
+  rewardSpans?: RolloutSpan[]
   rewardStartedKeys?: Set<string>
   rewardEndedKeys?: Set<string>
 }) {
@@ -2596,6 +2628,29 @@ function InferenceServerTimeline({
     actualNumLanes,
   ])
 
+  // Assign reward spans to lanes based on matching generation spans by sample_id
+  const rewardSpansWithLane = useMemo(() => {
+    if (!showComputeReward || rewardSpansProp.length === 0) return []
+    // Build sample_id -> lane from assigned generation spans (latest generation wins)
+    const sampleToLane: Record<number, { lane: number; endTime: number }> = {}
+    for (const span of assignedSpans) {
+      if (span.sample_id < 0) continue
+      const existing = sampleToLane[span.sample_id]
+      if (!existing || span.end_time > existing.endTime) {
+        sampleToLane[span.sample_id] = { lane: span.lane, endTime: span.end_time }
+      }
+    }
+    return rewardSpansProp
+      .filter((rw) => {
+        const entry = sampleToLane[rw.sample_id]
+        return entry != null
+      })
+      .map((rw) => ({
+        span: rw,
+        lane: sampleToLane[rw.sample_id].lane,
+      }))
+  }, [showComputeReward, rewardSpansProp, assignedSpans])
+
   return (
     <div>
       <div className="text-xs font-medium text-muted-foreground mb-0.5 flex items-center gap-1.5">
@@ -2698,6 +2753,109 @@ function InferenceServerTimeline({
                     rewardEndedKeys={rewardEndedKeys}
                   />
                 ))}
+
+                {/* Inline compute reward spans for this lane */}
+                {rewardSpansWithLane
+                  .filter((rw) => rw.lane === actualLaneIdx)
+                  .map((rw, rwIdx) => {
+                    const rwSpan = rw.span
+                    const rwDuration = rwSpan.end_time - rwSpan.start_time
+                    if (rwDuration <= 0 && rwSpan.phase !== "inflight") return null
+                    if (rwSpan.end_time <= intervalStart || rwSpan.start_time >= intervalEnd) return null
+
+                    const visibleStart = Math.max(rwSpan.start_time, intervalStart)
+                    const visibleEnd = Math.min(rwSpan.end_time, intervalEnd)
+                    const rwLeftPct = Math.max(0, ((visibleStart - intervalStart) / intervalDuration) * 100)
+                    const rwWidthPct = Math.max(0.3, ((visibleEnd - visibleStart) / intervalDuration) * 100)
+                    const rwDurationMs = rwDuration * 1000
+
+                    const isInflight = rwSpan.phase === "inflight"
+                    const isEval = false // reward spans are not eval in new model
+                    const isSelected = selectedRequest?.sampleId === rwSpan.sample_id
+                    const isInGroup = selectedRequest?.groupId === rwSpan.group_id
+                    const isDiscarded = (() => {
+                      if (!highlightDiscarded || rwSpan.sample_id < 0 || rwSpan.group_id < 0) return false
+                      if (!discardStatusReady) return true
+                      const key = `${rwSpan.group_id}:${rwSpan.sample_id}`
+                      return sampleStatusByKey.get(key) === "rollouts_discarded"
+                    })()
+
+                    const rwColor = isInflight
+                      ? (darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)")
+                      : isSelected
+                        ? isDiscarded
+                          ? (darkMode ? "#9ca3af" : "#6b7280")
+                          : isEval ? COMPUTE_METRICS_SELECTED_COLOR : COMPUTE_REWARD_SELECTED_COLOR
+                        : isInGroup && selectedRequest
+                          ? isDiscarded
+                            ? (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
+                            : isEval ? COMPUTE_METRICS_GROUP_COLOR : COMPUTE_REWARD_GROUP_COLOR
+                          : isDiscarded
+                            ? (darkMode ? COMPUTE_REWARD_DISCARDED_COLOR_DARK : COMPUTE_REWARD_DISCARDED_COLOR_LIGHT)
+                            : isEval ? COMPUTE_METRICS_COLOR : COMPUTE_REWARD_COLOR
+                    const rwOpacity = isInflight ? 0.85 : selectedRequest ? (isSelected || isInGroup ? 1 : 0.35) : 0.85
+                    const rwBorder = isInflight
+                      ? (darkMode ? "1.5px dashed rgba(250, 204, 21, 0.7)" : "1.5px dashed rgba(234, 179, 8, 0.7)")
+                      : eventBorderMedium
+
+                    // When freeLaneAfterGeneration, reward can overlap next generation — show smaller
+                    const rewardHeight = freeLaneAfterGeneration
+                      ? Math.max(3, Math.round(laneHeight * 0.4))
+                      : undefined
+                    const rewardTop = freeLaneAfterGeneration
+                      ? Math.round((laneHeight - rewardHeight!) / 2)
+                      : undefined
+
+                    return (
+                      <HoverTooltipBlock
+                        key={`reward-${rwIdx}`}
+                        className={`absolute group ${rwSpan.sample_id >= 0 ? "cursor-pointer" : "cursor-default"}`}
+                        style={{
+                          left: `${rwLeftPct}%`,
+                          width: `${Math.min(rwWidthPct, 100 - rwLeftPct)}%`,
+                          backgroundColor: rwColor,
+                          borderRadius: "1px",
+                          border: rwBorder,
+                          boxSizing: "border-box",
+                          opacity: rwOpacity,
+                          ...(freeLaneAfterGeneration
+                            ? { top: rewardTop, height: rewardHeight, zIndex: 2 }
+                            : { top: 0, bottom: 0 }),
+                        }}
+                        onClick={rwSpan.sample_id >= 0 ? () => onEventClick(rwSpan) : undefined}
+                        tooltip={
+                          <EventTooltip
+                            title="Compute Reward"
+                            titleSecondary={
+                              rwSpan.sample_id >= 0
+                                ? `Sample ${rwSpan.sample_id}`
+                                : undefined
+                            }
+                            color={rwColor}
+                            statusLabel={
+                              isInflight
+                                ? { text: "In Progress", className: "text-yellow-500" }
+                                : null
+                            }
+                            details={[
+                              {
+                                label: "Duration",
+                                value: formatDuration(rwDurationMs),
+                              },
+                              ...(rwSpan.group_id >= 0
+                                ? [{ label: "Group", value: String(rwSpan.group_id) }]
+                                : []),
+                              { label: "Server", value: String(server) },
+                              ...(displayNodeId !== undefined
+                                ? [{ label: "Node", value: String(displayNodeId) }]
+                                : []),
+                              { label: "Lane", value: String(actualLaneIdx) },
+                            ]}
+                          />
+                        }
+                      />
+                    )
+                  })}
               </div>
             )
           })}
