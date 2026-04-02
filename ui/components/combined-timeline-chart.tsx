@@ -247,15 +247,15 @@ function buildGenerationDetails(
   const details: Array<{ label: string; value: string }> = [
     { label: "Duration", value: formatDuration(durationMs) },
   ]
-  if (span.prompt_tokens) details.push({ label: "Prompt Tokens", value: formatNumberWithDelimiter(span.prompt_tokens) })
-  if (span.rollout_tokens) details.push({ label: "Completion Tokens", value: formatNumberWithDelimiter(span.rollout_tokens) })
-  if (span.rollout_tokens && durationMs > 0) details.push({ label: "Tokens/sec", value: (span.rollout_tokens / (durationMs / 1000)).toFixed(1) })
-  if (span.queue_time) details.push({ label: "Queue", value: formatDuration(span.queue_time * 1000) })
-  if (span.time_to_first_token) details.push({ label: "TTFT", value: formatDuration(span.time_to_first_token * 1000) })
-  if (span.prefill_time) details.push({ label: "Prefill", value: formatDuration(span.prefill_time * 1000) })
-  if (span.decode_time) details.push({ label: "Decode", value: formatDuration(span.decode_time * 1000) })
-  if (span.inference_time) details.push({ label: "Inference", value: formatDuration(span.inference_time * 1000) })
-  if (span.e2e_latency) details.push({ label: "E2E Latency", value: formatDuration(span.e2e_latency * 1000) })
+  if (span.prompt_tokens != null) details.push({ label: "Prompt Tokens", value: formatNumberWithDelimiter(span.prompt_tokens) })
+  if (span.rollout_tokens != null) details.push({ label: "Completion Tokens", value: formatNumberWithDelimiter(span.rollout_tokens) })
+  if (span.rollout_tokens != null && durationMs > 0) details.push({ label: "Tokens/sec", value: (span.rollout_tokens / (durationMs / 1000)).toFixed(1) })
+  if (span.queue_time != null) details.push({ label: "Queue", value: formatDuration(span.queue_time * 1000) })
+  if (span.time_to_first_token != null) details.push({ label: "TTFT", value: formatDuration(span.time_to_first_token * 1000) })
+  if (span.prefill_time != null) details.push({ label: "Prefill", value: formatDuration(span.prefill_time * 1000) })
+  if (span.decode_time != null) details.push({ label: "Decode", value: formatDuration(span.decode_time * 1000) })
+  if (span.inference_time != null) details.push({ label: "Inference", value: formatDuration(span.inference_time * 1000) })
+  if (span.e2e_latency != null) details.push({ label: "E2E Latency", value: formatDuration(span.e2e_latency * 1000) })
   if (span.off_policy_steps != null) details.push({ label: "Off-policy steps", value: String(span.off_policy_steps) })
   details.push(...extra)
   return details
