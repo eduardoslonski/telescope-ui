@@ -135,6 +135,18 @@ export function formatDuration(ms: number): string {
   return `${h.toFixed(1)}h`
 }
 
+/** Format a Unix timestamp to HH:MM:SS.ffffff with microsecond precision.
+ *  Uses manual arithmetic to avoid Date's millisecond truncation. */
+function formatTimestamp(ts: number): string {
+  const totalSec = Math.floor(ts)
+  const frac = ts - totalSec
+  const h = Math.floor((totalSec % 86400) / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  const us = Math.round(frac * 1_000_000)
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(us).padStart(6, "0")}`
+}
+
 /** Format a number with thousands delimiter (e.g. 2334 → "2,334"). */
 function formatNumberWithDelimiter(n: number): string {
   return n.toLocaleString("en-US")
@@ -1984,6 +1996,8 @@ function InferenceSection({
                             value: String(item.lane),
                           },
                         ]}
+                        startTime={item.sourceSpan.start_time}
+                        endTime={item.sourceSpan.end_time}
                       />
                     }
                   />
@@ -3014,6 +3028,8 @@ function InferenceServerTimeline({
                                 : []),
                               { label: "Lane", value: String(actualLaneIdx) },
                             ]}
+                            startTime={rwSpan.start_time}
+                            endTime={rwSpan.end_time}
                           />
                         }
                       />
@@ -4401,16 +4417,16 @@ function EventTooltip({
         ))}
         {timestamp !== undefined && (
           <div>
-            Time: {new Date(timestamp * 1000).toISOString().slice(11, 23)}
+            Time: {formatTimestamp(timestamp)}
           </div>
         )}
         {startTime !== undefined && (
           <div>
-            Start: {new Date(startTime * 1000).toISOString().slice(11, 23)}
+            Start: {formatTimestamp(startTime)}
           </div>
         )}
         {endTime !== undefined && (
-          <div>End: {new Date(endTime * 1000).toISOString().slice(11, 23)}</div>
+          <div>End: {formatTimestamp(endTime)}</div>
         )}
       </div>
     </div>
