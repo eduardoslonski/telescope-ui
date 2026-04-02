@@ -61,7 +61,7 @@ export interface InfraEvent {
 
 export interface InflightSnapshot {
   timestamp: number | null
-  inflight_generations: { sample_id: number; generation_idx: number; server_id: number; agent_id: number }[]
+  inflight_generations: { sample_id: number; generation_idx: number; server_id: number; server_lane: number; group_id: number; agent_id: number; start_time: number }[]
   inflight_tool_executions: { sample_id: number; generation_idx: number; tool_call_idx: number; tool_name: string; agent_id: number }[]
   inflight_env_responses: { sample_id: number; generation_idx: number; agent_id: number }[]
   inflight_sandbox_ops: { sandbox_id: string; phase: string }[]
@@ -543,7 +543,7 @@ export type SampleDetailsResponse =
 export interface SampleStatusItem {
   group_id: number
   sample_id: number
-  kind: "rollouts" | "rollouts_discarded" | null
+  kind: "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null
 }
 
 export interface SampleStatusesResponse {

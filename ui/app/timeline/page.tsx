@@ -863,8 +863,12 @@ function TimelineFooter({
     )
   }, [highlightDiscarded, footerSampleStatuses])
 
-  // RolloutSpan doesn't carry is_canceled — cancellation is not tracked
-  const isCanceledGroup = false
+  const isCanceledGroup = useMemo(() => {
+    if (!highlightDiscarded || !footerSampleStatuses?.statuses) return false
+    return footerSampleStatuses.statuses.some(
+      (s) => s.kind === "rollouts_cancelled"
+    )
+  }, [highlightDiscarded, footerSampleStatuses])
 
   // Check if the selected group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {

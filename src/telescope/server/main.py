@@ -2988,7 +2988,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND sample_id = ?
             ORDER BY metric_name
             """,
-            [req.run_path, step, req.sample_idx],
+            [req.run_path, step, req.resolved_sample_key],
         ).fetchall()
 
         rollout_metrics = [
@@ -3009,7 +3009,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND sample_id = ?
             ORDER BY key
             """,
-            [req.run_path, step, req.sample_idx],
+            [req.run_path, step, req.resolved_sample_key],
         ).fetchall()
 
         golden_answers = [
@@ -3030,7 +3030,7 @@ def get_sample_details(req: SampleDetailsRequest):
             WHERE run_id = ? AND step = ? AND sample_id = ?
             ORDER BY generation_idx, info_key
             """,
-            [req.run_path, step, req.sample_idx],
+            [req.run_path, step, req.resolved_sample_key],
         ).fetchall()
 
         info_turns = [
@@ -3143,7 +3143,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
         ORDER BY generation_idx
         """,
-        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+        [req.run_path, trainer_step, req.group_id, req.resolved_sample_key],
     ).fetchall()
 
     generations = [
@@ -3171,7 +3171,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
         ORDER BY generation_idx
         """,
-        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+        [req.run_path, trainer_step, req.group_id, req.resolved_sample_key],
     ).fetchall()
 
     env_responses = [
@@ -3200,7 +3200,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
         ORDER BY generation_idx, tool_call_idx
         """,
-        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+        [req.run_path, trainer_step, req.group_id, req.resolved_sample_key],
     ).fetchall()
 
     tool_calls = [
@@ -3234,7 +3234,7 @@ def get_sample_details(req: SampleDetailsRequest):
         FROM samples_data_discarded
         WHERE run_id = ? AND trainer_step = ? AND group_id = ? AND sample_id = ?
         """,
-        [req.run_path, trainer_step, req.group_id, req.sample_idx],
+        [req.run_path, trainer_step, req.group_id, req.resolved_sample_key],
     ).fetchall()
 
     samples_data = [
@@ -3261,7 +3261,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND sample_id = ?
         ORDER BY metric_name
         """,
-        [req.run_path, req.sample_idx],
+        [req.run_path, req.resolved_sample_key],
     ).fetchall()
 
     rollout_metrics = [
@@ -3282,7 +3282,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND sample_id = ?
         ORDER BY key
         """,
-        [req.run_path, req.sample_idx],
+        [req.run_path, req.resolved_sample_key],
     ).fetchall()
 
     golden_answers = [
@@ -3303,7 +3303,7 @@ def get_sample_details(req: SampleDetailsRequest):
         WHERE run_id = ? AND sample_id = ?
         ORDER BY generation_idx, info_key
         """,
-        [req.run_path, req.sample_idx],
+        [req.run_path, req.resolved_sample_key],
     ).fetchall()
 
     info_turns = [
@@ -3353,7 +3353,7 @@ def get_sample_statuses(req: SampleStatusesRequest):
     params: list[object] = []
     for sample in req.samples:
         params.extend([sample.group_id, sample.resolved_id])
-    params.extend([req.run_path, req.run_path])
+    params.extend([req.run_path, req.run_path, req.run_path])
 
     rows = con.execute(
         f"""
@@ -3364,6 +3364,7 @@ def get_sample_statuses(req: SampleStatusesRequest):
             CASE
                 WHEN g.sample_id IS NOT NULL THEN 'rollouts'
                 WHEN d.sample_id IS NOT NULL THEN 'rollouts_discarded'
+                WHEN c.sample_id IS NOT NULL THEN 'rollouts_cancelled'
                 ELSE NULL
             END AS kind
         FROM keys k
@@ -3377,6 +3378,11 @@ def get_sample_statuses(req: SampleStatusesRequest):
             FROM samples_data_discarded
             WHERE run_id = ?
         ) d ON d.group_id = k.group_id AND d.sample_id = k.sample_id
+        LEFT JOIN (
+            SELECT DISTINCT group_id, sample_id
+            FROM samples_data_cancelled
+            WHERE run_id = ?
+        ) c ON c.group_id = k.group_id AND c.sample_id = k.sample_id
         """,
         params,
     ).fetchall()
@@ -5323,10 +5329,20 @@ def get_step_metrics(req: StepMetricsRequest):
     gini_rows = con.execute(gini_query, params + tag_filter_params + env_filter_params).fetchall()
     gini_by_step = {row[0]: row[1] for row in gini_rows}
 
-    # Compute off-policy steps stats
-    # off_policy_steps is no longer stored in events_rollout (thin schema).
-    # This data is not currently available in the new schema.
-    off_policy_by_step: dict[int, tuple[float | None, float | None]] = {}
+    # Compute off-policy steps stats from samples_data
+    off_policy_query = f"""
+        SELECT
+            step,
+            AVG(off_policy_steps) as off_policy_steps_mean,
+            STDDEV_SAMP(off_policy_steps) as off_policy_steps_std
+        FROM samples_data
+        WHERE run_id = ? AND off_policy_steps IS NOT NULL
+            {step_filter} {tag_filter_sql} {env_filter_sql}
+        GROUP BY step
+        ORDER BY step ASC
+    """
+    off_policy_rows = con.execute(off_policy_query, params + tag_filter_params + env_filter_params).fetchall()
+    off_policy_by_step = {row[0]: (row[1], row[2]) for row in off_policy_rows}
 
     # Base column names for samples_data-based metrics
     base_columns = [
@@ -5439,7 +5455,7 @@ def get_step_metrics(req: StepMetricsRequest):
                         "value": float(value),
                     })
 
-    # Add off-policy steps metrics (from events_rollout, independent of samples_data steps)
+    # Add off-policy steps metrics (from samples_data)
     for step, (off_policy_mean, off_policy_std) in off_policy_by_step.items():
         if metrics_to_include is None or "off_policy_steps_mean" in metrics_to_include:
             if off_policy_mean is not None:
@@ -6032,8 +6048,34 @@ def get_step_metrics(req: StepMetricsRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
         discarded_gen_metric_names = set()
     
-    # Discarded off-policy steps: off_policy_steps is no longer in events_rollout (thin schema).
-    # This data is not currently available in the new schema.
+    # Compute discarded off-policy steps stats from samples_data_discarded
+    discarded_off_policy_query = f"""
+        SELECT
+            trainer_step as step,
+            AVG(off_policy_steps) as discarded_off_policy_steps_mean,
+            STDDEV_SAMP(off_policy_steps) as discarded_off_policy_steps_std
+        FROM samples_data_discarded
+        WHERE run_id = ? AND off_policy_steps IS NOT NULL {discarded_step_filter}
+        GROUP BY trainer_step
+        ORDER BY trainer_step ASC
+    """
+    discarded_off_policy_rows = con.execute(discarded_off_policy_query, discarded_params).fetchall()
+    for row in discarded_off_policy_rows:
+        step = row[0]
+        if metrics_to_include is None or "discarded_off_policy_steps_mean" in metrics_to_include:
+            if row[1] is not None:
+                metrics.append({
+                    "step": step,
+                    "metric_name": "discarded_off_policy_steps_mean",
+                    "value": float(row[1]),
+                })
+        if metrics_to_include is None or "discarded_off_policy_steps_std" in metrics_to_include:
+            if row[2] is not None:
+                metrics.append({
+                    "step": step,
+                    "metric_name": "discarded_off_policy_steps_std",
+                    "value": float(row[2]),
+                })
 
     # Add discarded metrics to available metrics list
     discarded_metrics_list = [
@@ -7223,8 +7265,20 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         gini_map[(row[0], row[1])] = row[2]
 
     # =====================================================================
-    # 7c. Off-policy steps -- no longer available in events_rollout (thin schema)
+    # 7c. Off-policy steps (from samples_data)
     # =====================================================================
+    off_policy_map: dict[tuple[str, int], tuple[float | None, float | None]] = {}
+    for row in con.execute(f"""
+        SELECT
+            run_id, step,
+            AVG(off_policy_steps),
+            STDDEV_SAMP(off_policy_steps)
+        FROM samples_data
+        WHERE run_id IN ({a_in_ph}) AND off_policy_steps IS NOT NULL {step_filter} {multi_tag_sql} {multi_env_sql}
+        GROUP BY run_id, step
+        ORDER BY run_id, step ASC
+    """, a_params + multi_tag_params + multi_env_params).fetchall():
+        off_policy_map[(row[0], row[1])] = (row[2], row[3])
 
     # Emit joined metrics for each base-row step
     for key in base_keys:
@@ -7247,6 +7301,10 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
             _add(rid, step, "group_length_gini_mean", group_gini)
         if key in gini_map:
             _add(rid, step, "reward_gini_mean", gini_map[key])
+        if key in off_policy_map:
+            op_mean, op_std = off_policy_map[key]
+            _add(rid, step, "off_policy_steps_mean", op_mean)
+            _add(rid, step, "off_policy_steps_std", op_std)
 
     # =====================================================================
     # 8. Rollout metrics (rollouts_metrics)
@@ -7564,8 +7622,24 @@ def get_step_metrics_multi(req: StepMetricsMultiRequest):
         log.warning(f"[API] Could not compute discarded rollout metrics: {e}")
 
     # =====================================================================
-    # 17a. Discarded off-policy steps -- no longer available in events_rollout (thin schema)
+    # 17a. Discarded off-policy steps (from samples_data_discarded)
     # =====================================================================
+    try:
+        for row in con.execute(f"""
+            SELECT
+                run_id, trainer_step,
+                AVG(off_policy_steps),
+                STDDEV_SAMP(off_policy_steps)
+            FROM samples_data_discarded
+            WHERE run_id IN ({a_in_ph}) AND off_policy_steps IS NOT NULL {discarded_step_filter}
+            GROUP BY run_id, trainer_step
+            ORDER BY run_id, trainer_step ASC
+        """, a_disc_params).fetchall():
+            rid, step = row[0], row[1]
+            _add(rid, step, "discarded_off_policy_steps_mean", row[2])
+            _add(rid, step, "discarded_off_policy_steps_std", row[3])
+    except Exception as e:
+        log.warning(f"[API] Could not compute discarded off-policy steps: {e}")
 
     # =====================================================================
     # 17b. Canceled count per step (from events_rollout)
@@ -9199,10 +9273,12 @@ def get_step_distribution_over_time(req: StepDistributionOverTimeRequest):
         """
         params = [req.run_path]
     elif metric_type == "off_policy_steps":
-        # off_policy_steps is no longer in events_rollout (thin schema).
-        # Return empty result (query will return no rows via WHERE 1=0).
-        all_values_query = "SELECT NULL as step, NULL as value WHERE 1=0"
-        params = []
+        all_values_query = f"""
+            SELECT {step_col} as step, off_policy_steps as value FROM {samples_table}
+            WHERE run_id = ? AND off_policy_steps IS NOT NULL
+            ORDER BY {step_col}, sample_id
+        """
+        params = [req.run_path]
     elif metric_type.startswith("reward_"):
         metric_name = metric_type[7:]
         if is_discarded:

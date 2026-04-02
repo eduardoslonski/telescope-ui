@@ -54,6 +54,15 @@ from .db import (
     insert_sample_tags_discarded,
     insert_info_turns,
     insert_info_turns_discarded,
+    insert_prompts_cancelled,
+    insert_generations_cancelled,
+    insert_env_responses_cancelled,
+    insert_tool_calls_cancelled,
+    insert_samples_data_cancelled,
+    insert_rollouts_metrics_cancelled,
+    insert_golden_answers_cancelled,
+    insert_sample_tags_cancelled,
+    insert_info_turns_cancelled,
     insert_prompts_eval,
     insert_generations_eval,
     insert_env_responses_eval,
@@ -139,6 +148,15 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "sample_tags_discarded": "0.1",
     "info_turns": "0.1",
     "info_turns_discarded": "0.1",
+    "prompts_cancelled": "0.1",
+    "generations_cancelled": "0.1",
+    "env_responses_cancelled": "0.1",
+    "tool_calls_cancelled": "0.1",
+    "samples_data_cancelled": "0.2",
+    "rollouts_metrics_cancelled": "0.1",
+    "golden_answers_cancelled": "0.1",
+    "sample_tags_cancelled": "0.1",
+    "info_turns_cancelled": "0.1",
     "prompts_eval": "0.1",
     "generations_eval": "0.1",
     "env_responses_eval": "0.1",
@@ -721,6 +739,16 @@ class EventZipData:
         self.golden_answers_discarded: list[dict] | None = None
         self.sample_tags_discarded: list[dict] | None = None
         self.info_turns_discarded: list[dict] | None = None
+        # Cancelled data (from event zips, same schema as discarded)
+        self.prompts_cancelled: list[dict] | None = None
+        self.generations_cancelled: list[dict] | None = None
+        self.env_responses_cancelled: list[dict] | None = None
+        self.tool_calls_cancelled: list[dict] | None = None
+        self.samples_data_cancelled: list[dict] | None = None
+        self.rollouts_metrics_cancelled: list[dict] | None = None
+        self.golden_answers_cancelled: list[dict] | None = None
+        self.sample_tags_cancelled: list[dict] | None = None
+        self.info_turns_cancelled: list[dict] | None = None
         # Kept rollout data (from event zips, same tail_idx lifecycle as discarded)
         self.prompts_kept: list[dict] | None = None
         self.generations_kept: list[dict] | None = None
@@ -780,6 +808,15 @@ class EventZipData:
             self.golden_answers_discarded,
             self.sample_tags_discarded,
             self.info_turns_discarded,
+            self.prompts_cancelled,
+            self.generations_cancelled,
+            self.env_responses_cancelled,
+            self.tool_calls_cancelled,
+            self.samples_data_cancelled,
+            self.rollouts_metrics_cancelled,
+            self.golden_answers_cancelled,
+            self.sample_tags_cancelled,
+            self.info_turns_cancelled,
             self.prompts_kept,
             self.generations_kept,
             self.env_responses_kept,
@@ -1018,6 +1055,31 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.debug(
                             f"[WANDB] No info_turns_discarded.parquet in {file_path}: {e}"
                         )
+
+                    # Read cancelled parquet files
+                    for cancelled_name, attr in [
+                        ("prompts_cancelled", "prompts_cancelled"),
+                        ("generations_cancelled", "generations_cancelled"),
+                        ("env_responses_cancelled", "env_responses_cancelled"),
+                        ("tool_calls_cancelled", "tool_calls_cancelled"),
+                        ("samples_data_cancelled", "samples_data_cancelled"),
+                        ("rollouts_metrics_cancelled", "rollouts_metrics_cancelled"),
+                        ("golden_answers_cancelled", "golden_answers_cancelled"),
+                        ("sample_tags_cancelled", "sample_tags_cancelled"),
+                        ("info_turns_cancelled", "info_turns_cancelled"),
+                    ]:
+                        cancelled_path = f"{tmpdir}/{cancelled_name}.parquet"
+                        try:
+                            table = pq.read_table(cancelled_path)
+                            setattr(data, attr, table.to_pylist())
+                            log.info(
+                                f"[WANDB] Extracted {cancelled_name}: "
+                                f"{len(getattr(data, attr))} rows"
+                            )
+                        except Exception as e:
+                            log.debug(
+                                f"[WANDB] No {cancelled_name}.parquet in {file_path}: {e}"
+                            )
 
                     # Read kept parquet files
                     for kept_name, attr in [
@@ -1520,6 +1582,15 @@ def _insert_event_zip_data(
         "golden_answers_discarded": 0,
         "sample_tags_discarded": 0,
         "info_turns_discarded": 0,
+        "prompts_cancelled": 0,
+        "generations_cancelled": 0,
+        "env_responses_cancelled": 0,
+        "tool_calls_cancelled": 0,
+        "samples_data_cancelled": 0,
+        "rollouts_metrics_cancelled": 0,
+        "golden_answers_cancelled": 0,
+        "sample_tags_cancelled": 0,
+        "info_turns_cancelled": 0,
         "prompts_kept": 0,
         "generations_kept": 0,
         "env_responses_kept": 0,
@@ -1568,6 +1639,23 @@ def _insert_event_zip_data(
         info_turns_discarded = _filter_events_by_tails(
             data.info_turns_discarded, missing_tails
         )
+        prompts_cancelled = _filter_events_by_tails(data.prompts_cancelled, missing_tails)
+        generations_cancelled = _filter_events_by_tails(data.generations_cancelled, missing_tails)
+        env_responses_cancelled = _filter_events_by_tails(data.env_responses_cancelled, missing_tails)
+        tool_calls_cancelled = _filter_events_by_tails(data.tool_calls_cancelled, missing_tails)
+        samples_data_cancelled = _filter_events_by_tails(data.samples_data_cancelled, missing_tails)
+        rollouts_metrics_cancelled = _filter_events_by_tails(
+            data.rollouts_metrics_cancelled, missing_tails
+        )
+        golden_answers_cancelled = _filter_events_by_tails(
+            data.golden_answers_cancelled, missing_tails
+        )
+        sample_tags_cancelled = _filter_events_by_tails(
+            data.sample_tags_cancelled, missing_tails
+        )
+        info_turns_cancelled = _filter_events_by_tails(
+            data.info_turns_cancelled, missing_tails
+        )
         prompts_kept = _filter_events_by_tails(data.prompts_kept, missing_tails)
         generations_kept = _filter_events_by_tails(data.generations_kept, missing_tails)
         env_responses_kept = _filter_events_by_tails(data.env_responses_kept, missing_tails)
@@ -1612,6 +1700,15 @@ def _insert_event_zip_data(
         golden_answers_discarded = data.golden_answers_discarded
         sample_tags_discarded = data.sample_tags_discarded
         info_turns_discarded = data.info_turns_discarded
+        prompts_cancelled = data.prompts_cancelled
+        generations_cancelled = data.generations_cancelled
+        env_responses_cancelled = data.env_responses_cancelled
+        tool_calls_cancelled = data.tool_calls_cancelled
+        samples_data_cancelled = data.samples_data_cancelled
+        rollouts_metrics_cancelled = data.rollouts_metrics_cancelled
+        golden_answers_cancelled = data.golden_answers_cancelled
+        sample_tags_cancelled = data.sample_tags_cancelled
+        info_turns_cancelled = data.info_turns_cancelled
         prompts_kept = data.prompts_kept
         generations_kept = data.generations_kept
         env_responses_kept = data.env_responses_kept
@@ -1744,6 +1841,72 @@ def _insert_event_zip_data(
         log.info(
             f"[EVENTS] Synced {source_name} info_turns_discarded: "
             f"{counts['info_turns_discarded']} info turns"
+        )
+
+    if prompts_cancelled:
+        insert_prompts_cancelled(con, run_path, prompts_cancelled)
+        counts["prompts_cancelled"] = len(prompts_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(prompts_cancelled))
+        log.info(f"[EVENTS] Synced {source_name} prompts_cancelled: {counts['prompts_cancelled']} prompts")
+
+    if generations_cancelled:
+        insert_generations_cancelled(con, run_path, generations_cancelled)
+        counts["generations_cancelled"] = len(generations_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(generations_cancelled))
+        log.info(f"[EVENTS] Synced {source_name} generations_cancelled: {counts['generations_cancelled']} generations")
+
+    if env_responses_cancelled:
+        insert_env_responses_cancelled(con, run_path, env_responses_cancelled)
+        counts["env_responses_cancelled"] = len(env_responses_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(env_responses_cancelled))
+        log.info(f"[EVENTS] Synced {source_name} env_responses_cancelled: {counts['env_responses_cancelled']} env responses")
+
+    if tool_calls_cancelled:
+        insert_tool_calls_cancelled(con, run_path, tool_calls_cancelled)
+        counts["tool_calls_cancelled"] = len(tool_calls_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(tool_calls_cancelled))
+        log.info(f"[EVENTS] Synced {source_name} tool_calls_cancelled: {counts['tool_calls_cancelled']} tool calls")
+
+    if samples_data_cancelled:
+        insert_samples_data_cancelled(con, run_path, samples_data_cancelled)
+        counts["samples_data_cancelled"] = len(samples_data_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(samples_data_cancelled))
+        log.info(f"[EVENTS] Synced {source_name} samples_data_cancelled: {counts['samples_data_cancelled']} samples")
+
+    if rollouts_metrics_cancelled:
+        insert_rollouts_metrics_cancelled(con, run_path, rollouts_metrics_cancelled)
+        counts["rollouts_metrics_cancelled"] = len(rollouts_metrics_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(rollouts_metrics_cancelled))
+        log.info(
+            f"[EVENTS] Synced {source_name} rollouts_metrics_cancelled: "
+            f"{counts['rollouts_metrics_cancelled']} metrics"
+        )
+
+    if golden_answers_cancelled:
+        insert_golden_answers_cancelled(con, run_path, golden_answers_cancelled)
+        counts["golden_answers_cancelled"] = len(golden_answers_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(golden_answers_cancelled))
+        log.info(
+            f"[EVENTS] Synced {source_name} golden_answers_cancelled: "
+            f"{counts['golden_answers_cancelled']} answers"
+        )
+
+    if sample_tags_cancelled:
+        insert_sample_tags_cancelled(con, run_path, sample_tags_cancelled)
+        counts["sample_tags_cancelled"] = len(sample_tags_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(sample_tags_cancelled))
+        log.info(
+            f"[EVENTS] Synced {source_name} sample_tags_cancelled: "
+            f"{counts['sample_tags_cancelled']} tags"
+        )
+
+    if info_turns_cancelled:
+        insert_info_turns_cancelled(con, run_path, info_turns_cancelled)
+        counts["info_turns_cancelled"] = len(info_turns_cancelled)
+        inserted_tails.update(_get_tail_indices_from_events(info_turns_cancelled))
+        log.info(
+            f"[EVENTS] Synced {source_name} info_turns_cancelled: "
+            f"{counts['info_turns_cancelled']} info turns"
         )
 
     if prompts_kept:
@@ -2102,6 +2265,15 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             + totals["rollouts_metrics_discarded"]
             + totals["golden_answers_discarded"]
         )
+        total_cancelled = (
+            totals.get("prompts_cancelled", 0)
+            + totals.get("generations_cancelled", 0)
+            + totals.get("env_responses_cancelled", 0)
+            + totals.get("tool_calls_cancelled", 0)
+            + totals.get("samples_data_cancelled", 0)
+            + totals.get("rollouts_metrics_cancelled", 0)
+            + totals.get("golden_answers_cancelled", 0)
+        )
         total_kept = (
             totals["prompts_kept"]
             + totals["generations_kept"]
@@ -2148,6 +2320,17 @@ async def sync_events_background(run_path: str, api_key: str, run: Any, summary:
             f"{totals['rollouts_metrics_discarded']} metrics, "
             f"{totals['golden_answers_discarded']} golden answers"
         )
+        if total_cancelled > 0:
+            log.info(
+                "[EVENTS] Cancelled: "
+                f"{totals.get('prompts_cancelled', 0)} prompts, "
+                f"{totals.get('generations_cancelled', 0)} generations, "
+                f"{totals.get('env_responses_cancelled', 0)} env responses, "
+                f"{totals.get('tool_calls_cancelled', 0)} tool calls, "
+                f"{totals.get('samples_data_cancelled', 0)} samples_data, "
+                f"{totals.get('rollouts_metrics_cancelled', 0)} metrics, "
+                f"{totals.get('golden_answers_cancelled', 0)} golden answers"
+            )
         if total_kept > 0:
             log.info(
                 "[EVENTS] Kept: "

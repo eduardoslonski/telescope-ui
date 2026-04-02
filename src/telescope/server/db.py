@@ -301,7 +301,8 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             total_tokens BIGINT,
             raw_string BLOB,
             compute_reward_time DOUBLE,
-            stop_reason TEXT
+            stop_reason TEXT,
+            off_policy_steps BIGINT
         );
     """)
 
@@ -528,7 +529,8 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             raw_string BLOB,
             tail_idx BIGINT,
             compute_reward_time DOUBLE,
-            stop_reason TEXT
+            stop_reason TEXT,
+            off_policy_steps BIGINT
         );
     """)
 
@@ -600,6 +602,161 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
+    # Cancelled tables - same schema as discarded, for rollouts cancelled due to off-policy/eval_drain
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS prompts_cancelled (
+            run_id TEXT,
+            timestamp DOUBLE,
+            discard_reason TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            env TEXT,
+            system_prompt TEXT,
+            tokens_system_prompt BIGINT,
+            prompt TEXT,
+            tokens_prompt BIGINT,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS generations_cancelled (
+            run_id TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            content BLOB,
+            tokens BIGINT,
+            prompt_tokens BIGINT,
+            tool_call_count BIGINT,
+            stop_reason TEXT,
+            queue_time DOUBLE,
+            ttft DOUBLE,
+            prefill_time DOUBLE,
+            decode_time DOUBLE,
+            inference_time DOUBLE,
+            e2e_latency DOUBLE,
+            server_id BIGINT,
+            vllm_request_id TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS env_responses_cancelled (
+            run_id TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            content BLOB,
+            turn_type TEXT,
+            tokens BIGINT,
+            response_time DOUBLE,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls_cancelled (
+            run_id TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            env_response_generation_idx BIGINT,
+            tool_name TEXT,
+            arguments TEXT,
+            raw_text TEXT,
+            result BLOB,
+            success BOOLEAN,
+            error TEXT,
+            exit_code BIGINT,
+            truncated BOOLEAN,
+            result_tokens BIGINT,
+            sandbox_id TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS samples_data_cancelled (
+            run_id TEXT,
+            timestamp DOUBLE,
+            discard_reason TEXT,
+            trainer_step BIGINT,
+            inference_step BIGINT,
+            group_id BIGINT,
+            sample_id BIGINT,
+            reward DOUBLE,
+            advantage DOUBLE,
+            num_generations BIGINT,
+            total_tokens BIGINT,
+            raw_string BLOB,
+            tail_idx BIGINT,
+            compute_reward_time DOUBLE,
+            stop_reason TEXT,
+            off_policy_steps BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS rollouts_metrics_cancelled (
+            run_id TEXT,
+            sample_id BIGINT,
+            env TEXT,
+            metric_name TEXT,
+            value DOUBLE,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS golden_answers_cancelled (
+            run_id TEXT,
+            sample_id BIGINT,
+            env TEXT,
+            key TEXT,
+            value TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sample_tags_cancelled (
+            run_id TEXT,
+            sample_id BIGINT,
+            env TEXT,
+            tag_name TEXT,
+            tag_value TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS info_turns_cancelled (
+            run_id TEXT,
+            sample_id BIGINT,
+            agent_id BIGINT DEFAULT 0,
+            generation_idx BIGINT,
+            tool_call_idx BIGINT,
+            env TEXT,
+            info_key TEXT,
+            info_value TEXT,
+            info_type TEXT,
+            tail_idx BIGINT
+        );
+    """)
+
     # Eval prompts table - one row per unique eval prompt (inside events zips, keyed by tail_idx)
     con.execute("""
         CREATE TABLE IF NOT EXISTS prompts_eval (
@@ -1390,6 +1547,7 @@ def insert_samples_data(con: duckdb.DuckDBPyConnection, run_id: str, samples_dat
             "raw_string": s.get("raw_string"),
             "compute_reward_time": s.get("compute_reward_time"),
             "stop_reason": s.get("stop_reason"),
+            "off_policy_steps": s.get("off_policy_steps"),
         }
         for s in samples_data
     ])
@@ -1399,11 +1557,13 @@ def insert_samples_data(con: duckdb.DuckDBPyConnection, run_id: str, samples_dat
     con.execute("""
         INSERT INTO samples_data (
             run_id, step, group_id, sample_id, reward, advantage,
-            num_generations, total_tokens, raw_string, compute_reward_time, stop_reason
+            num_generations, total_tokens, raw_string, compute_reward_time, stop_reason,
+            off_policy_steps
         )
         SELECT
             d.run_id, d.step, d.group_id, d.sample_id, d.reward, d.advantage,
-            d.num_generations, d.total_tokens, d.raw_string, d.compute_reward_time, d.stop_reason
+            d.num_generations, d.total_tokens, d.raw_string, d.compute_reward_time, d.stop_reason,
+            d.off_policy_steps
         FROM df d
         WHERE NOT EXISTS (
             SELECT 1
@@ -1892,6 +2052,7 @@ def insert_samples_data_discarded(con: duckdb.DuckDBPyConnection, run_id: str, s
             "tail_idx": s.get("tail_idx"),
             "compute_reward_time": s.get("compute_reward_time"),
             "stop_reason": s.get("stop_reason"),
+            "off_policy_steps": s.get("off_policy_steps"),
         }
         for s in samples_data
     ])
@@ -1901,12 +2062,12 @@ def insert_samples_data_discarded(con: duckdb.DuckDBPyConnection, run_id: str, s
         INSERT INTO samples_data_discarded (
             run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
             reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
-            compute_reward_time, stop_reason
+            compute_reward_time, stop_reason, off_policy_steps
         )
         SELECT
             run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
             reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
-            compute_reward_time, stop_reason
+            compute_reward_time, stop_reason, off_policy_steps
         FROM df
     """)
 
@@ -2125,6 +2286,369 @@ def insert_info_turns_discarded(
 
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(info_turns)} discarded info turns in {elapsed:.2f}s")
+
+
+# --- Cancelled insert functions (same schema as discarded) ---
+
+
+def insert_prompts_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, prompts: list[dict]):
+    """Insert cancelled prompts into the database."""
+    if not prompts:
+        return
+
+    log.info(f"[DB] Inserting {len(prompts)} cancelled prompts...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "timestamp": p.get("timestamp"),
+            "discard_reason": p.get("discard_reason"),
+            "trainer_step": p.get("trainer_step"),
+            "inference_step": p.get("inference_step"),
+            "group_id": p.get("group_id"),
+            "env": p.get("env"),
+            "system_prompt": p.get("system_prompt"),
+            "tokens_system_prompt": p.get("tokens_system_prompt"),
+            "prompt": p.get("prompt"),
+            "tokens_prompt": p.get("tokens_prompt"),
+            "tail_idx": p.get("tail_idx"),
+        }
+        for p in prompts
+    ])
+
+    con.execute("INSERT INTO prompts_cancelled SELECT * FROM df")
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(prompts)} cancelled prompts in {elapsed:.2f}s")
+
+
+def insert_generations_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, generations: list[dict]):
+    """Insert cancelled generations into the database."""
+    if not generations:
+        return
+
+    log.info(f"[DB] Inserting {len(generations)} cancelled generations...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "trainer_step": g.get("trainer_step"),
+            "inference_step": g.get("inference_step"),
+            "group_id": g.get("group_id"),
+            "sample_id": g.get("sample_id"),
+            "agent_id": g.get("agent_id", 0),
+            "generation_idx": g.get("generation_idx"),
+            "content": g.get("content"),
+            "tokens": g.get("tokens"),
+            "prompt_tokens": g.get("prompt_tokens"),
+            "tool_call_count": g.get("tool_call_count"),
+            "stop_reason": g.get("stop_reason"),
+            "queue_time": g.get("queue_time"),
+            "ttft": g.get("ttft"),
+            "prefill_time": g.get("prefill_time"),
+            "decode_time": g.get("decode_time"),
+            "inference_time": g.get("inference_time"),
+            "e2e_latency": g.get("e2e_latency"),
+            "server_id": g.get("server_id"),
+            "vllm_request_id": g.get("vllm_request_id"),
+            "tail_idx": g.get("tail_idx"),
+        }
+        for g in generations
+    ])
+
+    con.execute("""
+        INSERT INTO generations_cancelled (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, tokens, prompt_tokens, tool_call_count, stop_reason,
+            queue_time, ttft, prefill_time, decode_time, inference_time, e2e_latency,
+            server_id, vllm_request_id, tail_idx
+        )
+        SELECT
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, tokens, prompt_tokens, tool_call_count, stop_reason,
+            queue_time, ttft, prefill_time, decode_time, inference_time, e2e_latency,
+            server_id, vllm_request_id, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(generations)} cancelled generations in {elapsed:.2f}s")
+
+
+def insert_env_responses_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, env_responses: list[dict]):
+    """Insert cancelled environment responses into the database."""
+    if not env_responses:
+        return
+
+    log.info(f"[DB] Inserting {len(env_responses)} cancelled env responses...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "trainer_step": e.get("trainer_step"),
+            "inference_step": e.get("inference_step"),
+            "group_id": e.get("group_id"),
+            "sample_id": e.get("sample_id"),
+            "agent_id": e.get("agent_id", 0),
+            "generation_idx": e.get("generation_idx"),
+            "content": e.get("content"),
+            "turn_type": e.get("turn_type"),
+            "tokens": e.get("tokens"),
+            "response_time": e.get("response_time"),
+            "tail_idx": e.get("tail_idx"),
+        }
+        for e in env_responses
+    ])
+
+    con.execute("""
+        INSERT INTO env_responses_cancelled (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, turn_type, tokens, response_time, tail_idx
+        )
+        SELECT
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            content, turn_type, tokens, response_time, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(env_responses)} cancelled env responses in {elapsed:.2f}s")
+
+
+def insert_tool_calls_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, tool_calls: list[dict]):
+    """Insert cancelled tool calls into the database."""
+    if not tool_calls:
+        return
+
+    log.info(f"[DB] Inserting {len(tool_calls)} cancelled tool calls...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "trainer_step": tc.get("trainer_step"),
+            "inference_step": tc.get("inference_step"),
+            "group_id": tc.get("group_id"),
+            "sample_id": tc.get("sample_id"),
+            "agent_id": tc.get("agent_id", 0),
+            "generation_idx": tc.get("generation_idx"),
+            "tool_call_idx": tc.get("tool_call_idx"),
+            "env_response_generation_idx": tc.get("env_response_generation_idx"),
+            "tool_name": tc.get("tool_name"),
+            "arguments": tc.get("arguments"),
+            "raw_text": tc.get("raw_text"),
+            "result": tc.get("result"),
+            "success": tc.get("success"),
+            "error": tc.get("error"),
+            "exit_code": tc.get("exit_code"),
+            "truncated": tc.get("truncated"),
+            "result_tokens": tc.get("result_tokens"),
+            "sandbox_id": tc.get("sandbox_id"),
+            "tail_idx": tc.get("tail_idx"),
+        }
+        for tc in tool_calls
+    ])
+
+    con.execute("""
+        INSERT INTO tool_calls_cancelled (
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            tool_call_idx, env_response_generation_idx, tool_name, arguments, raw_text, result,
+            success, error, exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        )
+        SELECT
+            run_id, trainer_step, inference_step, group_id, sample_id, agent_id, generation_idx,
+            tool_call_idx, env_response_generation_idx, tool_name, arguments, raw_text, result,
+            success, error, exit_code, truncated, result_tokens, sandbox_id, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tool_calls)} cancelled tool calls in {elapsed:.2f}s")
+
+
+def insert_samples_data_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, samples_data: list[dict]):
+    """Insert cancelled sample-level data into the database."""
+    if not samples_data:
+        return
+
+    log.info(f"[DB] Inserting {len(samples_data)} cancelled samples data...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "timestamp": s.get("timestamp"),
+            "discard_reason": s.get("discard_reason"),
+            "trainer_step": s.get("trainer_step"),
+            "inference_step": s.get("inference_step"),
+            "group_id": s.get("group_id"),
+            "sample_id": s.get("sample_id"),
+            "reward": s.get("reward"),
+            "advantage": s.get("advantage"),
+            "num_generations": s.get("num_generations"),
+            "total_tokens": s.get("total_tokens"),
+            "raw_string": s.get("raw_string"),
+            "tail_idx": s.get("tail_idx"),
+            "compute_reward_time": s.get("compute_reward_time"),
+            "stop_reason": s.get("stop_reason"),
+            "off_policy_steps": s.get("off_policy_steps"),
+        }
+        for s in samples_data
+    ])
+
+    con.execute("""
+        INSERT INTO samples_data_cancelled (
+            run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+            reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
+            compute_reward_time, stop_reason, off_policy_steps
+        )
+        SELECT
+            run_id, timestamp, discard_reason, trainer_step, inference_step, group_id, sample_id,
+            reward, advantage, num_generations, total_tokens, raw_string, tail_idx,
+            compute_reward_time, stop_reason, off_policy_steps
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(samples_data)} cancelled samples data in {elapsed:.2f}s")
+
+
+def insert_rollouts_metrics_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, metrics: list[dict]):
+    """Insert cancelled rollouts metrics into the database."""
+    if not metrics:
+        return
+
+    log.info(f"[DB] Inserting {len(metrics)} cancelled rollouts metrics...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "sample_id": m.get("sample_id"),
+            "env": m.get("env"),
+            "metric_name": m.get("metric_name"),
+            "value": m.get("value"),
+            "tail_idx": m.get("tail_idx"),
+        }
+        for m in metrics
+    ])
+
+    con.execute("""
+        INSERT INTO rollouts_metrics_cancelled (
+            run_id, sample_id, env, metric_name, value, tail_idx
+        )
+        SELECT run_id, sample_id, env, metric_name, value, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(metrics)} cancelled rollouts metrics in {elapsed:.2f}s")
+
+
+def insert_golden_answers_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, answers: list[dict]):
+    """Insert cancelled golden answers into the database."""
+    if not answers:
+        return
+
+    log.info(f"[DB] Inserting {len(answers)} cancelled golden answers...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "sample_id": a.get("sample_id"),
+            "env": a.get("env"),
+            "key": a.get("key"),
+            "value": a.get("value"),
+            "tail_idx": a.get("tail_idx"),
+        }
+        for a in answers
+    ])
+
+    con.execute("""
+        INSERT INTO golden_answers_cancelled (
+            run_id, sample_id, env, key, value, tail_idx
+        )
+        SELECT run_id, sample_id, env, key, value, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(answers)} cancelled golden answers in {elapsed:.2f}s")
+
+
+def insert_sample_tags_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, tags: list[dict]):
+    """Insert cancelled sample tags into the database."""
+    if not tags:
+        return
+
+    log.info(f"[DB] Inserting {len(tags)} cancelled sample tags...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "sample_id": t.get("sample_id"),
+            "env": t.get("env"),
+            "tag_name": t.get("tag_name"),
+            "tag_value": t.get("tag_value"),
+            "tail_idx": t.get("tail_idx"),
+        }
+        for t in tags
+    ])
+
+    con.execute("""
+        INSERT INTO sample_tags_cancelled (
+            run_id, sample_id, env, tag_name, tag_value, tail_idx
+        )
+        SELECT run_id, sample_id, env, tag_name, tag_value, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(tags)} cancelled sample tags in {elapsed:.2f}s")
+
+
+def insert_info_turns_cancelled(con: duckdb.DuckDBPyConnection, run_id: str, info_turns: list[dict]):
+    """Insert cancelled info turns into the database."""
+    if not info_turns:
+        return
+
+    log.info(f"[DB] Inserting {len(info_turns)} cancelled info turns...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "sample_id": it.get("sample_id"),
+            "agent_id": it.get("agent_id", 0),
+            "generation_idx": it.get("generation_idx"),
+            "tool_call_idx": it.get("tool_call_idx"),
+            "env": it.get("env"),
+            "info_key": it.get("info_key"),
+            "info_value": it.get("info_value"),
+            "info_type": it.get("info_type"),
+            "tail_idx": it.get("tail_idx"),
+        }
+        for it in info_turns
+    ])
+
+    con.execute("""
+        INSERT INTO info_turns_cancelled (
+            run_id, sample_id, agent_id, generation_idx, tool_call_idx,
+            env, info_key, info_value, info_type, tail_idx
+        )
+        SELECT
+            run_id, sample_id, agent_id, generation_idx, tool_call_idx,
+            env, info_key, info_value, info_type, tail_idx
+        FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(info_turns)} cancelled info turns in {elapsed:.2f}s")
 
 
 def insert_prompts_eval(con: duckdb.DuckDBPyConnection, run_id: str, prompts: list[dict]):
