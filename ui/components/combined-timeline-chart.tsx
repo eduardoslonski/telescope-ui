@@ -1863,6 +1863,8 @@ function InferenceSection({
                             value: String(item.lane),
                           },
                         ]}
+                        startTime={item.sourceSpan.start_time}
+                        endTime={item.sourceSpan.end_time}
                       />
                     }
                   />
@@ -2409,6 +2411,8 @@ export function GroupSampleTimeline({
                               value: formatDuration(durationMs),
                             },
                           ]}
+                          startTime={trace.start}
+                          endTime={trace.start + trace.duration}
                         />
                       }
                     />
@@ -2950,6 +2954,8 @@ function InferenceServerTimeline({
                                 : []),
                               { label: "Lane", value: String(actualLaneIdx) },
                             ]}
+                            startTime={erSpan.start_time}
+                            endTime={erSpan.end_time}
                           />
                         }
                       />
