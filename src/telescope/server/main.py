@@ -2537,57 +2537,26 @@ def get_sample_details(req: SampleDetailsRequest):
     )
     con = connect()
 
-    # For eval samples: the inference event group_id is a global counter, not the
-    # eval sample_idx. The step on eval inference events may be NULL. We resolve
-    # the mapping by ranking the group_id among ALL eval groups across all steps,
-    # then walking through eval steps to find (step, eval_name, sample_idx).
+    # For eval samples: now that eval tables have sample_id, we can look up directly.
     if req.is_eval:
-        # All eval group_ids for this run, sorted
-        # events_rollout doesn't have is_eval; use events_rollout group_ids
-        # that also appear in prompts_eval (via the orchestrator's group_id mapping)
-        all_eval_groups = con.execute(
+        eval_key_row = con.execute(
             """
-            SELECT DISTINCT er.group_id
-            FROM events_rollout er
-            WHERE er.run_id = ?
-              AND er.group_id IN (SELECT DISTINCT group_id FROM events_orchestrator WHERE run_id = ? AND event_type = 'rollouts_group_done' AND is_eval = TRUE)
-            ORDER BY er.group_id
+            SELECT step, eval_name, sample_idx
+            FROM samples_data_eval
+            WHERE run_id = ? AND sample_id = ?
+            LIMIT 1
             """,
-            [req.run_path, req.run_path],
-        ).fetchall()
+            [req.run_path, req.resolved_sample_key],
+        ).fetchone()
 
-        group_ids = [r[0] for r in all_eval_groups]
-        try:
-            global_eval_idx = group_ids.index(req.group_id)
-        except ValueError:
-            global_eval_idx = -1
-
-        target_step = None
-        target_eval_name = None
-        target_sample_idx = None
-
-        if global_eval_idx >= 0:
-            # Per-step eval structure: [(step, eval_name, n_samples), ...] sorted
-            # by step then eval_name so the ordering matches the group_id sequence.
-            eval_steps_info = con.execute(
-                """
-                SELECT step, eval_name, COUNT(DISTINCT sample_idx) as n_samples
-                FROM prompts_eval
-                WHERE run_id = ?
-                GROUP BY step, eval_name
-                ORDER BY step, eval_name
-                """,
-                [req.run_path],
-            ).fetchall()
-
-            offset = 0
-            for e_step, e_name, n_samples in eval_steps_info:
-                if global_eval_idx < offset + n_samples:
-                    target_step = e_step
-                    target_eval_name = e_name
-                    target_sample_idx = global_eval_idx - offset
-                    break
-                offset += n_samples
+        if eval_key_row is not None:
+            target_step = eval_key_row[0]
+            target_eval_name = eval_key_row[1]
+            target_sample_idx = eval_key_row[2]
+        else:
+            target_step = None
+            target_eval_name = None
+            target_sample_idx = None
 
         if target_step is not None and target_eval_name is not None and target_sample_idx is not None:
             step = target_step
