@@ -1083,14 +1083,6 @@ function GroupItem({
   )
 }
 
-function formatTurnType(turnType: string): string {
-  if (turnType === "model") return "Assistant"
-  if (turnType === "env" || turnType === "env_response") return "User"
-  return turnType
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ")
-}
 
 function formatMetricName(name: string): string {
   return name

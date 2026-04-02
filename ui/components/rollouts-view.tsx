@@ -1337,17 +1337,6 @@ function ToolCallCollapsible({
   )
 }
 
-function formatTurnType(turnType: string): string {
-  // Format turn type nicely
-  if (turnType === "model" || turnType === "generation") return "Assistant"
-  if (turnType === "env" || turnType === "env_response") return "Environment"
-  if (turnType === "tool_call") return "Tool Call"
-  // Convert snake_case to Title Case
-  return turnType
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ")
-}
 
 /** Strip <think>...</think> blocks from content and trim leading whitespace */
 function stripThinkTags(text: string): string {
