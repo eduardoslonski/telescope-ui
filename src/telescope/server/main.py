@@ -4195,7 +4195,16 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
                 AND s.sample_id IS NOT DISTINCT FROM e.sample_id
                 AND s.generation_idx IS NOT DISTINCT FROM e.generation_idx
                 AND s.tool_call_idx IS NOT DISTINCT FROM e.tool_call_idx
-            WHERE s.start_time < ? AND e.end_time > ?
+            WHERE (s.start_time < ? AND e.end_time > ?)
+               OR (s.event_type = 'reward' AND s.sample_id IN (
+                   SELECT DISTINCT s2.sample_id FROM starts s2
+                   JOIN ends e2 ON s2.event_type = e2.event_type
+                       AND s2.sample_id IS NOT DISTINCT FROM e2.sample_id
+                       AND s2.generation_idx IS NOT DISTINCT FROM e2.generation_idx
+                       AND s2.tool_call_idx IS NOT DISTINCT FROM e2.tool_call_idx
+                   WHERE s2.event_type = 'generation' AND s2.sample_id >= 0
+                       AND s2.start_time < ? AND e2.end_time > ?
+               ))
         )
         SELECT p.event_type, p.sample_id, p.group_id, p.agent_id, p.generation_idx,
                p.tool_call_idx, p.server_id, p.server_lane, p.start_time, p.end_time,
@@ -4216,7 +4225,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             AND p.event_type = 'generation'
         ORDER BY p.start_time ASC
         """,
-        [req.run_path, req.run_path, interval_end, interval_start, req.run_path, req.run_path],
+        [req.run_path, req.run_path, interval_end, interval_start, interval_end, interval_start, req.run_path, req.run_path],
     ).fetchall()
 
     rollout_events = [
