@@ -3353,7 +3353,7 @@ def get_sample_statuses(req: SampleStatusesRequest):
     params: list[object] = []
     for sample in req.samples:
         params.extend([sample.group_id, sample.resolved_id])
-    params.extend([req.run_path, req.run_path, req.run_path])
+    params.extend([req.run_path, req.run_path, req.run_path, req.run_path])
 
     rows = con.execute(
         f"""
@@ -3365,6 +3365,7 @@ def get_sample_statuses(req: SampleStatusesRequest):
                 WHEN g.sample_id IS NOT NULL THEN 'rollouts'
                 WHEN d.sample_id IS NOT NULL THEN 'rollouts_discarded'
                 WHEN c.sample_id IS NOT NULL THEN 'rollouts_cancelled'
+                WHEN ev.sample_id IS NOT NULL THEN 'rollouts_eval'
                 ELSE NULL
             END AS kind
         FROM keys k
@@ -3383,6 +3384,11 @@ def get_sample_statuses(req: SampleStatusesRequest):
             FROM samples_data_cancelled
             WHERE run_id = ?
         ) c ON c.group_id = k.group_id AND c.sample_id = k.sample_id
+        LEFT JOIN (
+            SELECT DISTINCT sample_id
+            FROM samples_data_eval
+            WHERE run_id = ?
+        ) ev ON ev.sample_id = k.sample_id
         """,
         params,
     ).fetchall()
@@ -3492,93 +3498,40 @@ def get_inference_events_by_group(req: InferenceGroupEventsRequest):
         for row in env_time_rows
     ]
 
-    # Fetch compute_reward_time from samples_data (including discarded) for this group
-    reward_time_rows = con.execute(
-        """
-        SELECT sample_id, compute_reward_time FROM (
-            SELECT sample_id, compute_reward_time
-            FROM samples_data
-            WHERE run_id = ? AND group_id = ?
-              AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
-            UNION ALL
-            SELECT sample_id, compute_reward_time
-            FROM samples_data_discarded
-            WHERE run_id = ? AND group_id = ?
-              AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
-        ) sub
-        ORDER BY sample_id
-        """,
-        [req.run_path, req.group_id, req.run_path, req.group_id],
-    ).fetchall()
+    # Fetch compute_reward_time from samples_data (including discarded and eval) for this group.
+    # For eval groups, samples_data_eval uses sample_id (correlates with events_rollout.sample_id)
+    # and compute_eval_metrics_time instead of compute_reward_time.
+    sample_ids_in_group = list({e["sample_id"] for e in events if e["sample_id"] is not None and e["sample_id"] >= 0})
+    if sample_ids_in_group:
+        sample_ids_clause = ", ".join(["?"] * len(sample_ids_in_group))
+        reward_time_rows = con.execute(
+            f"""
+            SELECT sample_id, compute_time FROM (
+                SELECT sample_id, compute_reward_time as compute_time
+                FROM samples_data
+                WHERE run_id = ? AND group_id = ?
+                  AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
+                UNION ALL
+                SELECT sample_id, compute_reward_time as compute_time
+                FROM samples_data_discarded
+                WHERE run_id = ? AND group_id = ?
+                  AND compute_reward_time IS NOT NULL AND compute_reward_time > 0
+                UNION ALL
+                SELECT sample_id, compute_eval_metrics_time as compute_time
+                FROM samples_data_eval
+                WHERE run_id = ? AND sample_id IN ({sample_ids_clause})
+                  AND compute_eval_metrics_time IS NOT NULL AND compute_eval_metrics_time > 0
+            ) sub
+            ORDER BY sample_id
+            """,
+            [req.run_path, req.group_id, req.run_path, req.group_id, req.run_path, *sample_ids_in_group],
+        ).fetchall()
+    else:
+        reward_time_rows = []
     compute_reward_times = [
         {"sample_id": row[0], "time": row[1]}
         for row in reward_time_rows
     ]
-
-    # For eval groups, fetch compute_eval_metrics_time from samples_data_eval
-    # (samples_data_eval uses (step, eval_name, sample_idx) instead of group_id,
-    # so we need to resolve the mapping via rank-based matching)
-    if not compute_reward_times and any(e.get("is_eval") for e in events):
-        all_eval_groups = con.execute(
-            """
-            SELECT DISTINCT er.group_id
-            FROM events_rollout er
-            WHERE er.run_id = ?
-              AND er.group_id IN (SELECT DISTINCT group_id FROM events_orchestrator WHERE run_id = ? AND event_type = 'rollouts_group_done' AND is_eval = TRUE)
-            ORDER BY er.group_id
-            """,
-            [req.run_path, req.run_path],
-        ).fetchall()
-        group_ids = [r[0] for r in all_eval_groups]
-        try:
-            global_eval_idx = group_ids.index(req.group_id)
-        except ValueError:
-            global_eval_idx = -1
-
-        if global_eval_idx >= 0:
-            eval_steps_info = con.execute(
-                """
-                SELECT step, eval_name, COUNT(DISTINCT sample_idx) as n_samples
-                FROM prompts_eval
-                WHERE run_id = ?
-                GROUP BY step, eval_name
-                ORDER BY step, eval_name
-                """,
-                [req.run_path],
-            ).fetchall()
-
-            target_step = None
-            target_eval_name = None
-            target_sample_idx = None
-            offset = 0
-            for e_step, e_name, n_samples in eval_steps_info:
-                if global_eval_idx < offset + n_samples:
-                    target_step = e_step
-                    target_eval_name = e_name
-                    target_sample_idx = global_eval_idx - offset
-                    break
-                offset += n_samples
-
-            if target_step is not None and target_eval_name is not None and target_sample_idx is not None:
-                # compute_eval_metrics_time may only be populated on one completion;
-                # assign the value to the last completion (highest sample_id in events)
-                eval_time_row = con.execute(
-                    """
-                    SELECT MAX(compute_eval_metrics_time)
-                    FROM samples_data_eval
-                    WHERE run_id = ? AND step = ? AND eval_name = ? AND sample_idx = ?
-                      AND compute_eval_metrics_time IS NOT NULL AND compute_eval_metrics_time > 0
-                    """,
-                    [req.run_path, target_step, target_eval_name, target_sample_idx],
-                ).fetchone()
-                if eval_time_row and eval_time_row[0] is not None:
-                    max_sample_id = max(
-                        (e["sample_id"] for e in events if e["sample_id"] is not None),
-                        default=0,
-                    )
-                    compute_reward_times = [
-                        {"sample_id": max_sample_id, "time": eval_time_row[0]}
-                    ]
 
     log.info(f"[API] Returning {len(events)} inference events for group {req.group_id}")
     return {
@@ -4204,7 +4157,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
                 AND s.tool_call_idx IS NOT DISTINCT FROM e.tool_call_idx
                 AND s.rn = e.rn
             WHERE (s.start_time < ? AND e.end_time > ?)
-               OR (s.event_type IN ('reward', 'env_response') AND s.sample_id IN (
+               OR (s.event_type IN ('reward', 'eval_metrics', 'env_response') AND s.sample_id IN (
                    SELECT DISTINCT s2.sample_id FROM starts s2
                    JOIN ends e2 ON s2.event_type = e2.event_type
                        AND s2.sample_id IS NOT DISTINCT FROM e2.sample_id
@@ -4229,12 +4182,16 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             SELECT run_id, sample_id, generation_idx, queue_time, ttft, prefill_time,
                    decode_time, inference_time, e2e_latency, tokens, prompt_tokens
             FROM generations_discarded WHERE run_id = ?
+            UNION ALL
+            SELECT run_id, sample_id, generation_idx, NULL, NULL, NULL,
+                   NULL, NULL, NULL, tokens, prompt_tokens
+            FROM generations_eval WHERE run_id = ?
         ) g ON g.sample_id = p.sample_id
             AND g.generation_idx = p.generation_idx
             AND p.event_type = 'generation'
         ORDER BY p.start_time ASC
         """,
-        [req.run_path, req.run_path, interval_end, interval_start, interval_end, interval_start, req.run_path, req.run_path],
+        [req.run_path, req.run_path, interval_end, interval_start, interval_end, interval_start, req.run_path, req.run_path, req.run_path],
     ).fetchall()
 
     rollout_events = [

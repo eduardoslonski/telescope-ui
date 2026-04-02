@@ -157,7 +157,7 @@ function formatNumberWithDelimiter(n: number): string {
 // ============================================================================
 
 export interface RolloutSpan {
-  event_type: string // "generation", "tool_execution", "env_response", "reward"
+  event_type: string // "generation", "tool_execution", "env_response", "reward", "eval_metrics"
   start_time: number
   end_time: number
   sample_id: number
@@ -449,7 +449,7 @@ export function CombinedTimelineChart({
     // Reward events are now in rolloutEvents (pre-pivoted spans with event_type="reward")
     if (rolloutEvents) {
       for (const event of rolloutEvents) {
-        if (event.event_type === "reward" && event.sample_id != null && event.sample_id !== -1 && event.group_id != null) {
+        if ((event.event_type === "reward" || event.event_type === "eval_metrics") && event.sample_id != null && event.sample_id !== -1 && event.group_id != null) {
           const key = `${event.group_id}:${event.sample_id}`
           // Pre-pivoted: if it has start_time and end_time, both started and ended
           started.add(key)
@@ -610,7 +610,7 @@ export function CombinedTimelineChart({
     [rolloutSpansWithInflight],
   )
   const rewardSpans = useMemo(
-    () => rolloutSpansWithInflight.filter((s) => s.event_type === "reward"),
+    () => rolloutSpansWithInflight.filter((s) => s.event_type === "reward" || s.event_type === "eval_metrics"),
     [rolloutSpansWithInflight],
   )
   const weightSyncSpans = useMemo(
@@ -1261,7 +1261,7 @@ function InferenceSection({
   const readyToRenderRequests = !highlightDiscarded || discardStatusReady
 
   const sampleStatusByKey = useMemo(() => {
-    const map = new Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>()
+    const map = new Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>()
     sampleStatuses?.statuses.forEach((status) => {
       map.set(`${status.group_id}:${status.sample_id}`, status.kind)
     })
@@ -1336,7 +1336,7 @@ function InferenceSection({
   >(null)
   const [activeSampleStatusByKey, setActiveSampleStatusByKey] = useState<Map<
     string,
-    "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null
+    "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null
   > | null>(null)
   const [activeRenderKey, setActiveRenderKey] = useState<string | null>(null)
 
@@ -1371,13 +1371,15 @@ function InferenceSection({
         return
       }
 
+      const key = `${span.group_id}:${span.sample_id}`
+      const status = sampleStatusByKey.get(key)
       setSelectedRequest({
         sampleId: span.sample_id,
         groupId: span.group_id,
-        isEval: false,
+        isEval: status === "rollouts_eval",
       })
     },
-    [selectedRequest, setSelectedRequest],
+    [selectedRequest, setSelectedRequest, sampleStatusByKey],
   )
 
   // Map env response spans to servers for inline (non-separate) rendering
@@ -2114,7 +2116,11 @@ export function GroupSampleTimeline({
     return sampleStatuses.statuses.some((s) => s.kind === "rollouts_discarded")
   }, [highlightDiscarded, sampleStatuses])
 
-  const isEvalGroup = isEval ?? false
+  const isEvalGroup = useMemo(() => {
+    if (isEval) return true
+    if (!sampleStatuses?.statuses) return false
+    return sampleStatuses.statuses.some((s) => s.kind === "rollouts_eval")
+  }, [isEval, sampleStatuses])
 
   const isCanceledGroup = useMemo(() => {
     if (!highlightDiscarded || !sampleStatuses?.statuses) return false
@@ -2127,7 +2133,7 @@ export function GroupSampleTimeline({
     if (!highlightDiscarded || isEvalGroup) return false
     if (!discardStatusReady) return true
     if (!sampleStatuses?.statuses?.length) return true
-    return !sampleStatuses.statuses.some((s) => s.kind === "rollouts")
+    return !sampleStatuses.statuses.some((s) => s.kind === "rollouts" || s.kind === "rollouts_eval")
   }, [isCanceledGroup, isDiscardedGroup, isEvalGroup, highlightDiscarded, discardStatusReady, sampleStatuses])
 
   const groupColor = isCanceledGroup
@@ -2513,7 +2519,7 @@ function InferenceServerTimeline({
   intervalDuration: number
   numLanes: number
   selectedRequest: SelectedInferenceRequest | null
-  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>
+  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>
   highlightDiscarded: boolean
   discardStatusReady: boolean
   onEventClick: (span: RolloutSpan) => void
@@ -2947,7 +2953,7 @@ function InferenceServerTimeline({
                     const rwDurationMs = rwDuration * 1000
 
                     const isInflight = rwSpan.phase === "inflight"
-                    const isEval = false // reward spans are not eval in new model
+                    const isEval = rwSpan.event_type === "eval_metrics"
                     const isSelected = selectedRequest?.sampleId === rwSpan.sample_id
                     const isInGroup = selectedRequest?.groupId === rwSpan.group_id
                     const isDiscarded = (() => {
@@ -3106,7 +3112,7 @@ function InferenceServerTimeline({
 // Helper to get the base color for a generation span
 function getSpanBaseColor(
   span: RolloutSpan,
-  sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>,
+  sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
   darkMode: boolean = false,
@@ -3133,6 +3139,9 @@ function getSpanBaseColor(
   if (status === "rollouts_cancelled") {
     return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
   }
+  if (status === "rollouts_eval") {
+    return INFERENCE_REQUEST_EVAL_COLOR
+  }
   if (status == null) {
     return darkMode ? "rgba(202, 138, 4, 0.6)" : "rgba(202, 138, 4, 0.7)"
   }
@@ -3142,7 +3151,7 @@ function getSpanBaseColor(
 function getSpanSelectionColor(
   span: RolloutSpan,
   selectedRequest: SelectedInferenceRequest | null,
-  sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>,
+  sampleStatusByKey?: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>,
   highlightDiscarded: boolean = true,
   discardStatusReady: boolean = true,
   darkMode: boolean = false,
@@ -3161,6 +3170,7 @@ function getSpanSelectionColor(
 
   const isDiscarded = defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR || defaultColor === INFERENCE_REQUEST_DISCARDED_COLOR_DARK
   const isCancelled = defaultColor === INFERENCE_REQUEST_CANCELED_COLOR || defaultColor === INFERENCE_REQUEST_CANCELED_COLOR_DARK
+  const isEval = defaultColor === INFERENCE_REQUEST_EVAL_COLOR
   const isInflightOrPending = span.phase === "inflight" || defaultColor.includes("202, 138, 4") || defaultColor.includes("234, 179, 8") || defaultColor.includes("250, 204, 21")
 
   // Selected sample = darker version of base color
@@ -3173,6 +3183,9 @@ function getSpanSelectionColor(
     }
     if (isInflightOrPending) {
       return { color: darkMode ? "rgba(161, 98, 7, 0.8)" : "rgba(161, 98, 7, 0.9)", opacity: 1 }
+    }
+    if (isEval) {
+      return { color: GROUP_SAMPLE_EVAL_SELECTED_COLOR, opacity: 1 }
     }
     return { color: INFERENCE_REQUEST_SELECTED_COLOR, opacity: 1 }
   }
@@ -3188,6 +3201,9 @@ function getSpanSelectionColor(
     if (isInflightOrPending) {
       return { color: darkMode ? "rgba(202, 138, 4, 0.7)" : "rgba(202, 138, 4, 0.8)", opacity: 1 }
     }
+    if (isEval) {
+      return { color: GROUP_SAMPLE_EVAL_COLOR, opacity: 1 }
+    }
     return { color: GROUP_SAMPLE_COLOR, opacity: 1 }
   }
 
@@ -3201,7 +3217,7 @@ function getSpanTimingBarStyle(
   span: RolloutSpan,
   kind: "env" | "reward",
   selectedRequest: SelectedInferenceRequest | null,
-  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>,
+  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>,
   highlightDiscarded: boolean,
   discardStatusReady: boolean,
   darkMode: boolean = false,
@@ -3275,7 +3291,7 @@ function GenerationSpanBlock({
   intervalStart: number
   intervalDuration: number
   selectedRequest: SelectedInferenceRequest | null
-  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null>
+  sampleStatusByKey: Map<string, "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null>
   highlightDiscarded: boolean
   discardStatusReady: boolean
   onClick: () => void
@@ -3312,7 +3328,7 @@ function GenerationSpanBlock({
   const statusLabel = (() => {
     if (span.phase === "inflight")
       return { text: "In Progress", className: "text-yellow-500" }
-    // Check kept/discarded/cancelled status first (takes priority)
+    // Check kept/discarded/cancelled/eval status first (takes priority)
     if (highlightDiscarded && span.sample_id >= 0 && span.group_id >= 0) {
       if (!discardStatusReady) {
         return { text: "Pending Status", className: "text-yellow-600" }
@@ -3324,6 +3340,9 @@ function GenerationSpanBlock({
       }
       if (status === "rollouts_cancelled") {
         return { text: "Canceled", className: "text-muted-foreground" }
+      }
+      if (status === "rollouts_eval") {
+        return null // Eval traces are done — no waiting state
       }
     }
     // For completed generation bars: show compute_reward lifecycle state

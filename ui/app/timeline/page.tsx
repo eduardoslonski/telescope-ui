@@ -864,17 +864,23 @@ function TimelineFooter({
     )
   }, [highlightDiscarded, footerSampleStatuses])
 
+  const isEvalGroup = useMemo(() => {
+    if (selectedRequest?.isEval) return true
+    if (!footerSampleStatuses?.statuses) return false
+    return footerSampleStatuses.statuses.some((s) => s.kind === "rollouts_eval")
+  }, [selectedRequest?.isEval, footerSampleStatuses])
+
   // Check if the selected group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
     if (isCanceledGroup || isDiscardedGroup) return false
-    if (!highlightDiscarded || selectedRequest?.isEval) return false
+    if (!highlightDiscarded || isEvalGroup) return false
     // If status not ready yet, it's pending
     if (!footerDiscardStatusReady) return true
     // If status is ready but no statuses found for this group, it's pending
     if (!footerSampleStatuses?.statuses?.length) return true
     // If none are categorized as kept ("rollouts"), it's pending
-    return !footerSampleStatuses.statuses.some((s) => s.kind === "rollouts")
-  }, [isCanceledGroup, isDiscardedGroup, highlightDiscarded, footerDiscardStatusReady, footerSampleStatuses])
+    return !footerSampleStatuses.statuses.some((s) => s.kind === "rollouts" || s.kind === "rollouts_eval")
+  }, [isCanceledGroup, isDiscardedGroup, isEvalGroup, highlightDiscarded, footerDiscardStatusReady, footerSampleStatuses])
 
   // ---- Sample details for discard reason + advantage summary ----
   const { data: sampleDetails } = useSampleDetails(
@@ -988,7 +994,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className="w-2.5 h-2.5 rounded-sm"
-                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : isInflightOrPendingGroup ? "rgba(161, 98, 7, 0.9)" : selectedRequest.isEval ? "#047857" : "#075985" }}
+                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : isInflightOrPendingGroup ? "rgba(161, 98, 7, 0.9)" : isEvalGroup ? "#047857" : "#075985" }}
               />
               <span className="text-xs font-medium">Sample {selectedRequest.sampleId}</span>
             </div>
@@ -996,7 +1002,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className={`w-2.5 h-2.5 rounded-sm${!footerDiscardStatusReady ? " animate-pulse bg-muted" : ""}`}
-                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : isInflightOrPendingGroup ? "rgba(202, 138, 4, 0.8)" : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
+                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : isInflightOrPendingGroup ? "rgba(202, 138, 4, 0.8)" : isEvalGroup ? "#10b981" : "#0369a1" } : undefined}
               />
               <span className="text-xs font-medium">Group {selectedRequest.groupId}</span>
             </div>

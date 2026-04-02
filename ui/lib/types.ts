@@ -29,7 +29,7 @@ export interface TrainerEvent {
 }
 
 export interface RolloutEvent {
-  event_type: string // "generation", "tool_execution", "env_response", "reward"
+  event_type: string // "generation", "tool_execution", "env_response", "reward", "eval_metrics"
   start_time: number
   end_time: number
   sample_id?: number | null
@@ -543,7 +543,7 @@ export type SampleDetailsResponse =
 export interface SampleStatusItem {
   group_id: number
   sample_id: number
-  kind: "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | null
+  kind: "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null
 }
 
 export interface SampleStatusesResponse {

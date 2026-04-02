@@ -765,6 +765,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             env TEXT,
             prompt TEXT,
             tokens_prompt BIGINT,
@@ -782,6 +783,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             agent_id BIGINT DEFAULT 0,
             generation_idx BIGINT,
@@ -802,6 +804,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             agent_id BIGINT DEFAULT 0,
             generation_idx BIGINT,
@@ -821,6 +824,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             agent_id BIGINT DEFAULT 0,
             generation_idx BIGINT,
@@ -848,6 +852,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             eval_name TEXT,
             model_step BIGINT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             env TEXT,
             num_generations BIGINT,
@@ -864,6 +869,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             step BIGINT,
             eval_name TEXT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             env TEXT,
             metric_name TEXT,
@@ -879,6 +885,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             step BIGINT,
             eval_name TEXT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             env TEXT,
             key TEXT,
@@ -894,6 +901,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             step BIGINT,
             eval_name TEXT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             env TEXT,
             tag_name TEXT,
@@ -909,6 +917,7 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
             step BIGINT,
             eval_name TEXT,
             sample_idx BIGINT,
+            sample_id BIGINT,
             completion_idx BIGINT,
             agent_id BIGINT DEFAULT 0,
             generation_idx BIGINT,
@@ -921,6 +930,14 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
     
+    # Migration: add sample_id column to eval tables for existing DBs
+    for eval_table in [
+        "prompts_eval", "generations_eval", "env_responses_eval", "tool_calls_eval",
+        "samples_data_eval", "rollouts_metrics_eval", "golden_answers_eval",
+        "sample_tags_eval", "info_turns_eval",
+    ]:
+        con.execute(f"ALTER TABLE {eval_table} ADD COLUMN IF NOT EXISTS sample_id BIGINT;")
+
     # Ingest state - tracks what we've already fetched
     con.execute("""
         CREATE TABLE IF NOT EXISTS ingest_state (
@@ -2666,6 +2683,7 @@ def insert_prompts_eval(con: duckdb.DuckDBPyConnection, run_id: str, prompts: li
             "eval_name": p.get("eval_name"),
             "model_step": p.get("model_step"),
             "sample_idx": p.get("sample_idx"),
+            "sample_id": p.get("sample_id"),
             "env": p.get("env"),
             "prompt": p.get("prompt"),
             "tokens_prompt": p.get("tokens_prompt"),
@@ -2675,7 +2693,7 @@ def insert_prompts_eval(con: duckdb.DuckDBPyConnection, run_id: str, prompts: li
         }
         for p in prompts
     ])
-    
+
     con.execute("""
         INSERT INTO prompts_eval
         SELECT * FROM df
@@ -2700,6 +2718,7 @@ def insert_generations_eval(con: duckdb.DuckDBPyConnection, run_id: str, generat
             "eval_name": g.get("eval_name"),
             "model_step": g.get("model_step"),
             "sample_idx": g.get("sample_idx"),
+            "sample_id": g.get("sample_id"),
             "completion_idx": g.get("completion_idx"),
             "agent_id": g.get("agent_id", 0),
             "generation_idx": g.get("generation_idx"),
@@ -2715,12 +2734,12 @@ def insert_generations_eval(con: duckdb.DuckDBPyConnection, run_id: str, generat
 
     con.execute("""
         INSERT INTO generations_eval (
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, content, tokens, prompt_tokens,
             tool_call_count, stop_reason, tail_idx
         )
         SELECT
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, content, tokens, prompt_tokens,
             tool_call_count, stop_reason, tail_idx
         FROM df
@@ -2745,6 +2764,7 @@ def insert_env_responses_eval(con: duckdb.DuckDBPyConnection, run_id: str, env_r
             "eval_name": e.get("eval_name"),
             "model_step": e.get("model_step"),
             "sample_idx": e.get("sample_idx"),
+            "sample_id": e.get("sample_id"),
             "completion_idx": e.get("completion_idx"),
             "agent_id": e.get("agent_id", 0),
             "generation_idx": e.get("generation_idx"),
@@ -2759,11 +2779,11 @@ def insert_env_responses_eval(con: duckdb.DuckDBPyConnection, run_id: str, env_r
 
     con.execute("""
         INSERT INTO env_responses_eval (
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, content, turn_type, tokens, response_time, tail_idx
         )
         SELECT
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, content, turn_type, tokens, response_time, tail_idx
         FROM df
     """)
@@ -2787,6 +2807,7 @@ def insert_tool_calls_eval(con: duckdb.DuckDBPyConnection, run_id: str, tool_cal
             "eval_name": tc.get("eval_name"),
             "model_step": tc.get("model_step"),
             "sample_idx": tc.get("sample_idx"),
+            "sample_id": tc.get("sample_id"),
             "completion_idx": tc.get("completion_idx"),
             "agent_id": tc.get("agent_id", 0),
             "generation_idx": tc.get("generation_idx"),
@@ -2809,13 +2830,13 @@ def insert_tool_calls_eval(con: duckdb.DuckDBPyConnection, run_id: str, tool_cal
 
     con.execute("""
         INSERT INTO tool_calls_eval (
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, tool_call_idx, env_response_generation_idx,
             tool_name, arguments, raw_text, result, success, error,
             exit_code, truncated, result_tokens, sandbox_id, tail_idx
         )
         SELECT
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, tool_call_idx, env_response_generation_idx,
             tool_name, arguments, raw_text, result, success, error,
             exit_code, truncated, result_tokens, sandbox_id, tail_idx
@@ -2841,6 +2862,7 @@ def insert_samples_data_eval(con: duckdb.DuckDBPyConnection, run_id: str, sample
             "eval_name": s.get("eval_name"),
             "model_step": s.get("model_step"),
             "sample_idx": s.get("sample_idx"),
+            "sample_id": s.get("sample_id"),
             "completion_idx": s.get("completion_idx"),
             "env": s.get("env"),
             "num_generations": s.get("num_generations"),
@@ -2853,11 +2875,11 @@ def insert_samples_data_eval(con: duckdb.DuckDBPyConnection, run_id: str, sample
 
     con.execute("""
         INSERT INTO samples_data_eval (
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             env, num_generations, compute_eval_metrics_time, stop_reason, tail_idx
         )
         SELECT
-            run_id, step, eval_name, model_step, sample_idx, completion_idx,
+            run_id, step, eval_name, model_step, sample_idx, sample_id, completion_idx,
             env, num_generations, compute_eval_metrics_time, stop_reason, tail_idx
         FROM df
     """)
@@ -2884,6 +2906,7 @@ def insert_rollouts_metrics_eval(
             "step": m.get("step"),
             "eval_name": m.get("eval_name"),
             "sample_idx": m.get("sample_idx"),
+            "sample_id": m.get("sample_id"),
             "completion_idx": m.get("completion_idx"),
             "env": m.get("env"),
             "metric_name": m.get("metric_name"),
@@ -2892,13 +2915,13 @@ def insert_rollouts_metrics_eval(
         }
         for m in metrics
     ])
-    
+
     con.execute("""
         INSERT INTO rollouts_metrics_eval (
-            run_id, step, eval_name, sample_idx, completion_idx, env, metric_name, value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, metric_name, value, tail_idx
         )
         SELECT
-            run_id, step, eval_name, sample_idx, completion_idx, env, metric_name, value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, metric_name, value, tail_idx
         FROM df
     """)
     
@@ -2924,6 +2947,7 @@ def insert_golden_answers_eval(
             "step": a.get("step"),
             "eval_name": a.get("eval_name"),
             "sample_idx": a.get("sample_idx"),
+            "sample_id": a.get("sample_id"),
             "completion_idx": a.get("completion_idx"),
             "env": a.get("env"),
             "key": a.get("key"),
@@ -2932,13 +2956,13 @@ def insert_golden_answers_eval(
         }
         for a in answers
     ])
-    
+
     con.execute("""
         INSERT INTO golden_answers_eval (
-            run_id, step, eval_name, sample_idx, completion_idx, env, key, value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, key, value, tail_idx
         )
         SELECT
-            run_id, step, eval_name, sample_idx, completion_idx, env, key, value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, key, value, tail_idx
         FROM df
     """)
     
@@ -2964,6 +2988,7 @@ def insert_sample_tags_eval(
             "step": t.get("step"),
             "eval_name": t.get("eval_name"),
             "sample_idx": t.get("sample_idx"),
+            "sample_id": t.get("sample_id"),
             "completion_idx": t.get("completion_idx"),
             "env": t.get("env"),
             "tag_name": t.get("tag_name"),
@@ -2975,10 +3000,10 @@ def insert_sample_tags_eval(
 
     con.execute("""
         INSERT INTO sample_tags_eval (
-            run_id, step, eval_name, sample_idx, completion_idx, env, tag_name, tag_value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, tag_name, tag_value, tail_idx
         )
         SELECT
-            run_id, step, eval_name, sample_idx, completion_idx, env, tag_name, tag_value, tail_idx
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx, env, tag_name, tag_value, tail_idx
         FROM df
     """)
 
@@ -3004,6 +3029,7 @@ def insert_info_turns_eval(
             "step": it.get("step"),
             "eval_name": it.get("eval_name"),
             "sample_idx": it.get("sample_idx"),
+            "sample_id": it.get("sample_id"),
             "completion_idx": it.get("completion_idx"),
             "agent_id": it.get("agent_id", 0),
             "generation_idx": it.get("generation_idx"),
@@ -3019,12 +3045,12 @@ def insert_info_turns_eval(
 
     con.execute("""
         INSERT INTO info_turns_eval (
-            run_id, step, eval_name, sample_idx, completion_idx,
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, tool_call_idx,
             env, info_key, info_value, info_type, tail_idx
         )
         SELECT
-            run_id, step, eval_name, sample_idx, completion_idx,
+            run_id, step, eval_name, sample_idx, sample_id, completion_idx,
             agent_id, generation_idx, tool_call_idx,
             env, info_key, info_value, info_type, tail_idx
         FROM df
