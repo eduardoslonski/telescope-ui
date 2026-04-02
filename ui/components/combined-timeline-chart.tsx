@@ -2052,8 +2052,8 @@ export function GroupSampleTimeline({
   timeBounds,
   groupId,
   runPath,
-  envResponseTimesBySample,
-  computeRewardTimeBySample,
+  envResponseSpans,
+  rewardSpans,
   inflightSnapshot,
   onSampleClick,
   showNodeLabel,
@@ -2064,11 +2064,8 @@ export function GroupSampleTimeline({
   timeBounds: { start: number; end: number; duration: number }
   groupId: number
   runPath: string
-  envResponseTimesBySample?: Record<
-    number,
-    Array<{ turn_order: number; time: number }>
-  >
-  computeRewardTimeBySample?: Record<number, number>
+  envResponseSpans?: RolloutSpan[]
+  rewardSpans?: RolloutSpan[]
   inflightSnapshot?: InflightSnapshot
   onSampleClick?: (sampleId: number) => void
   showNodeLabel?: boolean
@@ -2218,60 +2215,14 @@ export function GroupSampleTimeline({
                       : GROUP_SAMPLE_SELECTED_COLOR
               : groupColor
 
-            // Sort events by start_time for env response placement
-            const sortedEvents = [...events].sort(
-              (a, b) => a.start_time - b.start_time,
+            // Env response spans for this sample
+            const sampleEnvSpans = (envResponseSpans ?? []).filter(
+              (s) => s.sample_id === sampleId,
             )
-            const envTimes = envResponseTimesBySample?.[sampleId] ?? []
-            const rewardTime = computeRewardTimeBySample?.[sampleId] ?? 0
-
-            // Check if this sample has inflight compute_reward
-            const inflightCR = inflightSnapshot?.inflight_rewards?.find(
-              (r) => r.sample_id === sampleId
+            // Reward spans for this sample
+            const sampleRewardSpans = (rewardSpans ?? []).filter(
+              (s) => s.sample_id === sampleId,
             )
-            const inflightCRDuration = 0 // inflight rewards don't carry start_time in new model
-
-            // Check if this sample has inflight env_response
-            const inflightER = inflightSnapshot?.inflight_env_responses?.find(
-              (r) => r.sample_id === sampleId
-            )
-            const inflightERDuration = 0 // inflight env_responses don't carry start_time in new model
-
-            // Build env response trace positions: after each inference event
-            const envTraces: Array<{
-              start: number
-              duration: number
-              idx: number
-            }> = []
-            for (
-              let i = 0;
-              i < sortedEvents.length && i < envTimes.length;
-              i++
-            ) {
-              const envDur = envTimes[i].time
-              if (envDur > 0) {
-                envTraces.push({
-                  start: sortedEvents[i].end_time,
-                  duration: envDur,
-                  idx: i,
-                })
-              }
-            }
-
-            // Compute reward trace: after the last event (or last env response)
-            const effectiveRewardTime = rewardTime
-            let rewardStart = 0
-            if (effectiveRewardTime > 0 && sortedEvents.length > 0) {
-              const lastEvent = sortedEvents[sortedEvents.length - 1]
-              rewardStart = lastEvent.end_time
-              // If there's an env response after the last event, start after it
-              if (envTimes.length >= sortedEvents.length) {
-                const lastEnv = envTimes[sortedEvents.length - 1]
-                if (lastEnv && lastEnv.time > 0) {
-                  rewardStart += lastEnv.time
-                }
-              }
-            }
 
             return (
               <div
@@ -2358,17 +2309,19 @@ export function GroupSampleTimeline({
                   )
                 })}
 
-                {/* Environment response traces */}
-                {envTraces.map((trace) => {
-                  const isInflightEnv = trace.idx === -1
-                  const relativeStart = trace.start - timeBounds.start
+                {/* Environment response spans */}
+                {sampleEnvSpans.map((envSpan, envIdx) => {
+                  const isInflightEnv = envSpan.phase === "inflight"
+                  const envDuration = envSpan.end_time - envSpan.start_time
+                  if (envDuration <= 0 && !isInflightEnv) return null
+                  const relativeStart = envSpan.start_time - timeBounds.start
                   const leftPercent =
                     (relativeStart / timeBounds.duration) * 100
                   const widthPercent = Math.max(
                     0.3,
-                    (trace.duration / timeBounds.duration) * 100,
+                    (envDuration / timeBounds.duration) * 100,
                   )
-                  const durationMs = trace.duration * 1000
+                  const durationMs = envDuration * 1000
                   const envColor = isInflightEnv
                     ? (darkMode ? "rgba(134, 239, 172, 0.5)" : "rgba(34, 197, 94, 0.5)")
                     : isSelected
@@ -2384,7 +2337,7 @@ export function GroupSampleTimeline({
 
                   return (
                     <HoverTooltipBlock
-                      key={`env-${trace.idx}`}
+                      key={`env-${envIdx}`}
                       className={`absolute top-px bottom-px group ${onSampleClick ? "cursor-pointer" : ""}`}
                       style={{
                         left: `${leftPercent}%`,
@@ -2403,7 +2356,6 @@ export function GroupSampleTimeline({
                       tooltip={
                         <EventTooltip
                           title={isInflightEnv ? "Env Response (in flight)" : "Env Response"}
-                          titleSecondary={isInflightEnv ? undefined : `Turn ${trace.idx}`}
                           color={envColor}
                           details={[
                             {
@@ -2411,85 +2363,88 @@ export function GroupSampleTimeline({
                               value: formatDuration(durationMs),
                             },
                           ]}
-                          startTime={trace.start}
-                          endTime={trace.start + trace.duration}
+                          startTime={envSpan.start_time}
+                          endTime={envSpan.end_time}
                         />
                       }
                     />
                   )
                 })}
 
-                {/* Compute reward / metrics trace */}
-                {effectiveRewardTime > 0 &&
-                  sortedEvents.length > 0 &&
-                  (() => {
-                    const isInflightReward = !!inflightCR && rewardTime <= 0
-                    const relativeStart = rewardStart - timeBounds.start
-                    const leftPercent =
-                      (relativeStart / timeBounds.duration) * 100
-                    const widthPercent = Math.max(
-                      0.3,
-                      (effectiveRewardTime / timeBounds.duration) * 100,
-                    )
-                    const durationMs = effectiveRewardTime * 1000
-                    const rwdColor = isInflightReward
-                      ? (darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)")
-                      : isSelected
-                        ? isDiscardedGroup
-                          ? (darkMode ? "#9ca3af" : "#6b7280")
-                          : isEval
-                            ? COMPUTE_METRICS_SELECTED_COLOR
-                            : COMPUTE_REWARD_SELECTED_COLOR
-                        : isDiscardedGroup
-                          ? isEval
-                            ? (darkMode ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK : COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT)
-                            : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
-                          : isEval
-                            ? COMPUTE_METRICS_GROUP_COLOR
-                            : COMPUTE_REWARD_GROUP_COLOR
-                    const rwdBorder = isInflightReward
-                      ? (darkMode ? "1.5px dashed rgba(250, 204, 21, 0.7)" : "1.5px dashed rgba(234, 179, 8, 0.7)")
-                      : eventBorderMedium
+                {/* Compute reward / metrics spans */}
+                {sampleRewardSpans.map((rwSpan, rwIdx) => {
+                  const isInflightReward = rwSpan.phase === "inflight"
+                  const rwDuration = rwSpan.end_time - rwSpan.start_time
+                  if (rwDuration <= 0 && !isInflightReward) return null
+                  const relativeStart = rwSpan.start_time - timeBounds.start
+                  const leftPercent =
+                    (relativeStart / timeBounds.duration) * 100
+                  const widthPercent = Math.max(
+                    0.3,
+                    (rwDuration / timeBounds.duration) * 100,
+                  )
+                  const durationMs = rwDuration * 1000
+                  const rwdColor = isInflightReward
+                    ? (darkMode ? "rgba(250, 204, 21, 0.5)" : "rgba(234, 179, 8, 0.5)")
+                    : isSelected
+                      ? isDiscardedGroup
+                        ? (darkMode ? "#9ca3af" : "#6b7280")
+                        : isEvalGroup
+                          ? COMPUTE_METRICS_SELECTED_COLOR
+                          : COMPUTE_REWARD_SELECTED_COLOR
+                      : isDiscardedGroup
+                        ? isEvalGroup
+                          ? (darkMode ? COMPUTE_METRICS_GROUP_DISCARDED_COLOR_DARK : COMPUTE_METRICS_GROUP_DISCARDED_COLOR_LIGHT)
+                          : (darkMode ? COMPUTE_REWARD_GROUP_DISCARDED_COLOR_DARK : COMPUTE_REWARD_GROUP_DISCARDED_COLOR_LIGHT)
+                        : isEvalGroup
+                          ? COMPUTE_METRICS_GROUP_COLOR
+                          : COMPUTE_REWARD_GROUP_COLOR
+                  const rwdBorder = isInflightReward
+                    ? (darkMode ? "1.5px dashed rgba(250, 204, 21, 0.7)" : "1.5px dashed rgba(234, 179, 8, 0.7)")
+                    : eventBorderMedium
 
-                    return (
-                      <HoverTooltipBlock
-                        className={`absolute top-px bottom-px group ${onSampleClick ? "cursor-pointer" : ""}`}
-                        style={{
-                          left: `${leftPercent}%`,
-                          width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
-                          backgroundColor: rwdColor,
-                          borderRadius: "1px",
-                          border: rwdBorder,
-                          boxSizing: "border-box",
-                          opacity: 0.85,
-                        }}
-                        onClick={
-                          onSampleClick
-                            ? () => onSampleClick(sampleId)
-                            : undefined
-                        }
-                        tooltip={
-                          <EventTooltip
-                            title={isEval ? "Compute Metrics" : "Compute Reward"}
-                            statusLabel={
-                              isInflightReward
-                                ? { text: "In Progress", className: "text-yellow-500" }
-                                : isInflightOrPendingGroup
-                                  ? { text: "Waiting for Group", className: "text-yellow-600" }
-                                  : null
-                            }
-                            color={rwdColor}
-                            details={[
-                              {
-                                label: "Duration",
-                                value: formatDuration(durationMs),
-                              },
-                            ]}
-                          />
-                        }
-                      />
-                    )
-                  })()}
+                  return (
+                    <HoverTooltipBlock
+                      key={`rw-${rwIdx}`}
+                      className={`absolute top-px bottom-px group ${onSampleClick ? "cursor-pointer" : ""}`}
+                      style={{
+                        left: `${leftPercent}%`,
+                        width: `${Math.min(widthPercent, 100 - leftPercent)}%`,
+                        backgroundColor: rwdColor,
+                        borderRadius: "1px",
+                        border: rwdBorder,
+                        boxSizing: "border-box",
+                        opacity: 0.85,
+                      }}
+                      onClick={
+                        onSampleClick
+                          ? () => onSampleClick(sampleId)
+                          : undefined
+                      }
+                      tooltip={
+                        <EventTooltip
+                          title={isEvalGroup ? "Compute Metrics" : "Compute Reward"}
+                          statusLabel={
+                            isInflightReward
+                              ? { text: "In Progress", className: "text-yellow-500" }
+                              : isInflightOrPendingGroup
+                                ? { text: "Waiting for Group", className: "text-yellow-600" }
+                                : null
+                          }
+                          color={rwdColor}
+                          details={[
+                            {
+                              label: "Duration",
+                              value: formatDuration(durationMs),
+                            },
+                          ]}
+                          startTime={rwSpan.start_time}
+                          endTime={rwSpan.end_time}
+                        />
+                      }
+                    />
+                  )
+                })}
               </div>
             )
           })}

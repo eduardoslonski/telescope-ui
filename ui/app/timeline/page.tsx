@@ -640,8 +640,8 @@ function TimelineFooter({
     !!selectedRequest && !!runPath
   )
 
-  // Pivot rollout events from the group into spans, then group by sample_id
-  const groupEventsBySampleId = useMemo(() => {
+  // Pivot rollout events from the group into spans, split by type
+  const groupSpans = useMemo(() => {
     if (!selectedRequest || !groupEventsData?.events) return null
     const snapshotTime = inflightData?.timestamp ?? null
     // Convert pre-pivoted rollout events into spans
@@ -689,61 +689,60 @@ function TimelineFooter({
         })
       }
     }
-    // Only keep generation spans for the group timeline
-    const generationSpans = spans.filter((s) => s.event_type === "generation")
-    const eventsBySample: Record<number, typeof generationSpans> = {}
-    for (const span of generationSpans) {
-      if (span.sample_id >= 0) {
+    // Add inflight env responses from snapshot
+    if (snapshotTime && inflightData?.inflight_env_responses) {
+      for (const er of inflightData.inflight_env_responses) {
+        spans.push({
+          event_type: "env_response",
+          start_time: snapshotTime,
+          end_time: snapshotTime,
+          sample_id: er.sample_id,
+          group_id: -1,
+          agent_id: er.agent_id,
+          generation_idx: er.generation_idx,
+          tool_call_idx: -1,
+          server_id: -1,
+          server_lane: -1,
+          phase: "inflight",
+        })
+      }
+    }
+    // Add inflight rewards from snapshot
+    if (snapshotTime && inflightData?.inflight_rewards) {
+      for (const rw of inflightData.inflight_rewards) {
+        spans.push({
+          event_type: "reward",
+          start_time: snapshotTime,
+          end_time: snapshotTime,
+          sample_id: rw.sample_id,
+          group_id: -1,
+          agent_id: rw.agent_id,
+          generation_idx: -1,
+          tool_call_idx: -1,
+          server_id: -1,
+          server_lane: -1,
+          phase: "inflight",
+        })
+      }
+    }
+    // Split by type
+    const eventsBySample: Record<number, RolloutSpan[]> = {}
+    for (const span of spans) {
+      if (span.event_type === "generation" && span.sample_id >= 0) {
         if (!eventsBySample[span.sample_id]) {
           eventsBySample[span.sample_id] = []
         }
         eventsBySample[span.sample_id].push(span)
       }
     }
-    return eventsBySample
+    const envSpans = spans.filter((s) => s.event_type === "env_response")
+    const rwSpans = spans.filter((s) => s.event_type === "reward")
+    return { eventsBySample, envSpans, rwSpans }
   }, [selectedRequest, groupEventsData, inflightData])
 
-  // Build per-sample timing data from env_response and reward spans
-  const groupTimingData = useMemo(() => {
-    if (!groupEventsData?.events) return null
-    // Pivot to get env_response and reward spans
-    const envSpans: Array<{ sample_id: number; generation_idx: number; start_time: number; end_time: number }> = []
-    const rewardSpans: Array<{ sample_id: number; start_time: number; end_time: number }> = []
-    for (const e of groupEventsData.events as RolloutEvent[]) {
-      if (e.event_type === "env_response") {
-        envSpans.push({
-          sample_id: e.sample_id ?? -1,
-          generation_idx: e.generation_idx ?? -1,
-          start_time: e.start_time,
-          end_time: e.end_time,
-        })
-      } else if (e.event_type === "reward") {
-        rewardSpans.push({
-          sample_id: e.sample_id ?? -1,
-          start_time: e.start_time,
-          end_time: e.end_time,
-        })
-      }
-    }
-    // Index env times by sample_id → sorted list of {turn_order, time}
-    const envBySample: Record<number, Array<{ turn_order: number; time: number }>> = {}
-    for (const es of envSpans) {
-      if (!envBySample[es.sample_id]) envBySample[es.sample_id] = []
-      envBySample[es.sample_id].push({
-        turn_order: es.generation_idx,
-        time: es.end_time - es.start_time,
-      })
-    }
-    for (const arr of Object.values(envBySample)) {
-      arr.sort((a, b) => a.turn_order - b.turn_order)
-    }
-    // Index reward times by sample_id
-    const rewardBySample: Record<number, number> = {}
-    for (const rs of rewardSpans) {
-      rewardBySample[rs.sample_id] = rs.end_time - rs.start_time
-    }
-    return { envBySample, rewardBySample }
-  }, [groupEventsData])
+  const groupEventsBySampleId = groupSpans?.eventsBySample ?? null
+  const groupEnvSpans = groupSpans?.envSpans ?? []
+  const groupRewardSpans = groupSpans?.rwSpans ?? []
 
   const groupTimeBounds = useMemo(() => {
     if (!groupEventsBySampleId) return null
@@ -754,22 +753,15 @@ function TimelineFooter({
         minTime = Math.min(minTime, event.start_time)
         maxTime = Math.max(maxTime, event.end_time)
       }
-      // Account for env response and compute reward durations from separate timing props
-      if (groupTimingData) {
-        const sampleId = Number(sampleIdStr)
-        const sortedEvents = [...events].sort((a, b) => a.start_time - b.start_time)
-        const envTimes = groupTimingData.envBySample[sampleId] ?? []
-        let cursor = -Infinity
-        for (let i = 0; i < sortedEvents.length; i++) {
-          cursor = sortedEvents[i].end_time
-          if (i < envTimes.length && envTimes[i].time > 0) {
-            cursor += envTimes[i].time
-          }
-        }
-        const rewardTime = groupTimingData.rewardBySample[sampleId] ?? 0
-        if (rewardTime > 0) cursor += rewardTime
-        maxTime = Math.max(maxTime, cursor)
-      }
+    }
+    // Account for env response and reward span end times
+    for (const span of groupEnvSpans) {
+      minTime = Math.min(minTime, span.start_time)
+      maxTime = Math.max(maxTime, span.end_time)
+    }
+    for (const span of groupRewardSpans) {
+      minTime = Math.min(minTime, span.start_time)
+      maxTime = Math.max(maxTime, span.end_time)
     }
     // Account for inflight items extending to snapshot timestamp
     if (inflightData?.timestamp && selectedRequest) {
@@ -786,7 +778,7 @@ function TimelineFooter({
     }
     if (minTime === Infinity) return null
     return { start: minTime, end: maxTime, duration: maxTime - minTime }
-  }, [groupEventsBySampleId, groupTimingData, inflightData, selectedRequest])
+  }, [groupEventsBySampleId, groupEnvSpans, groupRewardSpans, inflightData, selectedRequest])
 
   // ---- Trainer data ----
   const { data: trainerBreakdownData } = useTrainerBreakdownEvents(
@@ -1070,8 +1062,8 @@ function TimelineFooter({
             timeBounds={groupTimeBounds}
             groupId={selectedRequest.groupId}
             runPath={runPath ?? ""}
-            envResponseTimesBySample={groupTimingData?.envBySample}
-            computeRewardTimeBySample={showComputeReward ? groupTimingData?.rewardBySample : undefined}
+            envResponseSpans={groupEnvSpans}
+            rewardSpans={showComputeReward ? groupRewardSpans : undefined}
             inflightSnapshot={inflightData}
             onSampleClick={(sampleId) => {
               setSelectedRequest({
