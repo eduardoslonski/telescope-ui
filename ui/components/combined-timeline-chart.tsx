@@ -65,6 +65,8 @@ import {
 import {
   inferenceHighlightDiscardedAtom,
   inferenceShowWeightUpdateAtom,
+  inferenceShowEnvResponseAtom,
+  inferenceSeparateEnvResponseAtom,
   inferenceShowComputeRewardAtom,
   inferenceSeparateComputeRewardAtom,
   inferenceLaneHeightAtom,
@@ -1150,6 +1152,12 @@ function InferenceSection({
   const [showWeightUpdate, setShowWeightUpdate] = useAtom(
     inferenceShowWeightUpdateAtom,
   )
+  const [showEnvResponse, setShowEnvResponse] = useAtom(
+    inferenceShowEnvResponseAtom,
+  )
+  const [separateEnvResponse, setSeparateEnvResponse] = useAtom(
+    inferenceSeparateEnvResponseAtom,
+  )
   const [showComputeReward, setShowComputeReward] = useAtom(
     inferenceShowComputeRewardAtom,
   )
@@ -1360,6 +1368,32 @@ function InferenceSection({
     [selectedRequest, setSelectedRequest],
   )
 
+  // Map env response spans to servers for inline (non-separate) rendering
+  const inlineEnvSpansByServer = useMemo(() => {
+    if (!showEnvResponse || separateEnvResponse) return {}
+    // Build sample -> server mapping from generation spans (latest generation wins)
+    const sampleToServer: Record<number, { server: number; endTime: number }> = {}
+    for (const [serverId, spans] of Object.entries(enrichedSpansByServer)) {
+      const server = Number(serverId)
+      for (const span of spans) {
+        if (span.sample_id < 0) continue
+        const existing = sampleToServer[span.sample_id]
+        if (!existing || span.end_time > existing.endTime) {
+          sampleToServer[span.sample_id] = { server, endTime: span.end_time }
+        }
+      }
+    }
+    // Group env response spans by server
+    const byServer: Record<number, RolloutSpan[]> = {}
+    for (const span of envResponseSpans) {
+      const entry = sampleToServer[span.sample_id]
+      if (!entry) continue
+      if (!byServer[entry.server]) byServer[entry.server] = []
+      byServer[entry.server].push(span)
+    }
+    return byServer
+  }, [showEnvResponse, separateEnvResponse, enrichedSpansByServer, envResponseSpans])
+
   // Map reward spans to servers for inline (non-separate) rendering
   const inlineRewardSpansByServer = useMemo(() => {
     if (!showComputeReward || separateComputeReward) return {}
@@ -1429,6 +1463,7 @@ function InferenceSection({
 
   // Env response items for the separate env response section
   const envResponseItems = useMemo(() => {
+    if (!showEnvResponse || !separateEnvResponse) return []
     const items: Array<{
       startTime: number
       duration: number
@@ -1441,7 +1476,7 @@ function InferenceSection({
     }
     items.sort((a, b) => a.startTime - b.startTime)
     return items
-  }, [envResponseSpans])
+  }, [showEnvResponse, separateEnvResponse, envResponseSpans])
 
   // Greedy lane packing for separate env response section
   const { packedEnvItems, envLaneCount } = useMemo(() => {
@@ -1607,6 +1642,39 @@ function InferenceSection({
               <Toggle
                 variant="selecting"
                 size="sm"
+                pressed={showEnvResponse}
+                onPressedChange={setShowEnvResponse}
+                className="text-xs px-2 h-7 rounded-r-none"
+              >
+                Show Env Response
+              </Toggle>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className={cn(
+                      "flex items-center justify-center h-7 w-6 rounded-r-[min(var(--radius-md),12px)] transition-colors",
+                      showEnvResponse
+                        ? "bg-primary text-secondary hover:bg-primary/90"
+                        : "bg-accent text-muted-foreground hover:text-accent-foreground hover:bg-muted",
+                    )}
+                  >
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuCheckboxItem
+                    checked={separateEnvResponse}
+                    onCheckedChange={setSeparateEnvResponse}
+                  >
+                    Separate
+                  </DropdownMenuCheckboxItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div className="flex items-center">
+              <Toggle
+                variant="selecting"
+                size="sm"
                 pressed={showComputeReward}
                 onPressedChange={setShowComputeReward}
                 className="text-xs px-2 h-7 rounded-r-none"
@@ -1682,6 +1750,8 @@ function InferenceSection({
                         laneStart={childLaneStart}
                         maxLanesToShow={childMaxLanesToShow}
                         freeLaneAfterGeneration={freeLaneAfterGeneration}
+                        showEnvResponse={showEnvResponse && !separateEnvResponse}
+                        envResponseSpans={inlineEnvSpansByServer[server] || []}
                         showComputeReward={showComputeReward && !separateComputeReward}
                         rewardSpans={inlineRewardSpansByServer[server] || []}
                         rewardStartedKeys={rewardStartedKeys}
@@ -1700,7 +1770,7 @@ function InferenceSection({
         </div>
 
         {/* Separate env response section */}
-        {packedEnvItems.length > 0 && (
+        {separateEnvResponse && packedEnvItems.length > 0 && (
           <div className="mt-3">
             <div className="text-xs font-medium text-muted-foreground mb-0.5">
               Env Response
@@ -2454,6 +2524,8 @@ function InferenceServerTimeline({
   laneStart = 0,
   maxLanesToShow,
   freeLaneAfterGeneration = false,
+  showEnvResponse = false,
+  envResponseSpans: envResponseSpansProp = [],
   showComputeReward = false,
   rewardSpans: rewardSpansProp = [],
   rewardStartedKeys,
@@ -2477,6 +2549,8 @@ function InferenceServerTimeline({
   laneStart?: number
   maxLanesToShow?: number
   freeLaneAfterGeneration?: boolean
+  showEnvResponse?: boolean
+  envResponseSpans?: RolloutSpan[]
   showComputeReward?: boolean
   rewardSpans?: RolloutSpan[]
   rewardStartedKeys?: Set<string>
@@ -2651,6 +2725,32 @@ function InferenceServerTimeline({
       }))
   }, [showComputeReward, rewardSpansProp, assignedSpans])
 
+  // Assign env response spans to lanes based on matching generation spans by sample_id
+  const envSpansWithLane = useMemo(() => {
+    if (!showEnvResponse || envResponseSpansProp.length === 0) return []
+    // Build sample_id -> lane from assigned generation spans
+    // For env response, match to the generation with closest end_time before the env span start
+    const sampleGenerations: Record<number, Array<{ lane: number; endTime: number; genIdx: number }>> = {}
+    for (const span of assignedSpans) {
+      if (span.sample_id < 0) continue
+      if (!sampleGenerations[span.sample_id]) sampleGenerations[span.sample_id] = []
+      sampleGenerations[span.sample_id].push({ lane: span.lane, endTime: span.end_time, genIdx: span.generation_idx })
+    }
+    return envResponseSpansProp
+      .filter((env) => sampleGenerations[env.sample_id] != null)
+      .map((env) => {
+        const gens = sampleGenerations[env.sample_id]
+        // Find the generation whose end_time is closest to (but <= ) the env span start
+        let best = gens[0]
+        for (const g of gens) {
+          if (g.endTime <= env.start_time + 0.001 && g.endTime > best.endTime) {
+            best = g
+          }
+        }
+        return { span: env, lane: best.lane }
+      })
+  }, [showEnvResponse, envResponseSpansProp, assignedSpans])
+
   return (
     <div>
       <div className="text-xs font-medium text-muted-foreground mb-0.5 flex items-center gap-1.5">
@@ -2753,6 +2853,108 @@ function InferenceServerTimeline({
                     rewardEndedKeys={rewardEndedKeys}
                   />
                 ))}
+
+                {/* Inline env response spans for this lane */}
+                {envSpansWithLane
+                  .filter((er) => er.lane === actualLaneIdx)
+                  .map((er, erIdx) => {
+                    const erSpan = er.span
+                    const erDuration = erSpan.end_time - erSpan.start_time
+                    if (erDuration <= 0 && erSpan.phase !== "inflight") return null
+                    if (erSpan.end_time <= intervalStart || erSpan.start_time >= intervalEnd) return null
+
+                    const visibleStart = Math.max(erSpan.start_time, intervalStart)
+                    const visibleEnd = Math.min(erSpan.end_time, intervalEnd)
+                    const erLeftPct = Math.max(0, ((visibleStart - intervalStart) / intervalDuration) * 100)
+                    const erWidthPct = Math.max(0.3, ((visibleEnd - visibleStart) / intervalDuration) * 100)
+                    const erDurationMs = erDuration * 1000
+
+                    const isInflight = erSpan.phase === "inflight"
+                    const isSelected = selectedRequest?.sampleId === erSpan.sample_id
+                    const isInGroup = selectedRequest?.groupId === erSpan.group_id
+                    const isDiscarded = (() => {
+                      if (!highlightDiscarded || erSpan.sample_id < 0 || erSpan.group_id < 0) return false
+                      if (!discardStatusReady) return true
+                      const key = `${erSpan.group_id}:${erSpan.sample_id}`
+                      return sampleStatusByKey.get(key) === "rollouts_discarded"
+                    })()
+
+                    const erColor = isInflight
+                      ? (darkMode ? "rgba(134, 239, 172, 0.5)" : "rgba(34, 197, 94, 0.5)")
+                      : isSelected
+                        ? isDiscarded
+                          ? (darkMode ? "#9ca3af" : "#6b7280")
+                          : ENV_RESPONSE_SELECTED_COLOR
+                        : isInGroup && selectedRequest
+                          ? isDiscarded
+                            ? (darkMode ? ENV_RESPONSE_GROUP_DISCARDED_COLOR_DARK : ENV_RESPONSE_GROUP_DISCARDED_COLOR_LIGHT)
+                            : ENV_RESPONSE_GROUP_COLOR
+                          : isDiscarded
+                            ? (darkMode ? ENV_RESPONSE_DISCARDED_COLOR_DARK : ENV_RESPONSE_DISCARDED_COLOR_LIGHT)
+                            : ENV_RESPONSE_COLOR
+                    const erOpacity = isInflight ? 0.85 : selectedRequest ? (isSelected || isInGroup ? 1 : 0.35) : 0.85
+                    const erBorder = isInflight
+                      ? (darkMode ? "1.5px dashed rgba(134, 239, 172, 0.7)" : "1.5px dashed rgba(34, 197, 94, 0.7)")
+                      : eventBorderMedium
+
+                    // When freeLaneAfterGeneration, env response can overlap next generation — show smaller
+                    const envHeight = freeLaneAfterGeneration
+                      ? Math.max(3, Math.round(laneHeight * 0.4))
+                      : undefined
+                    const envTop = freeLaneAfterGeneration
+                      ? Math.round((laneHeight - envHeight!) / 2)
+                      : undefined
+
+                    return (
+                      <HoverTooltipBlock
+                        key={`env-${erIdx}`}
+                        className={`absolute group ${erSpan.sample_id >= 0 ? "cursor-pointer" : "cursor-default"}`}
+                        style={{
+                          left: `${erLeftPct}%`,
+                          width: `${Math.min(erWidthPct, 100 - erLeftPct)}%`,
+                          backgroundColor: erColor,
+                          borderRadius: "1px",
+                          border: erBorder,
+                          boxSizing: "border-box",
+                          opacity: erOpacity,
+                          ...(freeLaneAfterGeneration
+                            ? { top: envTop, height: envHeight, zIndex: 2 }
+                            : { top: 0, bottom: 0 }),
+                        }}
+                        onClick={erSpan.sample_id >= 0 ? () => onEventClick(erSpan) : undefined}
+                        tooltip={
+                          <EventTooltip
+                            title={isInflight ? "Env Response (in flight)" : "Env Response"}
+                            titleSecondary={
+                              erSpan.sample_id >= 0
+                                ? `Sample ${erSpan.sample_id}`
+                                : undefined
+                            }
+                            color={erColor}
+                            statusLabel={
+                              isInflight
+                                ? { text: "In Progress", className: "text-yellow-500" }
+                                : null
+                            }
+                            details={[
+                              {
+                                label: "Duration",
+                                value: formatDuration(erDurationMs),
+                              },
+                              ...(erSpan.group_id >= 0
+                                ? [{ label: "Group", value: String(erSpan.group_id) }]
+                                : []),
+                              { label: "Server", value: String(server) },
+                              ...(displayNodeId !== undefined
+                                ? [{ label: "Node", value: String(displayNodeId) }]
+                                : []),
+                              { label: "Lane", value: String(actualLaneIdx) },
+                            ]}
+                          />
+                        }
+                      />
+                    )
+                  })}
 
                 {/* Inline compute reward spans for this lane */}
                 {rewardSpansWithLane
