@@ -13,7 +13,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { CombinedTimelineChart, GroupSampleTimeline, TrainerBreakdownContent } from "@/components/combined-timeline-chart"
+import { CombinedTimelineChart, GroupSampleTimeline, TrainerBreakdownContent, type RolloutSpan } from "@/components/combined-timeline-chart"
 import { PaginationControls } from "@/components/pagination-controls"
 import {
   selectedRunPathAtom,
@@ -22,6 +22,7 @@ import {
   timelinePageAtom,
   timelineIntervalAtom,
   inferenceHighlightDiscardedAtom,
+  inferenceShowEnvResponseAtom,
   inferenceShowComputeRewardAtom,
   darkModeAtom,
 } from "@/lib/atoms"
@@ -35,7 +36,7 @@ import {
 } from "@/lib/constants"
 import {
   useGpuMetricsForTrainerRanks,
-  useInferenceEventsByGroup,
+  useRolloutEventsByGroup,
   useTrainerBreakdownEvents,
   useTimelinePaginated,
   useInflightGenerations,
@@ -43,7 +44,7 @@ import {
   useSampleStatuses,
   useSampleDetails,
 } from "@/hooks/use-run-data"
-import type { GpuMetric, InferenceEvent, TrainerEvent, InflightSnapshot } from "@/lib/types"
+import type { GpuMetric, TrainerEvent, InflightSnapshot } from "@/lib/types"
 import { parseSetupJson, asObject, asNumber } from "@/components/topology-viewer"
 
 function parseDeviceList(value: unknown): number[] {
@@ -403,19 +404,11 @@ export default function TimelinePage() {
     [summaryData?.summary]
   )
 
+  // In the new model, rollout_events don't carry node_id — server-to-node
+  // mapping comes from setup only. Keep an empty fallback.
   const inferenceServerNodeMapFromEvents = useMemo<Record<number, number | null>>(() => {
-    const map: Record<number, number | null> = {}
-    const events = timelineData?.inference_events ?? []
-    for (const event of events) {
-      const server = event.server
-      if (!Number.isFinite(server)) continue
-      if (map[server] !== undefined) continue
-      if (typeof event.node_id === "number" && Number.isFinite(event.node_id)) {
-        map[server] = event.node_id
-      }
-    }
-    return map
-  }, [timelineData?.inference_events])
+    return {}
+  }, [])
 
   const inferenceServerNodeMap = useMemo<Record<number, number | null>>(() => {
     const merged: Record<number, number | null> = {}
@@ -568,7 +561,8 @@ export default function TimelinePage() {
           <CombinedTimelineChart
             orchestratorData={timelineData?.orchestrator_events}
             trainerData={timelineData?.trainer_events}
-            inferenceData={timelineData?.inference_events}
+            rolloutEvents={timelineData?.rollout_events}
+            infraEvents={timelineData?.infra_events}
             inflightSnapshot={inflightData}
             isLoading={isTimelineTransitionLoading}
             intervalStart={timelineData?.interval_start ?? 0}
@@ -641,47 +635,124 @@ function TimelineFooter({
   }
 
   // ---- Inference data ----
-  const { data: groupEventsData } = useInferenceEventsByGroup(
+  const { data: groupEventsData } = useRolloutEventsByGroup(
     runPath ?? "",
     selectedRequest?.groupId ?? null,
     !!selectedRequest && !!runPath
   )
 
-  const groupEventsBySampleId = useMemo(() => {
+  // Pivot rollout events from the group into spans, split by type
+  const groupSpans = useMemo(() => {
     if (!selectedRequest || !groupEventsData?.events) return null
-    const eventsBySample: Record<number, InferenceEvent[]> = {}
-    for (const event of groupEventsData.events) {
-      if (event.sample_id !== undefined) {
-        if (!eventsBySample[event.sample_id]) {
-          eventsBySample[event.sample_id] = []
-        }
-        eventsBySample[event.sample_id].push(event)
+    const snapshotTime = inflightData?.timestamp ?? null
+    // Convert pre-pivoted rollout events into spans
+    const spans: RolloutSpan[] = []
+    for (const e of groupEventsData.events) {
+      // In-progress generations have end_time null/0; use snapshot timestamp instead
+      const isInflight = e.event_type === "generation" && !e.end_time && snapshotTime
+      spans.push({
+        event_type: e.event_type,
+        start_time: e.start_time,
+        end_time: isInflight ? snapshotTime : e.end_time,
+        sample_id: e.sample_id ?? -1,
+        group_id: e.group_id ?? -1,
+        agent_id: e.agent_id ?? 0,
+        generation_idx: e.generation_idx ?? -1,
+        tool_call_idx: e.tool_call_idx ?? -1,
+        server_id: e.server_id ?? -1,
+        server_lane: e.server_lane ?? -1,
+        queue_time: e.queue_time,
+        time_to_first_token: e.time_to_first_token,
+        prefill_time: e.prefill_time,
+        decode_time: e.decode_time,
+        inference_time: e.inference_time,
+        e2e_latency: e.e2e_latency,
+        rollout_tokens: e.rollout_tokens,
+        prompt_tokens: e.prompt_tokens,
+        off_policy_steps: e.off_policy_steps,
+        ...(isInflight ? { phase: "inflight" as const } : {}),
+      })
+    }
+    // Also add inflight generations from the snapshot that may not be in the API response yet
+    if (snapshotTime && inflightData?.inflight_generations) {
+      const existingKeys = new Set(
+        spans
+          .filter((s) => s.event_type === "generation" && s.sample_id >= 0)
+          .map((s) => `${s.sample_id}-${s.generation_idx}`)
+      )
+      for (const gen of inflightData.inflight_generations) {
+        if (gen.group_id !== selectedRequest.groupId) continue
+        const key = `${gen.sample_id}-${gen.generation_idx}`
+        if (existingKeys.has(key)) continue
+        spans.push({
+          event_type: "generation",
+          start_time: gen.start_time,
+          end_time: snapshotTime,
+          sample_id: gen.sample_id,
+          group_id: gen.group_id,
+          agent_id: gen.agent_id,
+          generation_idx: gen.generation_idx,
+          tool_call_idx: -1,
+          server_id: gen.server_id,
+          server_lane: gen.server_lane,
+          phase: "inflight",
+        })
       }
     }
-    return eventsBySample
-  }, [selectedRequest, groupEventsData])
+    // Add inflight env responses from snapshot
+    if (snapshotTime && inflightData?.inflight_env_responses) {
+      for (const er of inflightData.inflight_env_responses) {
+        spans.push({
+          event_type: "env_response",
+          start_time: snapshotTime,
+          end_time: snapshotTime,
+          sample_id: er.sample_id,
+          group_id: -1,
+          agent_id: er.agent_id,
+          generation_idx: er.generation_idx,
+          tool_call_idx: -1,
+          server_id: -1,
+          server_lane: -1,
+          phase: "inflight",
+        })
+      }
+    }
+    // Add inflight rewards from snapshot
+    if (snapshotTime && inflightData?.inflight_rewards) {
+      for (const rw of inflightData.inflight_rewards) {
+        spans.push({
+          event_type: "reward",
+          start_time: snapshotTime,
+          end_time: snapshotTime,
+          sample_id: rw.sample_id,
+          group_id: -1,
+          agent_id: rw.agent_id,
+          generation_idx: -1,
+          tool_call_idx: -1,
+          server_id: -1,
+          server_lane: -1,
+          phase: "inflight",
+        })
+      }
+    }
+    // Split by type
+    const eventsBySample: Record<number, RolloutSpan[]> = {}
+    for (const span of spans) {
+      if (span.event_type === "generation" && span.sample_id >= 0) {
+        if (!eventsBySample[span.sample_id]) {
+          eventsBySample[span.sample_id] = []
+        }
+        eventsBySample[span.sample_id].push(span)
+      }
+    }
+    const envSpans = spans.filter((s) => s.event_type === "env_response")
+    const rwSpans = spans.filter((s) => s.event_type === "reward")
+    return { eventsBySample, envSpans, rwSpans }
+  }, [selectedRequest, groupEventsData, inflightData])
 
-  // Build per-sample timing data: env response times + compute reward time
-  const groupTimingData = useMemo(() => {
-    if (!groupEventsData) return null
-    const envTimes = groupEventsData.environment_response_times ?? []
-    const rewardTimes = groupEventsData.compute_reward_times ?? []
-    // Index env times by sample_idx → sorted list of {turn_order, time}
-    const envBySample: Record<number, Array<{ turn_order: number; time: number }>> = {}
-    for (const et of envTimes) {
-      if (!envBySample[et.sample_idx]) envBySample[et.sample_idx] = []
-      envBySample[et.sample_idx].push({ turn_order: et.turn_order, time: et.time })
-    }
-    for (const arr of Object.values(envBySample)) {
-      arr.sort((a, b) => a.turn_order - b.turn_order)
-    }
-    // Index reward times by sample_idx
-    const rewardBySample: Record<number, number> = {}
-    for (const rt of rewardTimes) {
-      rewardBySample[rt.sample_idx] = rt.time
-    }
-    return { envBySample, rewardBySample }
-  }, [groupEventsData])
+  const groupEventsBySampleId = groupSpans?.eventsBySample ?? null
+  const groupEnvSpans = groupSpans?.envSpans ?? []
+  const groupRewardSpans = groupSpans?.rwSpans ?? []
 
   const groupTimeBounds = useMemo(() => {
     if (!groupEventsBySampleId) return null
@@ -691,52 +762,33 @@ function TimelineFooter({
       for (const event of events) {
         minTime = Math.min(minTime, event.start_time)
         maxTime = Math.max(maxTime, event.end_time)
-        // Also account for per-event timing fields
-        let eventEnd = event.end_time
-        if (event.environment_response_time && event.environment_response_time > 0) {
-          eventEnd += event.environment_response_time
-        }
-        if (event.compute_reward_time && event.compute_reward_time > 0) {
-          eventEnd += event.compute_reward_time
-        }
-        maxTime = Math.max(maxTime, eventEnd)
-      }
-      // Account for env response and compute reward durations from separate timing props
-      if (groupTimingData) {
-        const sampleId = Number(sampleIdStr)
-        const sortedEvents = [...events].sort((a, b) => a.start_time - b.start_time)
-        const envTimes = groupTimingData.envBySample[sampleId] ?? []
-        let cursor = -Infinity
-        for (let i = 0; i < sortedEvents.length; i++) {
-          cursor = sortedEvents[i].end_time
-          if (i < envTimes.length && envTimes[i].time > 0) {
-            cursor += envTimes[i].time
-          }
-        }
-        const rewardTime = groupTimingData.rewardBySample[sampleId] ?? 0
-        if (rewardTime > 0) cursor += rewardTime
-        maxTime = Math.max(maxTime, cursor)
       }
     }
-    // Account for inflight compute_reward extending to snapshot_time
-    if (inflightData?.running_compute_reward?.length && inflightData.snapshot_time && selectedRequest) {
-      for (const gen of inflightData.running_compute_reward) {
-        if (gen.group_id === selectedRequest.groupId) {
-          maxTime = Math.max(maxTime, inflightData.snapshot_time)
-        }
-      }
+    // Account for env response and reward span end times
+    for (const span of groupEnvSpans) {
+      minTime = Math.min(minTime, span.start_time)
+      maxTime = Math.max(maxTime, span.end_time)
     }
-    // Account for inflight env_response extending to snapshot_time
-    if (inflightData?.running_env_response?.length && inflightData.snapshot_time && selectedRequest) {
-      for (const gen of inflightData.running_env_response) {
-        if (gen.group_id === selectedRequest.groupId) {
-          maxTime = Math.max(maxTime, inflightData.snapshot_time)
-        }
+    for (const span of groupRewardSpans) {
+      minTime = Math.min(minTime, span.start_time)
+      maxTime = Math.max(maxTime, span.end_time)
+    }
+    // Account for inflight items extending to snapshot timestamp
+    if (inflightData?.timestamp && selectedRequest) {
+      const snapshotTime = inflightData.timestamp
+      const hasInflightReward = inflightData.inflight_rewards?.some(
+        (r) => r.sample_id === selectedRequest.sampleId
+      )
+      const hasInflightEnv = inflightData.inflight_env_responses?.some(
+        (r) => r.sample_id === selectedRequest.sampleId
+      )
+      if (hasInflightReward || hasInflightEnv) {
+        maxTime = Math.max(maxTime, snapshotTime)
       }
     }
     if (minTime === Infinity) return null
     return { start: minTime, end: maxTime, duration: maxTime - minTime }
-  }, [groupEventsBySampleId, groupTimingData, inflightData, selectedRequest])
+  }, [groupEventsBySampleId, groupEnvSpans, groupRewardSpans, inflightData, selectedRequest])
 
   // ---- Trainer data ----
   const { data: trainerBreakdownData } = useTrainerBreakdownEvents(
@@ -790,12 +842,13 @@ function TimelineFooter({
 
   // ---- Discard status for the selected group ----
   const highlightDiscarded = useAtomValue(inferenceHighlightDiscardedAtom)
+  const showEnvResponse = useAtomValue(inferenceShowEnvResponseAtom)
   const showComputeReward = useAtomValue(inferenceShowComputeRewardAtom)
   const footerSamples = useMemo(() => {
     if (!selectedRequest || !groupEventsBySampleId) return []
     return Object.keys(groupEventsBySampleId).map(Number).map((s) => ({
       group_id: selectedRequest.groupId,
-      sample_idx: s,
+      sample_id: s,
     }))
   }, [selectedRequest, groupEventsBySampleId])
   const { data: footerSampleStatuses } = useSampleStatuses(
@@ -814,23 +867,29 @@ function TimelineFooter({
   }, [highlightDiscarded, footerSampleStatuses])
 
   const isCanceledGroup = useMemo(() => {
-    if (!groupEventsBySampleId) return false
-    return Object.values(groupEventsBySampleId).some((events) =>
-      events.some((e) => e.is_canceled)
+    if (!highlightDiscarded || !footerSampleStatuses?.statuses) return false
+    return footerSampleStatuses.statuses.some(
+      (s) => s.kind === "rollouts_cancelled"
     )
-  }, [groupEventsBySampleId])
+  }, [highlightDiscarded, footerSampleStatuses])
+
+  const isEvalGroup = useMemo(() => {
+    if (selectedRequest?.isEval) return true
+    if (!footerSampleStatuses?.statuses) return false
+    return footerSampleStatuses.statuses.some((s) => s.kind === "rollouts_eval")
+  }, [selectedRequest?.isEval, footerSampleStatuses])
 
   // Check if the selected group is inflight or pending status (not yet kept/discarded)
   const isInflightOrPendingGroup = useMemo(() => {
     if (isCanceledGroup || isDiscardedGroup) return false
-    if (!highlightDiscarded || selectedRequest?.isEval) return false
+    if (!highlightDiscarded || isEvalGroup) return false
     // If status not ready yet, it's pending
     if (!footerDiscardStatusReady) return true
     // If status is ready but no statuses found for this group, it's pending
     if (!footerSampleStatuses?.statuses?.length) return true
     // If none are categorized as kept ("rollouts"), it's pending
-    return !footerSampleStatuses.statuses.some((s) => s.kind === "rollouts")
-  }, [isCanceledGroup, isDiscardedGroup, highlightDiscarded, footerDiscardStatusReady, footerSampleStatuses])
+    return !footerSampleStatuses.statuses.some((s) => s.kind === "rollouts" || s.kind === "rollouts_eval")
+  }, [isCanceledGroup, isDiscardedGroup, isEvalGroup, highlightDiscarded, footerDiscardStatusReady, footerSampleStatuses])
 
   // ---- Sample details for discard reason + advantage summary ----
   const { data: sampleDetails } = useSampleDetails(
@@ -944,7 +1003,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className="w-2.5 h-2.5 rounded-sm"
-                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : isInflightOrPendingGroup ? "rgba(161, 98, 7, 0.9)" : selectedRequest.isEval ? "#047857" : "#075985" }}
+                style={{ backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : "#adadad") : isDiscardedGroup ? (darkMode ? "#9ca3af" : "#6b7280") : isInflightOrPendingGroup ? "rgba(161, 98, 7, 0.9)" : isEvalGroup ? "#047857" : "#075985" }}
               />
               <span className="text-xs font-medium">Sample {selectedRequest.sampleId}</span>
             </div>
@@ -952,7 +1011,7 @@ function TimelineFooter({
             <div className="flex items-center gap-1.5">
               <div
                 className={`w-2.5 h-2.5 rounded-sm${!footerDiscardStatusReady ? " animate-pulse bg-muted" : ""}`}
-                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : isInflightOrPendingGroup ? "rgba(202, 138, 4, 0.8)" : selectedRequest.isEval ? "#10b981" : "#0369a1" } : undefined}
+                style={footerDiscardStatusReady ? { backgroundColor: isCanceledGroup ? (darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR) : isDiscardedGroup ? (darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR) : isInflightOrPendingGroup ? "rgba(202, 138, 4, 0.8)" : isEvalGroup ? "#10b981" : "#0369a1" } : undefined}
               />
               <span className="text-xs font-medium">Group {selectedRequest.groupId}</span>
             </div>
@@ -1020,8 +1079,8 @@ function TimelineFooter({
             timeBounds={groupTimeBounds}
             groupId={selectedRequest.groupId}
             runPath={runPath ?? ""}
-            envResponseTimesBySample={groupTimingData?.envBySample}
-            computeRewardTimeBySample={showComputeReward ? groupTimingData?.rewardBySample : undefined}
+            envResponseSpans={showEnvResponse ? groupEnvSpans : undefined}
+            rewardSpans={showComputeReward ? groupRewardSpans : undefined}
             inflightSnapshot={inflightData}
             onSampleClick={(sampleId) => {
               setSelectedRequest({

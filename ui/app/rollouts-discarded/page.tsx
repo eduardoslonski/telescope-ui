@@ -41,7 +41,9 @@ import {
 import { useRolloutsDiscarded, useRunSummary } from "@/hooks/use-run-data"
 import { extractEnvRewardRanges, extractEnvMetricRanges, parseDataMetricRanges, mergeEnvMetricRanges, type EnvRewardRanges, type EnvMetricRanges } from "@/components/rollouts-view"
 import type {
-  Rollout,
+  GenerationRow,
+  EnvResponseRow,
+  ToolCallRow,
   Prompt,
   RolloutMetric,
   GoldenAnswer,
@@ -263,17 +265,28 @@ export default function RolloutsDiscardedPage() {
     }))
   }, [rolloutsData])
 
-  const mappedRollouts = useMemo<Rollout[] | undefined>(() => {
-    if (!rolloutsData?.rollouts) return undefined
-    return rolloutsData.rollouts.map((rollout) => ({
-      step: rollout.trainer_step,
-      group_id: rollout.group_id,
-      sample_idx: rollout.sample_idx,
-      turn_order: rollout.turn_order,
-      turn_type: rollout.turn_type,
-      content: rollout.content,
-      tokens: rollout.tokens,
-    }))
+  const mappedGenerations = useMemo<GenerationRow[] | undefined>(() => {
+    if (!rolloutsData?.generations) return undefined
+    return rolloutsData.generations.map((g) => ({
+      ...g,
+      step: g.trainer_step,
+    } as unknown as GenerationRow))
+  }, [rolloutsData])
+
+  const mappedEnvResponses = useMemo<EnvResponseRow[] | undefined>(() => {
+    if (!rolloutsData?.env_responses) return undefined
+    return rolloutsData.env_responses.map((e) => ({
+      ...e,
+      step: e.trainer_step,
+    } as unknown as EnvResponseRow))
+  }, [rolloutsData])
+
+  const mappedToolCalls = useMemo<ToolCallRow[] | undefined>(() => {
+    if (!rolloutsData?.tool_calls) return undefined
+    return rolloutsData.tool_calls.map((tc) => ({
+      ...tc,
+      step: tc.trainer_step,
+    } as unknown as ToolCallRow))
   }, [rolloutsData])
 
   const mappedSamplesData = useMemo<SampleData[] | undefined>(() => {
@@ -281,12 +294,14 @@ export default function RolloutsDiscardedPage() {
     return rolloutsData.samples_data.map((sample) => ({
       step: sample.trainer_step,
       group_id: sample.group_id,
-      sample_idx: sample.sample_idx,
+      sample_id: sample.sample_id,
       reward: sample.reward,
       advantage: sample.advantage,
-      turns: sample.turns,
+      num_generations: sample.num_generations,
       total_tokens: sample.total_tokens,
       raw_string: sample.raw_string,
+      compute_reward_time: null,
+      stop_reason: sample.stop_reason,
     }))
   }, [rolloutsData])
 
@@ -295,7 +310,7 @@ export default function RolloutsDiscardedPage() {
     const metricStep = selectedStep ?? 0
     return rolloutsData.rollout_metrics.map((metric) => ({
       step: metricStep,
-      sample_idx: metric.sample_idx,
+      sample_id: metric.sample_id,
       env: metric.env,
       metric_name: metric.metric_name,
       value: metric.value,
@@ -307,7 +322,7 @@ export default function RolloutsDiscardedPage() {
     const answerStep = selectedStep ?? 0
     return rolloutsData.golden_answers.map((answer) => ({
       step: answerStep,
-      sample_idx: answer.sample_idx,
+      sample_id: answer.sample_id,
       env: answer.env,
       key: answer.key,
       value: answer.value,
@@ -319,8 +334,10 @@ export default function RolloutsDiscardedPage() {
     const infoStep = selectedStep ?? 0
     return rolloutsData.info_turns.map((it) => ({
       step: infoStep,
-      sample_idx: it.sample_idx,
-      turn_order: it.turn_order,
+      sample_id: it.sample_id,
+      agent_id: it.agent_id ?? 0,
+      generation_idx: it.generation_idx,
+      tool_call_idx: it.tool_call_idx ?? null,
       env: it.env,
       info_key: it.info_key,
       info_value: it.info_value,
@@ -376,7 +393,7 @@ export default function RolloutsDiscardedPage() {
       {/* Sample Picker Sidebar (Left) */}
       <RolloutsSamplePickerSidebar
         prompts={mappedPrompts}
-        data={mappedRollouts}
+        data={mappedGenerations}
         samplesData={mappedSamplesData}
         rolloutMetrics={mappedRolloutMetrics}
         isLoading={isLoading}
@@ -419,12 +436,12 @@ export default function RolloutsDiscardedPage() {
                   <div className="text-sm text-muted-foreground">
                     <span>
                       Step{" "}
-                      {lastValidSample.sample.turns[0]?.step ?? selectedStep}
+                      {lastValidSample.sample.generations[0]?.step ?? selectedStep}
                     </span>
                     {" · "}
                     <span>Group {lastValidSample.sample.group_id}</span>
                     {" · "}
-                    <span>Sample {lastValidSample.sample.sample_idx}</span>
+                    <span>Sample {lastValidSample.sample.sample_id}</span>
                   </div>
                 )}
                 {/* Raw Text button */}
@@ -432,7 +449,7 @@ export default function RolloutsDiscardedPage() {
                   <RawTextDialog
                     rawString={lastValidSample.sample.raw_string}
                     totalTokens={lastValidSample.sample.total_tokens}
-                    turns={lastValidSample.sample.turns.length}
+                    turns={lastValidSample.sample.num_generations ?? lastValidSample.sample.generations.length}
                   />
                 )}
                 {/* Collapse / Expand All */}
@@ -523,7 +540,9 @@ export default function RolloutsDiscardedPage() {
 
             <RolloutsView
               prompts={mappedPrompts}
-              data={mappedRollouts}
+              generations={mappedGenerations}
+              envResponses={mappedEnvResponses}
+              toolCalls={mappedToolCalls}
               samplesData={mappedSamplesData}
               rolloutMetrics={mappedRolloutMetrics}
               goldenAnswers={mappedGoldenAnswers}

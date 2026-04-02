@@ -28,54 +28,46 @@ export interface TrainerEvent {
   depth: number
 }
 
-export interface InferenceEvent {
-  event_type: string // "request" or "weight_broadcast"
-  server: number // Server index (0, 1, ...)
-  node_id?: number | null
-  tp_group_id?: number | null
-  tp_size?: number | null
+export interface RolloutEvent {
+  event_type: string // "generation", "tool_execution", "env_response", "reward", "eval_metrics"
   start_time: number
   end_time: number
-  prompt_tokens?: number // Number of prompt tokens (for requests)
-  rollout_tokens?: number // Number of generated tokens (for requests)
-  sample_id?: number // Sample ID within the group
-  group_id?: number // Group ID for the request
-  // vLLM request metrics
-  vllm_request_id?: string // e.g. "cmpl-a1b2c3d4", used as the join key
-  queue_time?: number // time request waited in vLLM's queue before scheduling
-  time_to_first_token?: number // TTFT from vLLM's perspective
-  prefill_time?: number // time from scheduling to first token (model prefill)
-  decode_time?: number // time from first token to last token
-  inference_time?: number // prefill + decode (scheduling to last token)
-  e2e_latency?: number // end-to-end latency inside vLLM
-  max_tokens?: number // the max_tokens param for this request
-  is_eval?: boolean // Whether this is an evaluation inference event
-  is_canceled?: boolean // Whether this inference request was canceled
-  off_policy_steps?: number | null // Number of weight updates that occurred while this rollout was in-flight
-  step?: number | null // Training step associated with this event (e.g. weight_broadcast step)
-  // Precomputed lane assignment (server-side, per-server)
-  lane?: number | null // Lane index for per-server view
-  // Timing data from rollouts/samples_data
-  environment_response_time?: number | null // env response time after this turn (seconds)
-  compute_reward_time?: number | null // compute reward time after the last turn (seconds, only on last request per sample)
-  phase?: string // "start" or "end" (empty for backward compat)
+  sample_id?: number | null
+  group_id?: number | null
+  agent_id?: number // 0 = main agent
+  generation_idx?: number | null
+  tool_call_idx?: number | null
+  server_id?: number | null
+  server_lane?: number | null // Per-server lane slot for timeline positioning
+  // vLLM timing (from generations table, only for generation events)
+  queue_time?: number | null
+  time_to_first_token?: number | null
+  prefill_time?: number | null
+  decode_time?: number | null
+  inference_time?: number | null
+  e2e_latency?: number | null
+  rollout_tokens?: number | null
+  prompt_tokens?: number | null
+  off_policy_steps?: number | null
 }
 
-export interface InflightGeneration {
-  sample_id: number
-  group_id: number
-  server: number
-  server_lane: number
-  start_time: number
-  is_eval: boolean
-  prompt_tokens: number
+export interface InfraEvent {
+  timestamp: number
+  event_type: string // "weight_sync", "sandbox"
+  phase: string
+  step?: number | null
+  server_id?: number | null
+  sandbox_id?: string | null
 }
 
 export interface InflightSnapshot {
-  snapshot_time: number | null
-  running: InflightGeneration[]
-  running_compute_reward?: InflightGeneration[]
-  running_env_response?: InflightGeneration[]
+  timestamp: number | null
+  inflight_generations: { sample_id: number; generation_idx: number; server_id: number; server_lane: number; group_id: number; agent_id: number; start_time: number }[]
+  inflight_tool_executions: { sample_id: number; generation_idx: number; tool_call_idx: number; tool_name: string; agent_id: number }[]
+  inflight_env_responses: { sample_id: number; generation_idx: number; agent_id: number }[]
+  inflight_sandbox_ops: { sandbox_id: string; phase: string }[]
+  inflight_weight_syncs: { server_id: number; step: number }[]
+  inflight_rewards: { sample_id: number; agent_id: number }[]
 }
 
 // ============================================================================
@@ -92,30 +84,75 @@ export interface Prompt {
   tokens_prompt: number | null
 }
 
-export interface Rollout {
+export interface GenerationRow {
   step: number
   group_id: number
-  sample_idx: number
-  turn_order: number
-  turn_type: string
+  sample_id: number
+  agent_id: number
+  generation_idx: number
   content: string
   tokens: number | null
+  prompt_tokens: number | null
+  tool_call_count: number | null
+  stop_reason: string | null
+  queue_time: number | null
+  ttft: number | null
+  prefill_time: number | null
+  decode_time: number | null
+  inference_time: number | null
+  e2e_latency: number | null
+  server_id: number | null
+  vllm_request_id: string | null
+}
+
+export interface EnvResponseRow {
+  step: number
+  group_id: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  content: string
+  turn_type: string
+  tokens: number | null
+  response_time: number | null
+}
+
+export interface ToolCallRow {
+  step: number
+  group_id: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number
+  env_response_generation_idx: number
+  tool_name: string
+  arguments: string
+  raw_text: string | null
+  result: string | null
+  success: boolean
+  error: string | null
+  exit_code: number | null
+  truncated: boolean
+  result_tokens: number | null
+  sandbox_id: string | null
 }
 
 export interface SampleData {
   step: number
   group_id: number
-  sample_idx: number
+  sample_id: number
   reward: number | null
   advantage: number | null
-  turns: number | null
+  num_generations: number | null
   total_tokens: number | null
   raw_string: string | null
+  compute_reward_time: number | null
+  stop_reason: string | null
 }
 
 export interface RolloutMetric {
   step: number
-  sample_idx: number
+  sample_id: number
   env: string | null
   metric_name: string
   value: number
@@ -123,7 +160,7 @@ export interface RolloutMetric {
 
 export interface GoldenAnswer {
   step: number
-  sample_idx: number
+  sample_id: number
   env: string | null
   key: string
   value: string | null
@@ -131,7 +168,7 @@ export interface GoldenAnswer {
 
 export interface SampleTag {
   step?: number
-  sample_idx: number
+  sample_id: number
   env: string | null
   tag_name: string
   tag_value: string
@@ -139,8 +176,10 @@ export interface SampleTag {
 
 export interface InfoTurn {
   step?: number
-  sample_idx: number
-  turn_order: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number | null
   env: string | null
   info_key: string
   info_value: string
@@ -148,14 +187,18 @@ export interface InfoTurn {
 }
 
 export interface RolloutsDisplaySample {
-  sample_idx: number
+  sample_id: number
   group_id: number
   prompt: Prompt | null
-  turns: Rollout[]
+  generations: GenerationRow[]
+  env_responses: EnvResponseRow[]
+  tool_calls: ToolCallRow[]
   reward: number | null
   advantage: number | null
   total_tokens: number | null
   raw_string: string | null
+  stop_reason: string | null
+  num_generations: number | null
 }
 
 // ============================================================================
@@ -175,15 +218,47 @@ export interface PromptDiscarded {
   tokens_prompt: number | null
 }
 
-export interface RolloutDiscarded {
+export interface GenerationDiscarded {
   trainer_step: number
   inference_step: number
   group_id: number
-  sample_idx: number
-  turn_order: number
-  turn_type: string
+  sample_id: number
+  agent_id: number
+  generation_idx: number
   content: string
   tokens: number | null
+  prompt_tokens: number | null
+  tool_call_count: number | null
+  stop_reason: string | null
+}
+
+export interface EnvResponseDiscarded {
+  trainer_step: number
+  inference_step: number
+  group_id: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  content: string
+  turn_type: string
+  tokens: number | null
+  response_time: number | null
+}
+
+export interface ToolCallDiscarded {
+  trainer_step: number
+  inference_step: number
+  group_id: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number
+  env_response_generation_idx: number
+  tool_name: string
+  arguments: string
+  result: string | null
+  success: boolean
+  error: string | null
 }
 
 export interface SampleDataDiscarded {
@@ -192,16 +267,17 @@ export interface SampleDataDiscarded {
   trainer_step: number
   inference_step: number
   group_id: number
-  sample_idx: number
+  sample_id: number
   reward: number | null
   advantage: number | null
-  turns: number | null
+  num_generations: number | null
   total_tokens: number | null
   raw_string: string | null
+  stop_reason: string | null
 }
 
 export interface RolloutMetricDiscarded {
-  sample_idx: number
+  sample_id: number
   env: string | null
   metric_name: string
   value: number
@@ -209,7 +285,7 @@ export interface RolloutMetricDiscarded {
 }
 
 export interface GoldenAnswerDiscarded {
-  sample_idx: number
+  sample_id: number
   env: string | null
   key: string
   value: string | null
@@ -217,8 +293,10 @@ export interface GoldenAnswerDiscarded {
 }
 
 export interface InfoTurnDiscarded {
-  sample_idx: number
-  turn_order: number
+  sample_id: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number | null
   env: string | null
   info_key: string
   info_value: string
@@ -242,18 +320,55 @@ export interface EvalPrompt {
   tokens_system_prompt: number | null
 }
 
-export interface EvalRollout {
+export interface EvalGeneration {
   step: number
   eval_name: string
   model_step: number
   sample_idx: number
   completion_idx: number
-  turn_order: number
-  turn_type: string
+  agent_id: number
+  generation_idx: number
   content: string
   tokens: number | null
+  prompt_tokens: number | null
+  tool_call_count: number | null
   stop_reason: string | null
-  environment_response_time: number | null
+}
+
+export interface EvalEnvResponse {
+  step: number
+  eval_name: string
+  model_step: number
+  sample_idx: number
+  completion_idx: number
+  agent_id: number
+  generation_idx: number
+  content: string
+  turn_type: string
+  tokens: number | null
+  response_time: number | null
+}
+
+export interface EvalToolCall {
+  step: number
+  eval_name: string
+  model_step: number
+  sample_idx: number
+  completion_idx: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number
+  env_response_generation_idx: number
+  tool_name: string
+  arguments: string
+  raw_text: string | null
+  result: string | null
+  success: boolean
+  error: string | null
+  exit_code: number | null
+  truncated: boolean
+  result_tokens: number | null
+  sandbox_id: string | null
 }
 
 export interface EvalSampleData {
@@ -263,8 +378,9 @@ export interface EvalSampleData {
   sample_idx: number
   completion_idx: number
   env: string | null
-  turns: number | null
+  num_generations: number | null
   compute_eval_metrics_time: number | null
+  stop_reason: string | null
 }
 
 export interface EvalRolloutMetric {
@@ -292,7 +408,9 @@ export interface EvalInfoTurn {
   eval_name: string
   sample_idx: number
   completion_idx: number
-  turn_order: number
+  agent_id: number
+  generation_idx: number
+  tool_call_idx: number | null
   env: string | null
   info_key: string
   info_value: string
@@ -305,7 +423,9 @@ export interface EvalInfoTurn {
 
 export interface RolloutsResponse {
   prompts: Prompt[]
-  rollouts: Rollout[]
+  generations: GenerationRow[]
+  env_responses: EnvResponseRow[]
+  tool_calls: ToolCallRow[]
   samples_data: SampleData[]
   rollout_metrics: RolloutMetric[]
   golden_answers: GoldenAnswer[]
@@ -320,7 +440,9 @@ export interface RolloutsResponse {
 
 export interface RolloutsDiscardedResponse {
   prompts: PromptDiscarded[]
-  rollouts: RolloutDiscarded[]
+  generations: GenerationDiscarded[]
+  env_responses: EnvResponseDiscarded[]
+  tool_calls: ToolCallDiscarded[]
   samples_data: SampleDataDiscarded[]
   rollout_metrics: RolloutMetricDiscarded[]
   golden_answers: GoldenAnswerDiscarded[]
@@ -335,7 +457,9 @@ export interface RolloutsDiscardedResponse {
 
 export interface EvalsResponse {
   prompts: EvalPrompt[]
-  rollouts: EvalRollout[]
+  generations: EvalGeneration[]
+  env_responses: EvalEnvResponse[]
+  tool_calls: EvalToolCall[]
   samples_data: EvalSampleData[]
   rollout_metrics: EvalRolloutMetric[]
   golden_answers: EvalGoldenAnswer[]
@@ -352,9 +476,11 @@ export interface SampleDetailsRollouts {
   kind: "rollouts"
   step: number
   group_id: number
-  sample_idx: number
+  sample_id: number
   prompts: Prompt[]
-  rollouts: Rollout[]
+  generations: GenerationRow[]
+  env_responses: EnvResponseRow[]
+  tool_calls: ToolCallRow[]
   samples_data: SampleData[]
   rollout_metrics: RolloutMetric[]
   golden_answers: GoldenAnswer[]
@@ -367,9 +493,11 @@ export interface SampleDetailsDiscarded {
   inference_step: number
   discard_reason: string
   group_id: number
-  sample_idx: number
+  sample_id: number
   prompts: PromptDiscarded[]
-  rollouts: RolloutDiscarded[]
+  generations: GenerationDiscarded[]
+  env_responses: EnvResponseDiscarded[]
+  tool_calls: ToolCallDiscarded[]
   samples_data: SampleDataDiscarded[]
   rollout_metrics: RolloutMetricDiscarded[]
   golden_answers: GoldenAnswerDiscarded[]
@@ -382,9 +510,11 @@ export interface SampleDetailsEval {
   eval_name: string
   model_step: number
   group_id: number
-  sample_idx: number
+  sample_id: number
   prompts: Prompt[]
-  rollouts: Rollout[]
+  generations: GenerationRow[]
+  env_responses: EnvResponseRow[]
+  tool_calls: ToolCallRow[]
   samples_data: SampleData[]
   rollout_metrics: RolloutMetric[]
   golden_answers: GoldenAnswer[]
@@ -394,9 +524,11 @@ export interface SampleDetailsEval {
 export interface SampleDetailsNotFound {
   kind: null
   group_id: number
-  sample_idx: number
+  sample_id: number
   prompts: []
-  rollouts: []
+  generations: []
+  env_responses: []
+  tool_calls: []
   samples_data: []
   rollout_metrics: []
   golden_answers: []
@@ -411,29 +543,12 @@ export type SampleDetailsResponse =
 
 export interface SampleStatusItem {
   group_id: number
-  sample_idx: number
-  kind: "rollouts" | "rollouts_discarded" | null
+  sample_id: number
+  kind: "rollouts" | "rollouts_discarded" | "rollouts_cancelled" | "rollouts_eval" | null
 }
 
 export interface SampleStatusesResponse {
   statuses: SampleStatusItem[]
-}
-
-export interface EnvironmentResponseTime {
-  sample_idx: number
-  turn_order: number
-  time: number
-}
-
-export interface ComputeRewardTime {
-  sample_idx: number
-  time: number
-}
-
-export interface InferenceGroupEventsResponse {
-  events: InferenceEvent[]
-  environment_response_times?: EnvironmentResponseTime[]
-  compute_reward_times?: ComputeRewardTime[]
 }
 
 export interface TrainerBreakdownEventsResponse {
@@ -443,7 +558,8 @@ export interface TrainerBreakdownEventsResponse {
 export interface TimelinePaginatedResponse {
   orchestrator_events: OrchestratorEvent[]
   trainer_events: TrainerEvent[]
-  inference_events: InferenceEvent[]
+  rollout_events: RolloutEvent[]
+  infra_events: InfraEvent[]
   total_pages: number
   current_page: number
   interval_start: number
@@ -464,19 +580,19 @@ export interface RunSummary {
   config: Record<string, unknown>
   custom_config: Record<string, unknown> | null
   last_rollout_step: number
-  local_rollout_count: number
-  local_rollout_steps: number
+  local_generation_count: number
+  local_generation_steps: number
   local_rollout_metrics_count: number
   available_rollout_metric_names: string[]
   available_envs: string[]
   local_orchestrator_event_count: number
   local_trainer_event_count: number
-  local_inference_event_count: number
+  local_rollout_event_count: number
   local_gpu_metrics_count: number
   local_cpu_metrics_count: number
   local_vllm_metrics_count: number
-  local_discarded_rollout_count: number
-  local_discarded_rollout_metrics_count: number
+  local_discarded_generation_count: number
+  local_discarded_generation_metrics_count: number
   local_discarded_trainer_steps: number
   trainer_info: {
     last_training_step: number | null

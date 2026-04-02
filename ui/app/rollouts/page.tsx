@@ -239,7 +239,7 @@ export default function RolloutsPage() {
       {/* Sample Picker Sidebar (Left) */}
       <RolloutsSamplePickerSidebar
         prompts={rolloutsData?.prompts}
-        data={rolloutsData?.rollouts}
+        data={rolloutsData?.generations}
         samplesData={rolloutsData?.samples_data}
         rolloutMetrics={rolloutsData?.rollout_metrics}
         availableMetricNames={rolloutsData?.available_rollout_metric_names}
@@ -263,11 +263,11 @@ export default function RolloutsPage() {
                 {/* Sample info: Step, Group ID, Sample ID */}
                 {lastValidSample && (
                   <div className="text-sm text-muted-foreground">
-                    <span>Step {lastValidSample.sample.turns[0]?.step ?? selectedStep}</span>
+                    <span>Step {lastValidSample.sample.generations[0]?.step ?? selectedStep}</span>
                     {" · "}
                     <span>Group {lastValidSample.sample.group_id}</span>
                     {" · "}
-                    <span>Sample {lastValidSample.sample.sample_idx}</span>
+                    <span>Sample {lastValidSample.sample.sample_id}</span>
                   </div>
                 )}
                 {/* Raw Text button */}
@@ -275,7 +275,7 @@ export default function RolloutsPage() {
                   <RawTextDialog
                     rawString={lastValidSample.sample.raw_string}
                     totalTokens={lastValidSample.sample.total_tokens}
-                    turns={lastValidSample.sample.turns.length}
+                    turns={lastValidSample.sample.num_generations ?? lastValidSample.sample.generations.length}
                   />
                 )}
                 {/* Collapse / Expand All */}
@@ -358,7 +358,9 @@ export default function RolloutsPage() {
 
             <RolloutsView
               prompts={rolloutsData?.prompts}
-              data={rolloutsData?.rollouts}
+              generations={rolloutsData?.generations}
+              envResponses={rolloutsData?.env_responses}
+              toolCalls={rolloutsData?.tool_calls}
               samplesData={rolloutsData?.samples_data}
               rolloutMetrics={rolloutsData?.rollout_metrics}
               goldenAnswers={rolloutsData?.golden_answers}

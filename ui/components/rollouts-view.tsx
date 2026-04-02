@@ -41,7 +41,9 @@ import {
 } from "@/lib/atoms"
 import type {
   Prompt,
-  Rollout,
+  GenerationRow,
+  EnvResponseRow,
+  ToolCallRow,
   RolloutMetric,
   GoldenAnswer,
   InfoTurn,
@@ -187,7 +189,9 @@ export function mergeEnvMetricRanges(
 
 interface RolloutsViewProps {
   prompts?: Prompt[]
-  data?: Rollout[]
+  generations?: GenerationRow[]
+  envResponses?: EnvResponseRow[]
+  toolCalls?: ToolCallRow[]
   samplesData?: SampleData[]
   rolloutMetrics?: RolloutMetric[]
   goldenAnswers?: GoldenAnswer[]
@@ -231,7 +235,9 @@ type GroupedSample = RolloutsDisplaySample
 
 export function RolloutsView({
   prompts,
-  data,
+  generations,
+  envResponses,
+  toolCalls,
   samplesData,
   rolloutMetrics,
   goldenAnswers,
@@ -254,14 +260,14 @@ export function RolloutsView({
   renderOptions = [],
   formatThinkBlocks = true,
 }: RolloutsViewProps) {
-  // Group rollout metrics by sample_idx for easy lookup
+  // Group rollout metrics by sample_id for easy lookup
   const metricsBySample = useMemo(() => {
     if (!rolloutMetrics) return new Map<number, RolloutMetric[]>()
     const map = new Map<number, RolloutMetric[]>()
     for (const metric of rolloutMetrics) {
-      const existing = map.get(metric.sample_idx) || []
+      const existing = map.get(metric.sample_id) || []
       existing.push(metric)
-      map.set(metric.sample_idx, existing)
+      map.set(metric.sample_id, existing)
     }
     return map
   }, [rolloutMetrics])
@@ -274,26 +280,26 @@ export function RolloutsView({
     return [...names].sort()
   }, [rolloutMetrics])
 
-  // Group golden answers by sample_idx for easy lookup
+  // Group golden answers by sample_id for easy lookup
   const goldenAnswersBySample = useMemo(() => {
     if (!goldenAnswers) return new Map<number, GoldenAnswer[]>()
     const map = new Map<number, GoldenAnswer[]>()
     for (const answer of goldenAnswers) {
-      const existing = map.get(answer.sample_idx) || []
+      const existing = map.get(answer.sample_id) || []
       existing.push(answer)
-      map.set(answer.sample_idx, existing)
+      map.set(answer.sample_id, existing)
     }
     return map
   }, [goldenAnswers])
 
-  // Group info turns by sample_idx for easy lookup
+  // Group info turns by sample_id for easy lookup
   const infoTurnsBySample = useMemo(() => {
     if (!infoTurns) return new Map<number, InfoTurn[]>()
     const map = new Map<number, InfoTurn[]>()
     for (const it of infoTurns) {
-      const existing = map.get(it.sample_idx) || []
+      const existing = map.get(it.sample_id) || []
       existing.push(it)
-      map.set(it.sample_idx, existing)
+      map.set(it.sample_id, existing)
     }
     return map
   }, [infoTurns])
@@ -308,68 +314,93 @@ export function RolloutsView({
     return map
   }, [prompts])
 
-  // Index samples data by sample_idx for easy lookup
+  // Index samples data by sample_id for easy lookup
   const samplesDataBySample = useMemo(() => {
     if (!samplesData) return new Map<number, SampleData>()
     const map = new Map<number, SampleData>()
     for (const s of samplesData) {
-      map.set(s.sample_idx, s)
+      map.set(s.sample_id, s)
     }
     return map
   }, [samplesData])
 
-  // Group rollout turns by sample_idx and combine with prompts
+  // Group generations, env_responses, tool_calls by sample_id and combine with prompts
   const groupedSamples = useMemo(() => {
-    if (!data) return []
+    if (!generations) return []
 
-    // Group turns by sample_idx
-    const turnsBySample = new Map<number, Rollout[]>()
+    // Group generations by sample_id
+    const gensBySample = new Map<number, GenerationRow[]>()
     const groupIdBySample = new Map<number, number>()
 
-    for (const gen of data) {
-      const existing = turnsBySample.get(gen.sample_idx) || []
+    for (const gen of generations) {
+      const existing = gensBySample.get(gen.sample_id) || []
       existing.push(gen)
-      turnsBySample.set(gen.sample_idx, existing)
-      groupIdBySample.set(gen.sample_idx, gen.group_id)
+      gensBySample.set(gen.sample_id, existing)
+      groupIdBySample.set(gen.sample_id, gen.group_id)
+    }
+
+    // Group env_responses by sample_id
+    const envRespBySample = new Map<number, EnvResponseRow[]>()
+    if (envResponses) {
+      for (const er of envResponses) {
+        const existing = envRespBySample.get(er.sample_id) || []
+        existing.push(er)
+        envRespBySample.set(er.sample_id, existing)
+      }
+    }
+
+    // Group tool_calls by sample_id
+    const toolCallsBySample = new Map<number, ToolCallRow[]>()
+    if (toolCalls) {
+      for (const tc of toolCalls) {
+        const existing = toolCallsBySample.get(tc.sample_id) || []
+        existing.push(tc)
+        toolCallsBySample.set(tc.sample_id, existing)
+      }
     }
 
     // Build grouped samples
     const samples: GroupedSample[] = []
-    for (const [sample_idx, turns] of turnsBySample) {
-      // Sort turns by turn_order
-      const sortedTurns = [...turns].sort((a, b) => a.turn_order - b.turn_order)
-      const group_id = groupIdBySample.get(sample_idx) ?? -1
+    for (const [sample_id, gens] of gensBySample) {
+      const sortedGens = [...gens].sort((a, b) => a.generation_idx - b.generation_idx)
+      const group_id = groupIdBySample.get(sample_id) ?? -1
       const prompt = promptsByGroup.get(group_id) ?? null
 
       // Get sample-level data from samples_data
-      const sampleData = samplesDataBySample.get(sample_idx)
+      const sampleData = samplesDataBySample.get(sample_id)
 
       samples.push({
-        sample_idx,
+        sample_id,
         group_id,
         prompt,
-        turns: sortedTurns,
+        generations: sortedGens,
+        env_responses: envRespBySample.get(sample_id) ?? [],
+        tool_calls: toolCallsBySample.get(sample_id) ?? [],
         reward: sampleData?.reward ?? null,
         advantage: sampleData?.advantage ?? null,
         total_tokens: sampleData?.total_tokens ?? null,
         raw_string: sampleData?.raw_string ?? null,
+        stop_reason: sampleData?.stop_reason ?? null,
+        num_generations: sampleData?.num_generations ?? null,
       })
     }
 
-    // Sort by sample_idx
-    let result = samples.sort((a, b) => a.sample_idx - b.sample_idx)
+    // Sort by sample_id
+    let result = samples.sort((a, b) => a.sample_id - b.sample_id)
 
     // Apply filters
     if (filterGroupId !== null) {
       result = result.filter((s) => s.group_id === filterGroupId)
     }
     if (filterSampleIdx !== null) {
-      result = result.filter((s) => s.sample_idx === filterSampleIdx)
+      result = result.filter((s) => s.sample_id === filterSampleIdx)
     }
 
     return result
   }, [
-    data,
+    generations,
+    envResponses,
+    toolCalls,
     promptsByGroup,
     samplesDataBySample,
     filterGroupId,
@@ -381,7 +412,7 @@ export function RolloutsView({
 
   // Update the ref when we have valid filtered data
   const currentSample = groupedSamples[0]
-  const currentSampleIdx = currentSample?.sample_idx ?? null
+  const currentSampleIdx = currentSample?.sample_id ?? null
   const currentMetrics = useMemo(
     () =>
       currentSampleIdx !== null
@@ -421,7 +452,7 @@ export function RolloutsView({
 
   const fallbackSample =
     filterSampleIdx !== null &&
-    lastValidSample?.sample.sample_idx === filterSampleIdx
+    lastValidSample?.sample.sample_id === filterSampleIdx
       ? lastValidSample
       : null
 
@@ -447,7 +478,7 @@ export function RolloutsView({
     }
   }, [scrollToSampleId, groupedSamples])
 
-  const goToStep = step !== undefined ? step : data?.[0]?.step
+  const goToStep = step !== undefined ? step : generations?.[0]?.step
 
   // Show message when no sample is selected (require both group AND sample)
   if (filterSampleIdx === null) {
@@ -474,7 +505,7 @@ export function RolloutsView({
   return (
     <div className="space-y-4 min-w-0">
       <SampleView
-        key={displaySample.sample_idx}
+        key={displaySample.sample_id}
         sample={displaySample}
         rolloutMetrics={displayMetrics}
         goldenAnswers={displayGoldenAnswers}
@@ -603,19 +634,19 @@ function SampleView({
   const handleGoTo = () => {
     if (goToStep == null) return
     navigate(
-      `${goToBasePath}?${goToStepParam}=${goToStep}&group=${sample.group_id}&sample=${sample.sample_idx}`,
+      `${goToBasePath}?${goToStepParam}=${goToStep}&group=${sample.group_id}&sample=${sample.sample_id}`,
     )
   }
 
-  // Group info turns by turn_order for efficient lookup
-  const infoTurnsByTurnOrder = useMemo(() => {
+  // Group info turns by generation_idx for efficient lookup
+  const infoTurnsByGenerationIdx = useMemo(() => {
     if (!infoTurns || infoTurns.length === 0)
       return new Map<number, InfoTurn[]>()
     const map = new Map<number, InfoTurn[]>()
     for (const info of infoTurns) {
-      const existing = map.get(info.turn_order) || []
+      const existing = map.get(info.generation_idx) || []
       existing.push(info)
-      map.set(info.turn_order, existing)
+      map.set(info.generation_idx, existing)
     }
     return map
   }, [infoTurns])
@@ -625,7 +656,7 @@ function SampleView({
   const [systemOpen, setSystemOpen] = useState(false)
   const [promptOpen, setPromptOpen] = useState(defaultSectionsOpen)
   const [turnsOpen, setTurnsOpen] = useState<Record<number, boolean>>({})
-  // No initialization effect needed – the component is keyed by sample_idx so
+  // No initialization effect needed – the component is keyed by sample_id so
   // it remounts on sample change, and the render falls back to defaultSectionsOpen
   // for any turn not explicitly set in turnsOpen.
 
@@ -633,8 +664,8 @@ function SampleView({
   const [prevCollapseSignal, setPrevCollapseSignal] = useState(collapseAllSignal)
   const [prevExpandSignal, setPrevExpandSignal] = useState(expandAllSignal)
 
-  // Use stable turn count for collapse/expand to avoid re-firing on every poll
-  const turnsCount = sample.turns.length
+  // Count total collapsible sections: each generation + each env_response that follows
+  const turnsCount = sample.generations.length + sample.env_responses.length
 
   // Collapse all sections when signal changes (adjust state during render)
   if (collapseAllSignal !== prevCollapseSignal) {
@@ -674,11 +705,9 @@ function SampleView({
     rangeColor?: string
   }> = []
   if (env) primaryItems.push({ label: "Env", value: env })
-  const assistantTurnsCount = sample.turns.filter(
-    (t) => t.turn_type === "model",
-  ).length
-  if (assistantTurnsCount > 1)
-    primaryItems.push({ label: "Turns", value: String(assistantTurnsCount) })
+  const generationsCount = sample.generations.length
+  if (generationsCount > 1)
+    primaryItems.push({ label: "Turns", value: String(generationsCount) })
   if (sample.reward !== null) {
     const rewardColor = metricRangeColor(
       sample.reward,
@@ -739,7 +768,7 @@ function SampleView({
   }
 
   return (
-    <div id={`sample-${sample.sample_idx}`}>
+    <div id={`sample-${sample.sample_id}`}>
       {/* Metrics summary */}
       {(primaryItems.length > 0 || secondaryItems.length > 0 || showGoTo) && (
         <div className="mb-2 space-y-0.5">
@@ -1022,86 +1051,164 @@ function SampleView({
         </Collapsible>
       )}
 
-      {/* Turns collapsibles */}
-      {sample.turns.map((turn, idx) => {
-        const isOpen = turnsOpen[idx] ?? defaultSectionsOpen
-        // Calculate assistant turn index (only count "model" turns)
-        const assistantTurnIdx =
-          turn.turn_type === "model"
-            ? sample.turns.slice(0, idx).filter((t) => t.turn_type === "model")
-                .length
-            : null
+      {/* Generation turns with env_responses and tool_calls */}
+      {sample.generations.map((gen, genIdx) => {
+        // Each generation uses a sequential collapsible index
+        const collapsibleIdx = genIdx * 2
+        const isGenOpen = turnsOpen[collapsibleIdx] ?? defaultSectionsOpen
+
+        // Find matching env_response for this generation_idx
+        const matchingEnvResponse = sample.env_responses.find(
+          (er) => er.generation_idx === gen.generation_idx,
+        )
+
+        // Find matching tool_calls for this generation_idx
+        const matchingToolCalls = sample.tool_calls
+          .filter((tc) => tc.generation_idx === gen.generation_idx)
+          .sort((a, b) => a.tool_call_idx - b.tool_call_idx)
+
+        const envCollapsibleIdx = collapsibleIdx + 1
+        const isEnvOpen = turnsOpen[envCollapsibleIdx] ?? defaultSectionsOpen
+
         return (
-          <Collapsible
-            key={`${turn.sample_idx}-${turn.turn_order}`}
-            open={isOpen}
-            onOpenChange={() => toggleTurn(idx)}
-            className="mb-2"
-          >
-            <CollapsibleTrigger asChild>
-              <div className="py-1.5 px-2 -mx-2 cursor-pointer bg-muted/50 hover:bg-muted rounded transition-colors">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <h3 className="text-sm font-semibold shrink-0 w-[4.5rem]">
-                    {formatTurnType(turn.turn_type)}
-                  </h3>
-                  {!isOpen && (
-                    <span className="text-xs text-muted-foreground font-normal truncate min-w-0">
-                      {getContentPreview(
-                        turn.content,
-                        60,
-                        turn.turn_type === "model" && formatThinkBlocks,
-                      )}
-                    </span>
-                  )}
-                  <div className="flex items-center gap-1.5 ml-auto shrink-0">
-                    {turn.tokens != null && (
-                      <span className="text-xs text-foreground/40 font-normal">
-                        {turn.tokens.toLocaleString()} tokens
+          <div key={`${gen.sample_id}-gen-${gen.generation_idx}`}>
+            {/* Assistant (generation) turn */}
+            <Collapsible
+              open={isGenOpen}
+              onOpenChange={() => toggleTurn(collapsibleIdx)}
+              className="mb-2"
+            >
+              <CollapsibleTrigger asChild>
+                <div className="py-1.5 px-2 -mx-2 cursor-pointer bg-muted/50 hover:bg-muted rounded transition-colors">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <h3 className="text-sm font-semibold shrink-0 w-[4.5rem]">
+                      Assistant
+                    </h3>
+                    {!isGenOpen && (
+                      <span className="text-xs text-muted-foreground font-normal truncate min-w-0">
+                        {getContentPreview(
+                          gen.content,
+                          60,
+                          formatThinkBlocks,
+                        )}
                       </span>
                     )}
-                    {assistantTurnIdx !== null && (
-                      <span className="text-xs text-foreground/40 font-normal">
-                        Turn {assistantTurnIdx}
-                      </span>
-                    )}
-                    <InlineCopyButton text={turn.content} />
-                    <ChevronDown
-                      className={cn(
-                        "h-4 w-4 text-muted-foreground transition-transform",
-                        !isOpen && "-rotate-90",
+                    <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                      {gen.tokens != null && (
+                        <span className="text-xs text-foreground/40 font-normal">
+                          {gen.tokens.toLocaleString()} tokens
+                        </span>
                       )}
-                    />
+                      {generationsCount > 1 && (
+                        <span className="text-xs text-foreground/40 font-normal">
+                          Turn {gen.generation_idx}
+                        </span>
+                      )}
+                      <InlineCopyButton text={gen.content} />
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 text-muted-foreground transition-transform",
+                          !isGenOpen && "-rotate-90",
+                        )}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="py-2">
-                <ContentWithThinkBlocks
-                  content={turn.content}
-                  renderOptions={renderOptions}
-                  enableThinkBlocks={
-                    turn.turn_type === "model" && formatThinkBlocks
-                  }
-                />
-                {(() => {
-                  const turnInfos = infoTurnsByTurnOrder.get(turn.turn_order)
-                  if (!turnInfos || turnInfos.length === 0) return null
-                  return (
-                    <div className="mt-2 space-y-1">
-                      {turnInfos.map((info, infoIdx) => (
-                        <InfoTurnCollapsible
-                          key={`${info.info_key}-${infoIdx}`}
-                          info={info}
-                          renderOptions={renderOptions}
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="py-2">
+                  <ContentWithThinkBlocks
+                    content={gen.content}
+                    renderOptions={renderOptions}
+                    enableThinkBlocks={formatThinkBlocks}
+                  />
+                  {(() => {
+                    const genInfos = infoTurnsByGenerationIdx.get(gen.generation_idx)
+                    if (!genInfos || genInfos.length === 0) return null
+                    return (
+                      <div className="mt-2 space-y-1">
+                        {genInfos.map((info, infoIdx) => (
+                          <InfoTurnCollapsible
+                            key={`${info.info_key}-${infoIdx}`}
+                            info={info}
+                            renderOptions={renderOptions}
+                          />
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+
+            {/* Environment response (if exists for this generation) */}
+            {matchingEnvResponse && (
+              <Collapsible
+                open={isEnvOpen}
+                onOpenChange={() => toggleTurn(envCollapsibleIdx)}
+                className="mb-2"
+              >
+                <CollapsibleTrigger asChild>
+                  <div className="py-1.5 px-2 -mx-2 cursor-pointer bg-muted/50 hover:bg-muted rounded transition-colors">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <h3 className="text-sm font-semibold shrink-0 w-[4.5rem]">
+                        Environment
+                      </h3>
+                      {!isEnvOpen && (
+                        <span className="text-xs text-muted-foreground font-normal truncate min-w-0">
+                          {getContentPreview(
+                            matchingEnvResponse.content,
+                            60,
+                            false,
+                          )}
+                        </span>
+                      )}
+                      <div className="flex items-center gap-1.5 ml-auto shrink-0">
+                        {matchingEnvResponse.tokens != null && (
+                          <span className="text-xs text-foreground/40 font-normal">
+                            {matchingEnvResponse.tokens.toLocaleString()} tokens
+                          </span>
+                        )}
+                        {matchingToolCalls.length > 0 && (
+                          <span className="text-xs text-foreground/40 font-normal">
+                            {matchingToolCalls.length} tool{matchingToolCalls.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                        <InlineCopyButton text={matchingEnvResponse.content} />
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 text-muted-foreground transition-transform",
+                            !isEnvOpen && "-rotate-90",
+                          )}
                         />
-                      ))}
+                      </div>
                     </div>
-                  )
-                })()}
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+                  </div>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="py-2">
+                    {/* Tool calls (collapsible within the env_response) */}
+                    {matchingToolCalls.length > 0 && (
+                      <div className="mb-2 space-y-1">
+                        {matchingToolCalls.map((tc) => (
+                          <ToolCallCollapsible
+                            key={`tc-${tc.tool_call_idx}`}
+                            toolCall={tc}
+                            renderOptions={renderOptions}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <ContentWithThinkBlocks
+                      content={matchingEnvResponse.content}
+                      renderOptions={renderOptions}
+                      enableThinkBlocks={false}
+                    />
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </div>
         )
       })}
     </div>
@@ -1155,16 +1262,81 @@ function InfoTurnCollapsible({
   )
 }
 
-function formatTurnType(turnType: string): string {
-  // Format turn type nicely
-  if (turnType === "model") return "Assistant"
-  if (turnType === "env" || turnType === "env_response") return "User"
-  // Convert snake_case to Title Case
-  return turnType
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ")
+function ToolCallCollapsible({
+  toolCall,
+  renderOptions = [],
+}: {
+  toolCall: ToolCallRow
+  renderOptions?: RolloutsRenderOption[]
+}) {
+  const [open, setOpen] = useState(false)
+  const statusColor = toolCall.success
+    ? "text-emerald-600 dark:text-emerald-400"
+    : "text-red-500 dark:text-red-400"
+  const statusLabel = toolCall.success ? "success" : "error"
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <div className="py-1 px-2 -mx-2 cursor-pointer bg-accent/40 hover:bg-accent/60 rounded transition-colors flex items-center gap-1.5">
+          <ChevronDown
+            className={cn(
+              "h-3 w-3 text-muted-foreground transition-transform shrink-0",
+              !open && "-rotate-90",
+            )}
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            {toolCall.tool_name}
+          </span>
+          <span className={cn("text-xs font-medium", statusColor)}>
+            {statusLabel}
+          </span>
+          {!open && toolCall.arguments && (
+            <span className="text-xs text-muted-foreground/50 truncate min-w-0">
+              {toolCall.arguments.slice(0, 60)}
+              {toolCall.arguments.length > 60 ? "…" : ""}
+            </span>
+          )}
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="py-1.5 px-2 text-xs bg-accent/20 rounded mt-0.5 space-y-2">
+          {toolCall.arguments && (
+            <div>
+              <div className="text-muted-foreground font-medium mb-0.5">Arguments</div>
+              <pre className="whitespace-pre-wrap font-sans break-words">
+                {toolCall.arguments}
+              </pre>
+            </div>
+          )}
+          {toolCall.result != null && (
+            <div>
+              <div className="text-muted-foreground font-medium mb-0.5">Result</div>
+              {renderOptions.length > 0 ? (
+                <RenderedContent
+                  content={toolCall.result}
+                  renderOptions={renderOptions}
+                />
+              ) : (
+                <pre className="whitespace-pre-wrap font-sans break-words">
+                  {toolCall.result}
+                </pre>
+              )}
+            </div>
+          )}
+          {toolCall.error != null && (
+            <div>
+              <div className="text-red-500 dark:text-red-400 font-medium mb-0.5">Error</div>
+              <pre className="whitespace-pre-wrap font-sans break-words text-red-500 dark:text-red-400">
+                {toolCall.error}
+              </pre>
+            </div>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
 }
+
 
 /** Strip <think>...</think> blocks from content and trim leading whitespace */
 function stripThinkTags(text: string): string {
