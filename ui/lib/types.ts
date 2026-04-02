@@ -48,6 +48,7 @@ export interface RolloutEvent {
   e2e_latency?: number | null
   rollout_tokens?: number | null
   prompt_tokens?: number | null
+  off_policy_steps?: number | null
 }
 
 export interface InfraEvent {

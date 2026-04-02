@@ -177,6 +177,7 @@ export interface RolloutSpan {
   e2e_latency?: number | null
   rollout_tokens?: number | null
   prompt_tokens?: number | null
+  off_policy_steps?: number | null
 }
 
 /** Convert pre-pivoted RolloutEvent objects (with start_time/end_time) to RolloutSpan. */
@@ -200,6 +201,7 @@ function rolloutEventsToSpans(events: RolloutEvent[]): RolloutSpan[] {
     e2e_latency: e.e2e_latency,
     rollout_tokens: e.rollout_tokens,
     prompt_tokens: e.prompt_tokens,
+    off_policy_steps: e.off_policy_steps,
   }))
 }
 
@@ -254,6 +256,7 @@ function buildGenerationDetails(
   if (span.decode_time) details.push({ label: "Decode", value: formatDuration(span.decode_time * 1000) })
   if (span.inference_time) details.push({ label: "Inference", value: formatDuration(span.inference_time * 1000) })
   if (span.e2e_latency) details.push({ label: "E2E Latency", value: formatDuration(span.e2e_latency * 1000) })
+  if (span.off_policy_steps != null) details.push({ label: "Off-policy steps", value: String(span.off_policy_steps) })
   details.push(...extra)
   return details
 }

@@ -4145,7 +4145,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
                p.tool_call_idx, p.server_id, p.server_lane, p.start_time, p.end_time,
                g.queue_time, g.ttft, g.prefill_time, g.decode_time,
                g.inference_time, g.e2e_latency, g.tokens as rollout_tokens,
-               g.prompt_tokens
+               g.prompt_tokens, sd.off_policy_steps
         FROM pivoted p
         LEFT JOIN (
             SELECT run_id, sample_id, generation_idx, queue_time, ttft, prefill_time,
@@ -4162,9 +4162,17 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
         ) g ON g.sample_id = p.sample_id
             AND g.generation_idx = p.generation_idx
             AND p.event_type = 'generation'
+        LEFT JOIN (
+            SELECT run_id, sample_id, off_policy_steps
+            FROM samples_data WHERE run_id = ?
+            UNION ALL
+            SELECT run_id, sample_id, off_policy_steps
+            FROM samples_data_discarded WHERE run_id = ?
+        ) sd ON sd.sample_id = p.sample_id
+            AND p.event_type = 'generation'
         ORDER BY p.start_time ASC
         """,
-        [req.run_path, req.run_path, interval_end, interval_start, interval_end, interval_start, req.run_path, req.run_path, req.run_path],
+        [req.run_path, req.run_path, interval_end, interval_start, interval_end, interval_start, req.run_path, req.run_path, req.run_path, req.run_path, req.run_path],
     ).fetchall()
 
     rollout_events = [
@@ -4187,6 +4195,7 @@ def get_timeline_paginated(req: TimelinePaginatedRequest):
             "e2e_latency": row[15],
             "rollout_tokens": row[16],
             "prompt_tokens": row[17],
+            "off_policy_steps": row[18],
         }
         for row in rollout_rows
     ]
