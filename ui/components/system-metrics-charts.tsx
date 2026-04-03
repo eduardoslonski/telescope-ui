@@ -26,7 +26,7 @@ import {
   formatSecondsHuman,
   formatValueSmart,
 } from "@/lib/format"
-import type { GpuMetric, CpuMetric, VllmMetric } from "@/lib/types"
+import type { GpuMetric, CpuMetric, VllmMetric, ThreadPoolMetric } from "@/lib/types"
 
 // ============================================================================
 // Constants
@@ -110,9 +110,12 @@ export interface SystemMetricsChartsProps {
   gpuMetrics: GpuMetric[]
   cpuMetrics: CpuMetric[]
   vllmMetrics?: VllmMetric[]
+  threadPoolMetrics?: ThreadPoolMetric[]
   availableGpuMetrics: string[]
   availableCpuMetrics?: string[]
   availableVllmMetrics?: string[]
+  availableThreadPoolMetrics?: string[]
+  availableThreadPools?: string[]
   trainerGpus: GpuIdentifier[]
   inferenceGpus: GpuIdentifier[]
   isLoading?: boolean
@@ -123,6 +126,8 @@ export interface SystemMetricsChartsProps {
   onCpuMetricsOpenChange?: (open: boolean) => void
   vllmMetricsOpen?: boolean
   onVllmMetricsOpenChange?: (open: boolean) => void
+  threadPoolMetricsOpen?: boolean
+  onThreadPoolMetricsOpenChange?: (open: boolean) => void
   roleMode?: "combined" | "separated"
   onRoleModeChange?: (mode: "combined" | "separated") => void
   trainerSectionOpen?: boolean
@@ -1219,6 +1224,312 @@ function CpuMetricsGrid({
 }
 
 // ============================================================================
+// Thread Pool Metric Chart Component (per-pool, matching CpuMetricChart style)
+// ============================================================================
+
+const THREAD_POOL_METRIC_ORDER = [
+  "active_threads",
+  "queue_depth",
+  "max_workers",
+  "total_threads",
+]
+
+const THREAD_POOL_METRIC_INFO: Record<string, { label: string; unit: string }> = {
+  active_threads: { label: "Active Threads", unit: "" },
+  queue_depth: { label: "Queue Depth", unit: "" },
+  max_workers: { label: "Max Workers", unit: "" },
+  total_threads: { label: "Total Threads", unit: "" },
+}
+
+function ThreadPoolMetricChart({
+  metricName,
+  data,
+  isLoading,
+  isRefetching,
+  overrideTimeRange,
+  xOffset = 0,
+}: {
+  metricName: string
+  data: ThreadPoolMetric[]
+  isLoading?: boolean
+  isRefetching?: boolean
+  overrideTimeRange?: { start: number; end: number } | null
+  xOffset?: number
+}) {
+  const darkMode = useAtomValue(darkModeAtom)
+  const { isFullscreen, toggleFullscreen, fullscreenPortal } = useChartFullscreen()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<uPlot | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+
+  const info = THREAD_POOL_METRIC_INFO[metricName] || {
+    label: metricName.replace(/_/g, " "),
+    unit: "",
+  }
+
+  // Group by pool_name (like CpuMetricChart groups by node_id)
+  const { uplotData, seriesConfig, hasData, poolNames, timeRange } =
+    useMemo(() => {
+      if (data.length === 0) {
+        const fallbackRange = overrideTimeRange ?? { start: 0, end: 1 }
+        return {
+          uplotData: null,
+          seriesConfig: [] as uPlot.Series[],
+          hasData: false,
+          poolNames: [] as string[],
+          timeRange: fallbackRange,
+        }
+      }
+
+      const poolNameSet = new Set<string>()
+      let minTime = Infinity
+      let maxTime = -Infinity
+      for (const m of data) {
+        poolNameSet.add(m.pool_name)
+        if (m.timestamp < minTime) minTime = m.timestamp
+        if (m.timestamp > maxTime) maxTime = m.timestamp
+      }
+      const sortedPoolNames = Array.from(poolNameSet).sort()
+      const tr = overrideTimeRange ?? { start: minTime, end: maxTime }
+
+      const byTimestamp: Record<number, Record<string, number>> = {}
+      const timestamps = new Set<number>()
+      for (const m of data) {
+        timestamps.add(m.timestamp)
+        if (!byTimestamp[m.timestamp]) byTimestamp[m.timestamp] = {}
+        byTimestamp[m.timestamp][m.pool_name] = m.value
+      }
+
+      const sortedTimes = Array.from(timestamps).sort((a, b) => a - b)
+      if (sortedTimes.length === 0) {
+        return {
+          uplotData: null,
+          seriesConfig: [] as uPlot.Series[],
+          hasData: false,
+          poolNames: sortedPoolNames,
+          timeRange: tr,
+        }
+      }
+
+      const xData = sortedTimes.map((t) => t - tr.start)
+      const series: uPlot.Series[] = [{ label: "Time" }]
+      const dataArrays: (number | null)[][] = [xData]
+
+      const POOL_COLORS = [
+        "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
+        "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6",
+      ]
+
+      for (let i = 0; i < sortedPoolNames.length; i++) {
+        const poolName = sortedPoolNames[i]
+        const values: (number | null)[] = sortedTimes.map(
+          (t) => byTimestamp[t]?.[poolName] ?? null
+        )
+        dataArrays.push(values)
+        series.push({
+          label: poolName,
+          stroke: POOL_COLORS[i % POOL_COLORS.length],
+          width: 1.5,
+          points: { show: false },
+        })
+      }
+
+      return {
+        uplotData: dataArrays as uPlot.AlignedData,
+        seriesConfig: series,
+        hasData: true,
+        poolNames: sortedPoolNames,
+        timeRange: tr,
+      }
+    }, [data, overrideTimeRange])
+
+  // uPlot lifecycle (create/update/destroy)
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !uplotData || !hasData) return
+
+    const width = container.clientWidth
+    const height = isFullscreen ? Math.max(400, window.innerHeight - 200) : 160
+
+    const opts: uPlot.Options = {
+      width,
+      height,
+      series: seriesConfig,
+      axes: [
+        {
+          stroke: darkMode ? "#888" : "#aaa",
+          grid: { stroke: darkMode ? "#333" : "#eee", width: 1 },
+          ticks: { stroke: darkMode ? "#555" : "#ccc", width: 1 },
+          values: (_, vals) =>
+            vals.map((v) => formatSecondsCompact(v + xOffset)),
+          size: 32,
+          font: "10px system-ui",
+        },
+        {
+          stroke: darkMode ? "#888" : "#aaa",
+          grid: { stroke: darkMode ? "#333" : "#eee", width: 1 },
+          ticks: { stroke: darkMode ? "#555" : "#ccc", width: 1 },
+          values: (_, vals) =>
+            vals.map((v) => formatValueSmart(v)),
+          size: 48,
+          font: "10px system-ui",
+        },
+      ],
+      scales: {
+        x: {
+          min: 0,
+          max: timeRange.end - timeRange.start,
+        },
+      },
+      cursor: {
+        drag: { x: false, y: false },
+        points: { show: false },
+      },
+      legend: { show: false },
+    }
+
+    if (chartRef.current) {
+      chartRef.current.destroy()
+    }
+
+    const chart = new uPlot(opts, uplotData, container)
+    chartRef.current = chart
+
+    return () => {
+      chart.destroy()
+      chartRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uplotData, hasData, seriesConfig, darkMode, isFullscreen, xOffset])
+
+  // Handle resize
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !chartRef.current) return
+    const observer = new ResizeObserver(() => {
+      if (chartRef.current && container.clientWidth > 0) {
+        chartRef.current.setSize({
+          width: container.clientWidth,
+          height: isFullscreen ? Math.max(400, window.innerHeight - 200) : 160,
+        })
+      }
+    })
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [isFullscreen])
+
+  const chartContent = (
+    <div className={cn(
+      "rounded-lg border bg-background",
+      isFullscreen ? "p-4" : "p-2",
+    )}>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium">{info.label}</span>
+          {isRefetching && !isLoading && (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={toggleFullscreen}
+            className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground"
+          >
+            {isFullscreen ? (
+              <Minimize2 className="h-3 w-3" />
+            ) : (
+              <Maximize2 className="h-3 w-3" />
+            )}
+          </button>
+        </div>
+      </div>
+      {/* Legend */}
+      {poolNames.length > 1 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mb-1">
+          {seriesConfig.slice(1).map((s, i) => (
+            <div key={String(s.label ?? i)} className="flex items-center gap-1">
+              <div
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: s.stroke as string }}
+              />
+              <span className="text-[10px] text-muted-foreground">{String(s.label ?? "")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div ref={containerRef} className={cn(isFullscreen ? "h-[calc(100vh-200px)]" : "h-40")} />
+      <div ref={tooltipRef} />
+    </div>
+  )
+
+  if (isFullscreen) {
+    return fullscreenPortal(chartContent)
+  }
+  return chartContent
+}
+
+
+function ThreadPoolMetricsGrid({
+  data,
+  availableMetricNames,
+  isLoading,
+  isRefetching,
+  overrideTimeRange,
+  xOffset = 0,
+}: {
+  data: ThreadPoolMetric[]
+  availableMetricNames?: string[]
+  isLoading?: boolean
+  isRefetching?: boolean
+  overrideTimeRange?: { start: number; end: number } | null
+  xOffset?: number
+}) {
+  const metricNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const m of data) names.add(m.metric_name)
+    for (const name of availableMetricNames ?? []) names.add(name)
+    const ordered = THREAD_POOL_METRIC_ORDER.filter((n) => names.has(n))
+    for (const n of names) {
+      if (!ordered.includes(n)) ordered.push(n)
+    }
+    return ordered
+  }, [data, availableMetricNames])
+
+  const metricsToRender = useMemo(() => {
+    if (metricNames.length > 0) return metricNames
+    if (isLoading) return THREAD_POOL_METRIC_ORDER
+    return metricNames
+  }, [metricNames, isLoading])
+
+  if (metricsToRender.length === 0 && !isLoading) {
+    return (
+      <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
+        No thread pool metrics data available
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {metricsToRender.map((metricName) => {
+        const metricData = data.filter((m) => m.metric_name === metricName)
+        return (
+          <ThreadPoolMetricChart
+            key={metricName}
+            metricName={metricName}
+            data={metricData}
+            isLoading={isLoading}
+            isRefetching={isRefetching}
+            overrideTimeRange={overrideTimeRange}
+            xOffset={xOffset}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+// ============================================================================
 // vLLM Metric Chart Component (per-server, matching CpuMetricChart style)
 // ============================================================================
 
@@ -2128,9 +2439,12 @@ export function SystemMetricsCharts({
   gpuMetrics,
   cpuMetrics,
   vllmMetrics,
+  threadPoolMetrics,
   availableGpuMetrics,
   availableCpuMetrics,
   availableVllmMetrics,
+  availableThreadPoolMetrics,
+  availableThreadPools,
   trainerGpus,
   inferenceGpus,
   isLoading,
@@ -2141,6 +2455,8 @@ export function SystemMetricsCharts({
   onCpuMetricsOpenChange,
   vllmMetricsOpen: vllmMetricsOpenProp,
   onVllmMetricsOpenChange,
+  threadPoolMetricsOpen: threadPoolMetricsOpenProp,
+  onThreadPoolMetricsOpenChange,
   roleMode: roleModeProp,
   onRoleModeChange,
   trainerSectionOpen,
@@ -2157,6 +2473,7 @@ export function SystemMetricsCharts({
   const [localSystemMetricsOpen, setLocalSystemMetricsOpen] = useState(true)
   const [localCpuMetricsOpen, setLocalCpuMetricsOpen] = useState(true)
   const [localVllmMetricsOpen, setLocalVllmMetricsOpen] = useState(true)
+  const [localThreadPoolMetricsOpen, setLocalThreadPoolMetricsOpen] = useState(true)
   const [localRoleMode, setLocalRoleMode] = useState<"combined" | "separated">(
     "separated"
   )
@@ -2167,6 +2484,8 @@ export function SystemMetricsCharts({
   const setCpuMetricsOpen = onCpuMetricsOpenChange ?? setLocalCpuMetricsOpen
   const vllmMetricsOpen = vllmMetricsOpenProp ?? localVllmMetricsOpen
   const setVllmMetricsOpen = onVllmMetricsOpenChange ?? setLocalVllmMetricsOpen
+  const threadPoolMetricsOpen = threadPoolMetricsOpenProp ?? localThreadPoolMetricsOpen
+  const setThreadPoolMetricsOpen = onThreadPoolMetricsOpenChange ?? setLocalThreadPoolMetricsOpen
   const roleMode = roleModeProp ?? localRoleMode
   const setRoleMode = onRoleModeChange ?? setLocalRoleMode
   const [hoveredCombinedGpuSeriesKey, setHoveredCombinedGpuSeriesKey] = useState<string | null>(null)
@@ -2692,6 +3011,40 @@ export function SystemMetricsCharts({
                   isLoading={isLoading}
                   isRefetching={isRefetching}
                   activeServerIds={activeVllmServerIds}
+                  overrideTimeRange={overrideTimeRange}
+                  xOffset={xOffset}
+                />
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        </>
+      ) : null}
+
+      {/* Thread Pool Metrics Section */}
+      {(threadPoolMetrics && threadPoolMetrics.length > 0) || (availableThreadPoolMetrics && availableThreadPoolMetrics.length > 0) || isLoading ? (
+        <>
+          <div className="border-t border-border my-3" />
+          <Collapsible open={threadPoolMetricsOpen} onOpenChange={setThreadPoolMetricsOpen}>
+            <CollapsibleTrigger asChild>
+              <div className="py-1.5 px-2 -mx-2 cursor-pointer hover:bg-muted rounded transition-colors">
+                <div className="flex items-center gap-1.5">
+                  <ChevronDown
+                    className={cn(
+                      "h-4 w-4 text-muted-foreground transition-transform",
+                      !threadPoolMetricsOpen && "-rotate-90"
+                    )}
+                  />
+                  <h3 className="text-sm font-semibold">Thread Pool Metrics</h3>
+                </div>
+              </div>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-3 mb-4">
+                <ThreadPoolMetricsGrid
+                  data={threadPoolMetrics ?? []}
+                  availableMetricNames={availableThreadPoolMetrics}
+                  isLoading={isLoading}
+                  isRefetching={isRefetching}
                   overrideTimeRange={overrideTimeRange}
                   xOffset={xOffset}
                 />
