@@ -1224,33 +1224,33 @@ function CpuMetricsGrid({
 }
 
 // ============================================================================
-// Thread Pool Metric Chart Component (per-pool, matching CpuMetricChart style)
+// Thread Pool Chart — one chart per (pool_name, metric_name), single line.
+// Exact copy of CpuMetricChart style, but with a single series (no node grouping).
 // ============================================================================
 
-const THREAD_POOL_METRIC_ORDER = [
-  "active_threads",
-  "queue_depth",
-  "max_workers",
-  "total_threads",
-]
-
-const THREAD_POOL_METRIC_INFO: Record<string, { label: string; unit: string }> = {
-  active_threads: { label: "Active Threads", unit: "" },
-  queue_depth: { label: "Queue Depth", unit: "" },
-  max_workers: { label: "Max Workers", unit: "" },
-  total_threads: { label: "Total Threads", unit: "" },
+const THREAD_POOL_METRIC_LABELS: Record<string, string> = {
+  utilization_percent: "Utilization %",
+  queue_depth: "Queue Depth",
+  active_threads: "Active Threads",
+  active_processes: "Active Processes",
+  max_workers: "Max Workers",
 }
 
-function ThreadPoolMetricChart({
+function ThreadPoolSingleChart({
+  poolName,
   metricName,
   data,
+  colorIndex = 0,
   isLoading,
   isRefetching,
   overrideTimeRange,
   xOffset = 0,
 }: {
+  poolName: string
   metricName: string
-  data: ThreadPoolMetric[]
+  data: Array<{ timestamp: number; value: number }>
+  /** Index into MULTI_SERIES_COLORS — keeps a consistent color per pool across all its charts. */
+  colorIndex?: number
   isLoading?: boolean
   isRefetching?: boolean
   overrideTimeRange?: { start: number; end: number } | null
@@ -1261,14 +1261,15 @@ function ThreadPoolMetricChart({
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<uPlot | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
+  const [ignoreOutliers, setIgnoreOutliers] = useState(false)
+  const [minY, setMinY] = useState<number | null>(null)
+  const [maxY, setMaxY] = useState<number | null>(null)
 
-  const info = THREAD_POOL_METRIC_INFO[metricName] || {
-    label: metricName.replace(/_/g, " "),
-    unit: "",
-  }
+  const metricLabel = THREAD_POOL_METRIC_LABELS[metricName] ?? metricName.replace(/_/g, " ")
+  const unit = metricName === "utilization_percent" ? "%" : ""
+  const chartTitle = `${poolName.replace(/_/g, " ")} — ${metricLabel}`
 
-  // Group by pool_name (like CpuMetricChart groups by node_id)
-  const { uplotData, seriesConfig, hasData, poolNames, timeRange } =
+  const { uplotData, seriesConfig, hasData, timeRange, outlierBounds } =
     useMemo(() => {
       if (data.length === 0) {
         const fallbackRange = overrideTimeRange ?? { start: 0, end: 1 }
@@ -1276,232 +1277,402 @@ function ThreadPoolMetricChart({
           uplotData: null,
           seriesConfig: [] as uPlot.Series[],
           hasData: false,
-          poolNames: [] as string[],
           timeRange: fallbackRange,
+          outlierBounds: null,
         }
       }
 
-      const poolNameSet = new Set<string>()
       let minTime = Infinity
       let maxTime = -Infinity
+      const allValues: number[] = []
       for (const m of data) {
-        poolNameSet.add(m.pool_name)
         if (m.timestamp < minTime) minTime = m.timestamp
         if (m.timestamp > maxTime) maxTime = m.timestamp
+        allValues.push(m.value)
       }
-      const sortedPoolNames = Array.from(poolNameSet).sort()
       const tr = overrideTimeRange ?? { start: minTime, end: maxTime }
 
-      const byTimestamp: Record<number, Record<string, number>> = {}
-      const timestamps = new Set<number>()
-      for (const m of data) {
-        timestamps.add(m.timestamp)
-        if (!byTimestamp[m.timestamp]) byTimestamp[m.timestamp] = {}
-        byTimestamp[m.timestamp][m.pool_name] = m.value
-      }
+      const sortedData = [...data].sort((a, b) => a.timestamp - b.timestamp)
+      const xData = sortedData.map((m) => m.timestamp - tr.start)
+      const yData = sortedData.map((m) => m.value as number | null)
 
-      const sortedTimes = Array.from(timestamps).sort((a, b) => a - b)
-      if (sortedTimes.length === 0) {
-        return {
-          uplotData: null,
-          seriesConfig: [] as uPlot.Series[],
-          hasData: false,
-          poolNames: sortedPoolNames,
-          timeRange: tr,
-        }
-      }
-
-      const xData = sortedTimes.map((t) => t - tr.start)
-      const series: uPlot.Series[] = [{ label: "Time" }]
-      const dataArrays: (number | null)[][] = [xData]
-
-      const POOL_COLORS = [
-        "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
-        "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6",
+      const series: uPlot.Series[] = [
+        { label: "Time" },
+        {
+          label: metricLabel,
+          stroke: MULTI_SERIES_COLORS[colorIndex % MULTI_SERIES_COLORS.length],
+          width: 1.5,
+          spanGaps: true,
+          points: { show: false },
+        },
       ]
 
-      for (let i = 0; i < sortedPoolNames.length; i++) {
-        const poolName = sortedPoolNames[i]
-        const values: (number | null)[] = sortedTimes.map(
-          (t) => byTimestamp[t]?.[poolName] ?? null
-        )
-        dataArrays.push(values)
-        series.push({
-          label: poolName,
-          stroke: POOL_COLORS[i % POOL_COLORS.length],
-          width: 1.5,
-          points: { show: false },
-        })
-      }
-
       return {
-        uplotData: dataArrays as uPlot.AlignedData,
+        uplotData: [xData, yData] as uPlot.AlignedData,
         seriesConfig: series,
         hasData: true,
-        poolNames: sortedPoolNames,
         timeRange: tr,
+        outlierBounds: computeIQRBounds(allValues),
       }
-    }, [data, overrideTimeRange])
+    }, [data, overrideTimeRange, metricLabel])
 
-  // uPlot lifecycle (create/update/destroy)
+  const formatYAxisTick = useCallback(
+    (v: number): string => {
+      if (Math.abs(v) >= 1000) return `${parseFloat((v / 1000).toFixed(1))}k`
+      if (Number.isInteger(v)) return v.toLocaleString()
+      if (Math.abs(v) < 0.01 && v !== 0) return v.toExponential(1)
+      return String(parseFloat(v.toFixed(2)))
+    },
+    []
+  )
+
   useEffect(() => {
-    const container = containerRef.current
-    if (!container || !uplotData || !hasData) return
+    if (!containerRef.current || !uplotData || !hasData) return
 
+    const container = containerRef.current
     const width = container.clientWidth
-    const height = isFullscreen ? Math.max(400, window.innerHeight - 200) : 160
+    const height = 200
+
+    let minVal = Number.POSITIVE_INFINITY
+    let maxVal = Number.NEGATIVE_INFINITY
+    const values = uplotData[1]
+    for (let j = 0; j < values.length; j += 1) {
+      const value = values[j]
+      if (value !== null && value !== undefined) {
+        if (ignoreOutliers && outlierBounds) {
+          if (value >= outlierBounds.lower && value <= outlierBounds.upper) {
+            if (value < minVal) minVal = value
+            if (value > maxVal) maxVal = value
+          }
+        } else {
+          if (value < minVal) minVal = value
+          if (value > maxVal) maxVal = value
+        }
+      }
+    }
+
+    if (minVal === Number.POSITIVE_INFINITY && outlierBounds) {
+      minVal = outlierBounds.lower
+      maxVal = outlierBounds.upper
+    }
+
+    const range = maxVal - minVal
+    const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal))
+    const minPadding = Math.max(absMax * 0.05, 1e-10)
+    const pad = Math.max(range * 0.1, minPadding)
+    const yDomain: [number, number] = [
+      minY !== null ? minY : Math.max(0, minVal - pad),
+      maxY !== null ? maxY : maxVal + pad,
+    ]
+    const gridColor = darkMode ? "rgba(255, 255, 255, 0.1)" : "rgba(128, 128, 128, 0.15)"
+    const tickLabelColor = darkMode ? "rgba(255, 255, 255, 0.65)" : "rgba(100, 100, 100, 0.9)"
+
+    const calcYAxisSize = (_u: uPlot, vals: string[]) => {
+      if (!vals || vals.length === 0) return 40
+      const maxLen = Math.max(...vals.map(v => v.length))
+      return Math.max(40, maxLen * 7 + 14)
+    }
 
     const opts: uPlot.Options = {
       width,
       height,
-      series: seriesConfig,
-      axes: [
-        {
-          stroke: darkMode ? "#888" : "#aaa",
-          grid: { stroke: darkMode ? "#333" : "#eee", width: 1 },
-          ticks: { stroke: darkMode ? "#555" : "#ccc", width: 1 },
-          values: (_, vals) =>
-            vals.map((v) => formatSecondsCompact(v + xOffset)),
-          size: 32,
-          font: "10px system-ui",
-        },
-        {
-          stroke: darkMode ? "#888" : "#aaa",
-          grid: { stroke: darkMode ? "#333" : "#eee", width: 1 },
-          ticks: { stroke: darkMode ? "#555" : "#ccc", width: 1 },
-          values: (_, vals) =>
-            vals.map((v) => formatValueSmart(v)),
-          size: 48,
-          font: "10px system-ui",
-        },
-      ],
-      scales: {
-        x: {
-          min: 0,
-          max: timeRange.end - timeRange.start,
-        },
-      },
+      padding: [4, 24, 0, 4],
       cursor: {
-        drag: { x: false, y: false },
+        show: true,
+        x: true,
+        y: false,
         points: { show: false },
+        drag: { x: true, y: false },
       },
       legend: { show: false },
+      select: { show: true, left: 0, top: 0, width: 0, height: 0 },
+      scales: {
+        x: {
+          time: false,
+          range: (_u: uPlot, dataMin: number, dataMax: number) => {
+            const windowEnd = timeRange.end - timeRange.start
+            if (windowEnd > 0) return [0, windowEnd]
+            return [dataMin, dataMax]
+          },
+        },
+        y: { range: yDomain },
+      },
+      axes: [
+        {
+          stroke: tickLabelColor,
+          grid: { stroke: gridColor, width: 1 },
+          ticks: { stroke: gridColor, width: 1 },
+          font: "10px system-ui, sans-serif",
+          labelFont: "10px system-ui, sans-serif",
+          size: 24,
+          splits: (
+            _u: uPlot,
+            _axisIdx: number,
+            min: number,
+            max: number
+          ) => [min, max],
+          values: (_u, vals) =>
+            vals.map((v) =>
+              formatClockTimeAdaptive(
+                timeRange.start + Number(v),
+                timeRange.end - timeRange.start
+              )
+            ),
+        },
+        {
+          stroke: tickLabelColor,
+          grid: { stroke: gridColor, width: 1 },
+          ticks: { stroke: gridColor, width: 1 },
+          font: "10px system-ui, sans-serif",
+          labelFont: "10px system-ui, sans-serif",
+          size: calcYAxisSize,
+          values: (_, vals) => vals.map(formatYAxisTick),
+        },
+      ],
+      series: seriesConfig,
+      hooks: {
+        setCursor: [
+          (u) => {
+            if (!tooltipRef.current || !containerRef.current) return
+            const { left, idx } = u.cursor
+            if (idx === null || idx === undefined || left === undefined || left < 0) {
+              tooltipRef.current.style.display = "none"
+              return
+            }
+
+            const relTime = uplotData[0][idx]
+            if (relTime === undefined) {
+              tooltipRef.current.style.display = "none"
+              return
+            }
+
+            const xSeries = uplotData[0] as ArrayLike<number>
+            const maxDistanceX = (() => {
+              const xScale = u.scales.x
+              const sMin = Number(xScale.min)
+              const sMax = Number(xScale.max)
+              if (!Number.isFinite(sMin) || !Number.isFinite(sMax)) return null
+              const xRange = Math.abs(sMax - sMin)
+              if (xRange <= 0) return null
+              const plotWidthPx = Math.max(1, u.bbox.width)
+              return (xRange * TIME_TOOLTIP_MAX_DISTANCE_PX) / plotWidthPx
+            })()
+
+            const valueSeries = uplotData[1] as ArrayLike<number | null | undefined> | undefined
+            const valuePointIdx = findNearestDefinedIndex(valueSeries, xSeries, idx, maxDistanceX)
+            if (valuePointIdx === null) {
+              tooltipRef.current.style.display = "none"
+              return
+            }
+            const value = valueSeries?.[valuePointIdx]
+            if (value === null || value === undefined) {
+              tooltipRef.current.style.display = "none"
+              return
+            }
+
+            const elapsedStr = formatTooltipElapsedTime(Number(relTime) + xOffset)
+            const absTimestamp = timeRange.start + Number(relTime)
+            const clockStr = formatClockTimeAdaptive(absTimestamp, timeRange.end - timeRange.start)
+            const formatted = formatValueSmart(value)
+
+            const html = `<div class="font-medium mb-1">${clockStr}</div>` +
+              `<div class="text-[10px] text-muted-foreground font-sans">Time Run: ${elapsedStr}</div>` +
+              `<div class="text-[10px] text-muted-foreground font-sans mb-1">Timestamp: ${absTimestamp.toFixed(3)}</div>` +
+              `<div class="flex items-center gap-2 mt-0.5">` +
+              `<div class="w-2 h-2 rounded-full shrink-0" style="background-color: ${MULTI_SERIES_COLORS[colorIndex % MULTI_SERIES_COLORS.length]}"></div>` +
+              `<span class="text-muted-foreground">${metricLabel}:</span>` +
+              `<span class="font-medium">${formatted}${unit}</span>` +
+              `</div>`
+
+            tooltipRef.current.innerHTML = html
+            tooltipRef.current.style.display = "block"
+
+            const containerRect = containerRef.current.getBoundingClientRect()
+            const tooltipRect = tooltipRef.current.getBoundingClientRect()
+
+            let tooltipX = containerRect.left + left + 15
+            if (tooltipX + tooltipRect.width + 20 > window.innerWidth) {
+              tooltipX = containerRect.left + left - tooltipRect.width - 15 + u.bbox.left
+            }
+            tooltipX = Math.max(4, tooltipX)
+
+            let tooltipY = containerRect.top - tooltipRect.height + 20
+            if (tooltipY < 4) tooltipY = containerRect.top + 8
+
+            tooltipRef.current.style.left = `${tooltipX}px`
+            tooltipRef.current.style.top = `${tooltipY}px`
+          },
+        ],
+      },
     }
 
-    if (chartRef.current) {
-      chartRef.current.destroy()
-    }
+    if (chartRef.current) chartRef.current.destroy()
 
     const chart = new uPlot(opts, uplotData, container)
     chartRef.current = chart
 
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newWidth, height: newHeight } = entry.contentRect
+        if (chart && newWidth > 0 && newHeight > 0) {
+          chart.setSize({ width: newWidth, height: newHeight })
+        }
+      }
+    })
+    resizeObserver.observe(container)
+
     return () => {
+      resizeObserver.disconnect()
       chart.destroy()
       chartRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uplotData, hasData, seriesConfig, darkMode, isFullscreen, xOffset])
+  }, [uplotData, hasData, seriesConfig, metricLabel, unit, timeRange, xOffset, formatYAxisTick, ignoreOutliers, outlierBounds, minY, maxY, darkMode, isFullscreen])
 
-  // Handle resize
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container || !chartRef.current) return
-    const observer = new ResizeObserver(() => {
-      if (chartRef.current && container.clientWidth > 0) {
-        chartRef.current.setSize({
-          width: container.clientWidth,
-          height: isFullscreen ? Math.max(400, window.innerHeight - 200) : 160,
-        })
-      }
-    })
-    observer.observe(container)
-    return () => observer.disconnect()
-  }, [isFullscreen])
+  const handleMouseLeave = useCallback(() => {
+    if (tooltipRef.current) tooltipRef.current.style.display = "none"
+  }, [])
 
-  const chartContent = (
-    <div className={cn(
-      "rounded-lg border bg-background",
-      isFullscreen ? "p-4" : "p-2",
-    )}>
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium">{info.label}</span>
-          {isRefetching && !isLoading && (
-            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+  return fullscreenPortal(
+    <div
+      className={cn(
+        "group/chart bg-background",
+        isFullscreen
+          ? "fixed inset-0 left-56 z-50 p-6 flex flex-col"
+          : "rounded-lg border border-border p-3 transition-opacity",
+        !isFullscreen && isLoading && "opacity-60"
+      )}
+    >
+      <div className="flex items-center justify-between mb-2 gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <h4 className={cn("font-medium truncate", isFullscreen ? "text-sm" : "text-xs")} title={chartTitle}>{chartTitle}</h4>
+          {ignoreOutliers && (
+            <FilterBadge label="Ignore Outliers" onRemove={() => setIgnoreOutliers(false)} />
+          )}
+          {minY !== null && (
+            <FilterBadge label={`Min Y: ${minY}`} onRemove={() => setMinY(null)} />
+          )}
+          {maxY !== null && (
+            <FilterBadge label={`Max Y: ${maxY}`} onRemove={() => setMaxY(null)} />
           )}
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={toggleFullscreen}
-            className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground"
-          >
-            {isFullscreen ? (
-              <Minimize2 className="h-3 w-3" />
-            ) : (
-              <Maximize2 className="h-3 w-3" />
-            )}
-          </button>
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="h-5 px-1.5 text-[10px] rounded border border-border hover:bg-muted flex items-center gap-1 transition-all opacity-0 group-hover/chart:opacity-100"
+              >
+                <SlidersHorizontal className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[160px]">
+              <DropdownMenuCheckboxItem
+                checked={ignoreOutliers}
+                onCheckedChange={setIgnoreOutliers}
+              >
+                Ignore Outliers
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <span className="text-xs text-muted-foreground font-medium w-10">Min Y</span>
+                <input
+                  type="number"
+                  className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="Auto"
+                  value={minY ?? ""}
+                  onChange={(e) => { setMinY(e.target.value === "" ? null : Number(e.target.value)) }}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
+              </div>
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <span className="text-xs text-muted-foreground font-medium w-10">Max Y</span>
+                <input
+                  type="number"
+                  className="w-20 h-6 px-2 text-xs rounded border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="Auto"
+                  value={maxY ?? ""}
+                  onChange={(e) => { setMaxY(e.target.value === "" ? null : Number(e.target.value)) }}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <FullscreenButton isFullscreen={isFullscreen} onClick={toggleFullscreen} />
         </div>
       </div>
-      {/* Legend */}
-      {poolNames.length > 1 && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mb-1">
-          {seriesConfig.slice(1).map((s, i) => (
-            <div key={String(s.label ?? i)} className="flex items-center gap-1">
-              <div
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: s.stroke as string }}
-              />
-              <span className="text-[10px] text-muted-foreground">{String(s.label ?? "")}</span>
-            </div>
-          ))}
+      {hasData ? (
+        <div
+          className={cn("relative bg-background rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}
+          ref={containerRef}
+          onMouseLeave={handleMouseLeave}
+        >
+          {isRefetching && (
+            <Loader2 className="absolute bottom-0.5 left-0.5 h-3 w-3 animate-spin text-muted-foreground" />
+          )}
+          <div
+            ref={tooltipRef}
+            className="fixed z-[9999] max-w-[360px] bg-popover text-popover-foreground text-xs py-2 px-3 rounded-lg shadow-xl border border-border pointer-events-none"
+            style={{ display: "none" }}
+          />
+        </div>
+      ) : (
+        <div className={cn("flex items-center justify-center text-muted-foreground text-xs rounded", isFullscreen ? "flex-1 min-h-0" : "h-[200px]")}>
+          {isLoading ? "Loading..." : `No data for ${chartTitle}`}
         </div>
       )}
-      <div ref={containerRef} className={cn(isFullscreen ? "h-[calc(100vh-200px)]" : "h-40")} />
-      <div ref={tooltipRef} />
     </div>
   )
-
-  if (isFullscreen) {
-    return fullscreenPortal(chartContent)
-  }
-  return chartContent
 }
 
 
+/** Grid: one chart per (pool_name, metric_name) combination. */
 function ThreadPoolMetricsGrid({
   data,
-  availableMetricNames,
+  availablePoolNames,
   isLoading,
   isRefetching,
   overrideTimeRange,
   xOffset = 0,
 }: {
   data: ThreadPoolMetric[]
-  availableMetricNames?: string[]
+  availablePoolNames?: string[]
   isLoading?: boolean
   isRefetching?: boolean
   overrideTimeRange?: { start: number; end: number } | null
   xOffset?: number
 }) {
-  const metricNames = useMemo(() => {
-    const names = new Set<string>()
-    for (const m of data) names.add(m.metric_name)
-    for (const name of availableMetricNames ?? []) names.add(name)
-    const ordered = THREAD_POOL_METRIC_ORDER.filter((n) => names.has(n))
-    for (const n of names) {
-      if (!ordered.includes(n)) ordered.push(n)
+  // Build all (pool, metric) pairs from data
+  const chartKeys = useMemo(() => {
+    const pairSet = new Set<string>()
+    for (const m of data) {
+      pairSet.add(`${m.pool_name}\0${m.metric_name}`)
     }
-    return ordered
-  }, [data, availableMetricNames])
+    // Sort: group by pool first, then metric order within pool
+    const metricOrder = ["utilization_percent", "queue_depth", "active_threads", "active_processes", "max_workers"]
+    const pairs = Array.from(pairSet).map((k) => {
+      const [pool, metric] = k.split("\0")
+      return { pool, metric }
+    })
+    pairs.sort((a, b) => {
+      const poolCmp = a.pool.localeCompare(b.pool)
+      if (poolCmp !== 0) return poolCmp
+      const ai = metricOrder.indexOf(a.metric)
+      const bi = metricOrder.indexOf(b.metric)
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+    })
+    return pairs
+  }, [data])
 
-  const metricsToRender = useMemo(() => {
-    if (metricNames.length > 0) return metricNames
-    if (isLoading) return THREAD_POOL_METRIC_ORDER
-    return metricNames
-  }, [metricNames, isLoading])
+  // Stable color index per pool name (sorted order)
+  const poolColorIndex = useMemo(() => {
+    const pools = Array.from(new Set(chartKeys.map((k) => k.pool))).sort()
+    const map: Record<string, number> = {}
+    pools.forEach((p, i) => { map[p] = i })
+    return map
+  }, [chartKeys])
 
-  if (metricsToRender.length === 0 && !isLoading) {
+  if (chartKeys.length === 0 && !isLoading) {
     return (
       <div className="h-24 flex items-center justify-center text-muted-foreground text-xs rounded-lg border border-border bg-background">
         No thread pool metrics data available
@@ -1510,14 +1681,18 @@ function ThreadPoolMetricsGrid({
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      {metricsToRender.map((metricName) => {
-        const metricData = data.filter((m) => m.metric_name === metricName)
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {chartKeys.map(({ pool, metric }) => {
+        const chartData = data.filter(
+          (m) => m.pool_name === pool && m.metric_name === metric
+        )
         return (
-          <ThreadPoolMetricChart
-            key={metricName}
-            metricName={metricName}
-            data={metricData}
+          <ThreadPoolSingleChart
+            key={`${pool}-${metric}`}
+            poolName={pool}
+            metricName={metric}
+            data={chartData}
+            colorIndex={poolColorIndex[pool] ?? 0}
             isLoading={isLoading}
             isRefetching={isRefetching}
             overrideTimeRange={overrideTimeRange}
@@ -3021,7 +3196,7 @@ export function SystemMetricsCharts({
       ) : null}
 
       {/* Thread Pool Metrics Section */}
-      {(threadPoolMetrics && threadPoolMetrics.length > 0) || (availableThreadPoolMetrics && availableThreadPoolMetrics.length > 0) || isLoading ? (
+      {(threadPoolMetrics && threadPoolMetrics.length > 0) || (availableThreadPools && availableThreadPools.length > 0) || isLoading ? (
         <>
           <div className="border-t border-border my-3" />
           <Collapsible open={threadPoolMetricsOpen} onOpenChange={setThreadPoolMetricsOpen}>
@@ -3042,7 +3217,7 @@ export function SystemMetricsCharts({
               <div className="mt-3 mb-4">
                 <ThreadPoolMetricsGrid
                   data={threadPoolMetrics ?? []}
-                  availableMetricNames={availableThreadPoolMetrics}
+                  availablePoolNames={availableThreadPools}
                   isLoading={isLoading}
                   isRefetching={isRefetching}
                   overrideTimeRange={overrideTimeRange}
