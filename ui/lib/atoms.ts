@@ -300,6 +300,7 @@ export const infraInferenceSectionOpenAtom = createPerRunAtom<boolean>(true)
 export const infraTrainerNodeModeAtom = createPerRunAtom<InfraNodeMode>("combined")
 export const infraInferenceNodeModeAtom = createPerRunAtom<InfraNodeMode>("combined")
 export const infraVllmMetricsOpenAtom = createPerRunAtom<boolean>(true)
+export const infraThreadPoolMetricsOpenAtom = createPerRunAtom<boolean>(true)
 
 // Sidebar project filter (empty array = show all)
 export const sidebarProjectFilterAtom = atomWithStorage<string[]>(

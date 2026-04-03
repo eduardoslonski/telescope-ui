@@ -728,6 +728,14 @@ export interface VllmMetric {
 }
 
 
+export interface ThreadPoolMetric {
+  timestamp: number
+  pool_name: string
+  metric_name: string
+  value: number
+}
+
+
 // ============================================================================
 // Step Metrics Types (Per-step training metrics)
 // ============================================================================

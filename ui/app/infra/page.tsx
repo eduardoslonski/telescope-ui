@@ -24,6 +24,7 @@ import {
   infraSystemMetricsOpenAtom,
   infraCpuMetricsOpenAtom,
   infraVllmMetricsOpenAtom,
+  infraThreadPoolMetricsOpenAtom,
   infraTrainerSectionOpenAtom,
   infraInferenceSectionOpenAtom,
   infraTrainerNodeModeAtom,
@@ -35,6 +36,7 @@ import {
   usePaginatedGpuMetrics,
   usePaginatedCpuMetrics,
   usePaginatedVllmMetrics,
+  usePaginatedThreadPoolMetrics,
 } from "@/hooks/use-run-data"
 import {
   SystemMetricsCharts,
@@ -43,7 +45,7 @@ import {
 import { TopologyViewer, parseTopology, parseSetupJson, asObject, asNumber } from "@/components/topology-viewer"
 import { ModelArchitectureViewer } from "@/components/model-architecture-viewer"
 import { formatClockTimeAdaptive, formatDurationHms } from "@/lib/format"
-import type { GpuMetric, CpuMetric, VllmMetric } from "@/lib/types"
+import type { GpuMetric, CpuMetric, VllmMetric, ThreadPoolMetric } from "@/lib/types"
 
 
 function getSetupObject(
@@ -527,6 +529,9 @@ export default function InfraPage() {
   const [vllmMetricsOpen, setVllmMetricsOpen] = useAtom(
     infraVllmMetricsOpenAtom,
   )
+  const [threadPoolMetricsOpen, setThreadPoolMetricsOpen] = useAtom(
+    infraThreadPoolMetricsOpenAtom,
+  )
   const [trainerSectionOpen, setTrainerSectionOpen] = useAtom(
     infraTrainerSectionOpenAtom,
   )
@@ -628,11 +633,29 @@ export default function InfraPage() {
     shouldPoll,
   )
 
+  // Fetch paginated thread pool metrics (anchor to GPU start time like CPU)
+  const threadPoolQueryEnabled = !!selectedRunPath && gpuData !== undefined
+  const {
+    data: threadPoolData,
+    isFetching: threadPoolFetching,
+    isPlaceholderData: threadPoolIsPlaceholder,
+  } = usePaginatedThreadPoolMetrics(
+    selectedRunPath || "",
+    page,
+    intervalSeconds,
+    gpuData?.global_min_time ?? null,
+    isLive,
+    null, // fetch all metrics
+    threadPoolQueryEnabled,
+    shouldPoll,
+  )
+
   const knownTotalPages = gpuData?.total_pages ?? cpuData?.total_pages ?? null
 
   const displayedGpuData = gpuData
   const displayedCpuData = cpuData
   const displayedVllmData = vllmData
+  const displayedThreadPoolData = threadPoolData
 
   // Keep metric card layout stable during page changes, even with no-cache queries.
   const [stickyGpuMetricNames, setStickyGpuMetricNames] = useState<string[]>([])
@@ -640,6 +663,8 @@ export default function InfraPage() {
   const [stickyVllmMetricNames, setStickyVllmMetricNames] = useState<string[]>(
     [],
   )
+  const [stickyThreadPoolMetricNames, setStickyThreadPoolMetricNames] = useState<string[]>([])
+  const [stickyThreadPoolNames, setStickyThreadPoolNames] = useState<string[]>([])
 
   useEffect(() => {
     if (
@@ -667,6 +692,21 @@ export default function InfraPage() {
       setStickyVllmMetricNames(displayedVllmData.available_metrics)
     }
   }, [displayedVllmData?.available_metrics])
+
+  useEffect(() => {
+    if (
+      displayedThreadPoolData?.available_metrics &&
+      displayedThreadPoolData.available_metrics.length > 0
+    ) {
+      setStickyThreadPoolMetricNames(displayedThreadPoolData.available_metrics)
+    }
+    if (
+      displayedThreadPoolData?.available_pools &&
+      displayedThreadPoolData.available_pools.length > 0
+    ) {
+      setStickyThreadPoolNames(displayedThreadPoolData.available_pools)
+    }
+  }, [displayedThreadPoolData?.available_metrics, displayedThreadPoolData?.available_pools])
 
   // Keep pagination/time metadata stable during in-flight fetches.
   const [stickyTotalPages, setStickyTotalPages] = useState(1)
@@ -1012,6 +1052,7 @@ export default function InfraPage() {
               gpuMetrics={aggregatedGpuMetrics}
               cpuMetrics={aggregatedCpuMetrics}
               vllmMetrics={aggregatedVllmMetrics}
+              threadPoolMetrics={displayedThreadPoolData?.metrics}
               availableGpuMetrics={
                 displayedGpuData?.available_metrics ?? stickyGpuMetricNames
               }
@@ -1020,6 +1061,12 @@ export default function InfraPage() {
               }
               availableVllmMetrics={
                 displayedVllmData?.available_metrics ?? stickyVllmMetricNames
+              }
+              availableThreadPoolMetrics={
+                displayedThreadPoolData?.available_metrics ?? stickyThreadPoolMetricNames
+              }
+              availableThreadPools={
+                displayedThreadPoolData?.available_pools ?? stickyThreadPoolNames
               }
               trainerGpus={trainerGpus}
               inferenceGpus={inferenceGpus}
@@ -1033,6 +1080,8 @@ export default function InfraPage() {
               onCpuMetricsOpenChange={setCpuMetricsOpen}
               vllmMetricsOpen={vllmMetricsOpen}
               onVllmMetricsOpenChange={setVllmMetricsOpen}
+              threadPoolMetricsOpen={threadPoolMetricsOpen}
+              onThreadPoolMetricsOpenChange={setThreadPoolMetricsOpen}
               trainerSectionOpen={trainerSectionOpen}
               onTrainerSectionOpenChange={setTrainerSectionOpen}
               inferenceSectionOpen={inferenceSectionOpen}

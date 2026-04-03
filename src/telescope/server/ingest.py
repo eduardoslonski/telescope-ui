@@ -44,6 +44,7 @@ from .db import (
     insert_system_metrics_gpu,
     insert_system_metrics_cpu,
     insert_vllm_metrics,
+    insert_thread_pool_metrics,
     insert_prompts_discarded,
     insert_generations_discarded,
     insert_env_responses_discarded,
@@ -137,6 +138,7 @@ TABLE_SCHEMA_VERSIONS: dict[str, str] = {
     "system_metrics_gpu": "0.1",
     "system_metrics_cpu": "0.1",
     "vllm_metrics": "0.1",
+    "system_metrics_thread_pools": "0.1",
     "step_metrics": "0.2",
     "prompts_discarded": "0.1",
     "generations_discarded": "0.1",
@@ -729,6 +731,7 @@ class EventZipData:
         self.gpu: list[dict] | None = None
         self.cpu: list[dict] | None = None
         self.vllm: list[dict] | None = None
+        self.thread_pools: list[dict] | None = None
         # Discarded data (from event zips)
         self.prompts_discarded: list[dict] | None = None
         self.generations_discarded: list[dict] | None = None
@@ -799,6 +802,7 @@ class EventZipData:
             self.gpu,
             self.cpu,
             self.vllm,
+            self.thread_pools,
             self.prompts_discarded,
             self.generations_discarded,
             self.env_responses_discarded,
@@ -954,6 +958,15 @@ def _download_event_zip_sync(run: Any, file_path: str) -> tuple[str, EventZipDat
                         log.info(f"[WANDB] Extracted vllm: {len(data.vllm)} rows")
                     except Exception as e:
                         log.debug(f"[WANDB] No vllm.parquet in {file_path}: {e}")
+
+                    # Read thread_pools.parquet if it exists
+                    thread_pools_path = f"{tmpdir}/thread_pools.parquet"
+                    try:
+                        table = pq.read_table(thread_pools_path)
+                        data.thread_pools = table.to_pylist()
+                        log.info(f"[WANDB] Extracted thread_pools: {len(data.thread_pools)} rows")
+                    except Exception as e:
+                        log.debug(f"[WANDB] No thread_pools.parquet in {file_path}: {e}")
 
                     # Read prompts_discarded.parquet if it exists
                     prompts_discarded_path = f"{tmpdir}/prompts_discarded.parquet"
@@ -1622,6 +1635,7 @@ def _insert_event_zip_data(
         gpu = _filter_events_by_tails(data.gpu, missing_tails)
         cpu = _filter_events_by_tails(data.cpu, missing_tails)
         vllm = _filter_events_by_tails(data.vllm, missing_tails)
+        thread_pools = _filter_events_by_tails(data.thread_pools, missing_tails)
         prompts_discarded = _filter_events_by_tails(data.prompts_discarded, missing_tails)
         generations_discarded = _filter_events_by_tails(data.generations_discarded, missing_tails)
         env_responses_discarded = _filter_events_by_tails(data.env_responses_discarded, missing_tails)
@@ -1691,6 +1705,7 @@ def _insert_event_zip_data(
         gpu = data.gpu
         cpu = data.cpu
         vllm = data.vllm
+        thread_pools = data.thread_pools
         prompts_discarded = data.prompts_discarded
         generations_discarded = data.generations_discarded
         env_responses_discarded = data.env_responses_discarded
@@ -1770,6 +1785,12 @@ def _insert_event_zip_data(
         counts["vllm"] = len(vllm)
         inserted_tails.update(_get_tail_indices_from_events(vllm))
         log.info(f"[EVENTS] Synced {source_name} vllm: {counts['vllm']} metrics")
+
+    if thread_pools:
+        insert_thread_pool_metrics(con, run_path, thread_pools)
+        counts["thread_pools"] = len(thread_pools)
+        inserted_tails.update(_get_tail_indices_from_events(thread_pools))
+        log.info(f"[EVENTS] Synced {source_name} thread_pools: {counts['thread_pools']} metrics")
 
     if logs_data:
         insert_logs(con, run_path, logs_data)
