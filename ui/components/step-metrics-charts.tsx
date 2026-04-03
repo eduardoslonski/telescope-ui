@@ -5698,6 +5698,13 @@ export function InferencePerformanceSection({
           label="Inference Kept vs Discarded vs Canceled"
           categories={["kept", "discarded", "canceled"]}
         />
+        <InferencePerformanceAreaChart
+          runs={runs}
+          shouldPoll={shouldPoll}
+          scrollRoot={scrollRoot}
+          label="Inference Prefill vs Decode Time"
+          categories={["prefill", "decode"]}
+        />
       </div>
       <h4 className="text-xs font-medium text-muted-foreground mb-2 mt-4">Requests Count</h4>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -5781,6 +5788,7 @@ export function InferencePerformanceChartCard({
 
 export const INFERENCE_PERF_AREA_VARIANTS = [
   { key: "inference_area_kept_vs_discarded_vs_canceled", label: "Inference Kept vs Discarded vs Canceled", categories: ["kept", "discarded", "canceled"] },
+  { key: "inference_area_prefill_vs_decode", label: "Inference Prefill vs Decode Time", categories: ["prefill", "decode"] },
 ] as const
 
 interface InferencePerformanceAreaChartCardProps {
@@ -6804,6 +6812,8 @@ const INFERENCE_BREAKDOWN_DISPLAY_NAMES: Record<string, string> = {
   kept: "Kept",
   discarded: "Discarded",
   canceled: "Canceled",
+  prefill: "Prefill",
+  decode: "Decode",
 }
 
 function getInferenceBreakdownDisplayName(key: string): string {
@@ -6814,6 +6824,8 @@ function getInferenceBreakdownColor(key: string, darkMode: boolean): string {
   if (key === "kept") return INFERENCE_REQUEST_COLOR
   if (key === "discarded") return darkMode ? INFERENCE_REQUEST_DISCARDED_COLOR_DARK : INFERENCE_REQUEST_DISCARDED_COLOR
   if (key === "canceled") return darkMode ? INFERENCE_REQUEST_CANCELED_COLOR_DARK : INFERENCE_REQUEST_CANCELED_COLOR
+  if (key === "prefill") return "#8b5cf6" // violet-500
+  if (key === "decode") return "#f59e0b" // amber-500
   return DEFAULT_EVENT_COLOR
 }
 
@@ -6822,7 +6834,12 @@ const INFERENCE_BREAKDOWN_FIELDS: Record<string, string> = {
   kept: "rollouts_group_done_kept",
   discarded: "rollouts_group_done_discarded",
   canceled: "rollouts_group_done_canceled",
+  prefill: "avg_time_prefill",
+  decode: "avg_time_decode",
 }
+
+// Fields that use {time, value} shape instead of {time, count}
+const INFERENCE_BREAKDOWN_AVG_FIELDS = new Set(["prefill", "decode"])
 
 interface InferencePerformanceAreaChartProps {
   runs: RunInfo[]
@@ -6904,23 +6921,29 @@ function InferencePerformanceAreaChart({
     const rft = data.first_time
 
     // Build time-indexed map from separate arrays
+    const isAvgMode = categories.some((cat) => INFERENCE_BREAKDOWN_AVG_FIELDS.has(cat))
     const timeMap = new Map<number, Record<string, number>>()
     for (const cat of categories) {
       const fieldName = INFERENCE_BREAKDOWN_FIELDS[cat]
       if (!fieldName) continue
-      const arr = (data as unknown as Record<string, unknown>)[fieldName] as { time: number; count: number }[] | undefined
+      const arr = (data as unknown as Record<string, unknown>)[fieldName] as { time: number; count?: number; value?: number }[] | undefined
       if (!arr) continue
       for (const bucket of arr) {
+        const val = isAvgMode ? (bucket.value ?? 0) : (bucket.count ?? 0)
         if (!timeMap.has(bucket.time)) {
           timeMap.set(bucket.time, { time: bucket.time })
         }
-        timeMap.get(bucket.time)![cat] = bucket.count
+        timeMap.get(bucket.time)![cat] = val
       }
     }
 
-    // Convert counts to percentages
+    // Convert to percentages, filtering out entries where all values are 0
     let buckets = [...timeMap.values()]
       .sort((a, b) => a.time - b.time)
+      .filter((entry) => {
+        const total = categories.reduce((sum, cat) => sum + (entry[cat] ?? 0), 0)
+        return total > 0
+      })
       .map((entry) => {
         const total = categories.reduce((sum, cat) => sum + (entry[cat] ?? 0), 0)
         const result: Record<string, number> = { time: entry.time }

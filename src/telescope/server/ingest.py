@@ -2421,7 +2421,7 @@ def get_sync_mismatch_reasons(
     # If the summary_id in the saved summary matches the stored summary_id,
     # then we've already synced this exact summary — nothing to do.
     remote_summary_id = summary.get("summary_id")
-    if remote_summary_id is not None and stored_summary_id is not None and remote_summary_id == stored_summary_id:
+    if remote_summary_id is not None and stored_summary_id is not None and str(remote_summary_id) == str(stored_summary_id):
         return []
 
     progress = _extract_summary_progress(summary)
