@@ -29,6 +29,7 @@ import type {
   GpuMetric,
   CpuMetric,
   VllmMetric,
+  ThreadPoolMetric,
   CustomMetricsLayoutResponse,
   CustomMetricsTemplatesResponse,
   CustomMetricsTemplateResponse,
@@ -859,6 +860,64 @@ export function usePaginatedCpuMetrics(
         }),
       })
       if (!response.ok) throw new Error("Failed to fetch paginated CPU metrics")
+      return response.json()
+    },
+    enabled: enabled && !!runPath,
+    refetchInterval: shouldPoll ? POLL_INTERVAL : false,
+    placeholderData: keepPreviousData,
+  })
+}
+
+// ============================================================================
+// Paginated Thread Pool Metrics Queries (for Infra page)
+// ============================================================================
+
+export interface PaginatedThreadPoolMetricsResponse {
+  metrics: ThreadPoolMetric[]
+  total_pages: number
+  current_page: number
+  interval_start: number
+  interval_end: number
+  global_min_time: number | null
+  global_max_time: number | null
+  available_metrics: string[]
+  available_pools: string[]
+}
+
+export function usePaginatedThreadPoolMetrics(
+  runPath: string,
+  page: number,
+  intervalSeconds: number,
+  anchorStartTime: number | null,
+  alignToLatest: boolean,
+  metricNames: string[] | null,
+  enabled: boolean,
+  shouldPoll: boolean
+) {
+  return useQuery<PaginatedThreadPoolMetricsResponse>({
+    queryKey: [
+      "thread-pool-metrics-paginated",
+      runPath,
+      page,
+      intervalSeconds,
+      anchorStartTime,
+      alignToLatest,
+      metricNames,
+    ],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/system-metrics/thread-pools-paginated`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          run_path: runPath,
+          page,
+          interval_seconds: intervalSeconds,
+          anchor_start_time: anchorStartTime,
+          align_to_latest: alignToLatest,
+          metric_names: metricNames,
+        }),
+      })
+      if (!response.ok) throw new Error("Failed to fetch paginated thread pool metrics")
       return response.json()
     },
     enabled: enabled && !!runPath,

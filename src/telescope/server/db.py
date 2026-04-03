@@ -398,6 +398,17 @@ def _init_schema(con: duckdb.DuckDBPyConnection) -> None:
         );
     """)
 
+    # Thread pool metrics table - stores thread pool utilization metrics from orchestrator
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS system_metrics_thread_pools (
+            run_id TEXT,
+            timestamp DOUBLE,
+            pool_name TEXT,
+            metric_name TEXT,
+            value DOUBLE
+        );
+    """)
+
     # Logs table - captured log records from training
     con.execute("""
         CREATE TABLE IF NOT EXISTS logs (
@@ -1822,6 +1833,34 @@ def insert_vllm_metrics(con: duckdb.DuckDBPyConnection, run_id: str, metrics: li
     
     elapsed = time.time() - start
     log.info(f"[DB] Inserted {len(metrics)} vLLM metrics in {elapsed:.2f}s")
+
+
+def insert_thread_pool_metrics(con: duckdb.DuckDBPyConnection, run_id: str, metrics: list[dict]):
+    """Insert thread pool metrics into the database, ignoring duplicates."""
+    if not metrics:
+        return
+
+    log.info(f"[DB] Inserting {len(metrics)} thread pool metrics...")
+    start = time.time()
+
+    df = pd.DataFrame([
+        {
+            "run_id": run_id,
+            "timestamp": m.get("timestamp"),
+            "pool_name": m.get("pool_name"),
+            "metric_name": m.get("metric_name"),
+            "value": m.get("value"),
+        }
+        for m in metrics
+    ])
+
+    con.execute("""
+        INSERT INTO system_metrics_thread_pools (run_id, timestamp, pool_name, metric_name, value)
+        SELECT run_id, timestamp, pool_name, metric_name, value FROM df
+    """)
+
+    elapsed = time.time() - start
+    log.info(f"[DB] Inserted {len(metrics)} thread pool metrics in {elapsed:.2f}s")
 
 
 def insert_step_metrics(con: duckdb.DuckDBPyConnection, run_id: str, metrics: list[dict]):

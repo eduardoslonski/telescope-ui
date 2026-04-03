@@ -4827,6 +4827,135 @@ def get_system_metrics_cpu_paginated(req: SystemMetricsPaginatedRequest):
     }
 
 
+@app.post("/system-metrics/thread-pools-paginated")
+def get_thread_pool_metrics_paginated(req: SystemMetricsPaginatedRequest):
+    """Get paginated thread pool metrics for a specific page/interval."""
+    log.info(f"[API] Getting paginated thread pool metrics for {req.run_path}, page={req.page}, interval={req.interval_seconds}s")
+    con = connect()
+
+    time_range = con.execute(
+        "SELECT MIN(timestamp), MAX(timestamp) FROM system_metrics_thread_pools WHERE run_id = ?",
+        [req.run_path],
+    ).fetchone()
+
+    global_min_time = time_range[0]
+    global_max_time = time_range[1]
+
+    if global_min_time is None or global_max_time is None:
+        return {
+            "metrics": [],
+            "total_pages": 1,
+            "current_page": 0,
+            "interval_start": 0,
+            "interval_end": req.interval_seconds,
+            "global_min_time": None,
+            "global_max_time": None,
+            "available_metrics": [],
+            "available_pools": [],
+        }
+
+    pagination_anchor = req.anchor_start_time if req.anchor_start_time is not None else global_min_time
+    total_duration = global_max_time - pagination_anchor
+    total_pages = max(1, int((total_duration // req.interval_seconds) + 1))
+    current_page = req.page
+
+    if req.align_to_latest:
+        interval_end = global_max_time
+        interval_start = max(pagination_anchor, interval_end - req.interval_seconds)
+        current_page = max(0, total_pages - 1)
+    else:
+        interval_start = pagination_anchor + (req.page * req.interval_seconds)
+        interval_end = interval_start + req.interval_seconds
+
+    metric_filter_sql = ""
+    metric_filter_params = []
+    if req.metric_names:
+        placeholders = ", ".join(["?" for _ in req.metric_names])
+        metric_filter_sql = f" AND metric_name IN ({placeholders})"
+        metric_filter_params = req.metric_names
+
+    query = f"""
+        WITH in_window AS (
+            SELECT timestamp, pool_name, metric_name, value
+            FROM system_metrics_thread_pools
+            WHERE run_id = ? AND timestamp >= ? AND timestamp < ?{metric_filter_sql}
+        ),
+        before_window AS (
+            SELECT timestamp, pool_name, metric_name, value
+            FROM (
+                SELECT timestamp, pool_name, metric_name, value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pool_name, metric_name
+                        ORDER BY timestamp DESC
+                    ) AS rn
+                FROM system_metrics_thread_pools
+                WHERE run_id = ? AND timestamp < ?{metric_filter_sql}
+            ) ranked_before
+            WHERE rn = 1
+        ),
+        after_window AS (
+            SELECT timestamp, pool_name, metric_name, value
+            FROM (
+                SELECT timestamp, pool_name, metric_name, value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pool_name, metric_name
+                        ORDER BY timestamp ASC
+                    ) AS rn
+                FROM system_metrics_thread_pools
+                WHERE run_id = ? AND timestamp >= ?{metric_filter_sql}
+            ) ranked_after
+            WHERE rn = 1
+        )
+        SELECT timestamp, pool_name, metric_name, value FROM in_window
+        UNION ALL
+        SELECT timestamp, pool_name, metric_name, value FROM before_window
+        UNION ALL
+        SELECT timestamp, pool_name, metric_name, value FROM after_window
+        ORDER BY timestamp ASC
+    """
+    params = [
+        req.run_path, interval_start, interval_end, *metric_filter_params,
+        req.run_path, interval_start, *metric_filter_params,
+        req.run_path, interval_end, *metric_filter_params,
+    ]
+
+    rows = con.execute(query, params).fetchall()
+
+    metrics = [
+        {
+            "timestamp": row[0],
+            "pool_name": row[1],
+            "metric_name": row[2],
+            "value": row[3],
+        }
+        for row in rows
+    ]
+
+    available_metrics = con.execute(
+        "SELECT DISTINCT metric_name FROM system_metrics_thread_pools WHERE run_id = ? ORDER BY metric_name",
+        [req.run_path],
+    ).fetchall()
+
+    available_pools = con.execute(
+        "SELECT DISTINCT pool_name FROM system_metrics_thread_pools WHERE run_id = ? ORDER BY pool_name",
+        [req.run_path],
+    ).fetchall()
+
+    log.info(f"[API] Returning thread pool metrics page {req.page}/{total_pages}: {len(metrics)} metrics")
+
+    return {
+        "metrics": metrics,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "interval_start": interval_start,
+        "interval_end": interval_end,
+        "global_min_time": global_min_time,
+        "global_max_time": global_max_time,
+        "available_metrics": [r[0] for r in available_metrics],
+        "available_pools": [r[0] for r in available_pools],
+    }
+
+
 @app.post("/vllm-metrics/paginated")
 def get_vllm_metrics_paginated(req: VllmMetricsPaginatedRequest):
     """Get paginated vLLM metrics for a specific page/interval."""
