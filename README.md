@@ -14,6 +14,8 @@
 
 Telescope UI runs locally on your machine and syncs training data from Weights & Biases into a local DuckDB database, giving you a real-time dashboard to monitor runs, inspect rollouts, and analyze metrics.
 
+https://github.com/user-attachments/assets/5b1f10ec-eb73-419d-bc23-b010f7cb6bcc
+
 ## Installation
 
 ```bash
